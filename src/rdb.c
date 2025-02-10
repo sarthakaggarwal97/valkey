@@ -43,6 +43,7 @@
 #include "bio.h"
 #include "zmalloc.h"
 #include "module.h"
+#include "compression.h"
 
 #include <math.h>
 #include <fcntl.h>
@@ -372,12 +373,18 @@ int rdbTryIntegerEncoding(char *s, size_t len, unsigned char *enc) {
     }
 }
 
-ssize_t rdbSaveLzfBlob(rio *rdb, void *data, size_t compress_len, size_t original_len) {
+ssize_t rdbSaveCompressedBlob(rio *rdb, void *data, size_t compress_len, size_t original_len) {
     unsigned char byte;
     ssize_t n, nwritten = 0;
 
     /* Data compressed! Let's save it on disk */
-    byte = (RDB_ENCVAL << 6) | RDB_ENC_LZF;
+    if (!strcasecmp(server.rdb_compression_type->name, COMP_TYPE_LZF)) {
+        byte = (RDB_ENCVAL << 6) | RDB_ENC_LZF;
+    } else if (!strcasecmp(server.rdb_compression_type->name, COMP_TYPE_LZ4)) {
+        byte = (RDB_ENCVAL << 6) | RDB_ENC_LZ4;
+    } else {
+        serverAssert(0);
+    }
     if ((n = rdbWriteRaw(rdb, &byte, 1)) == -1) goto writeerr;
     nwritten += n;
 
@@ -396,7 +403,7 @@ writeerr:
     return -1;
 }
 
-ssize_t rdbSaveLzfStringObject(rio *rdb, unsigned char *s, size_t len) {
+ssize_t rdbSaveCompressedStringObject(rio *rdb, unsigned char *s, size_t len) {
     size_t comprlen, outlen;
     void *out;
     static void *buffer = NULL;
@@ -410,8 +417,8 @@ ssize_t rdbSaveLzfStringObject(rio *rdb, unsigned char *s, size_t len) {
     } else {
         if ((out = zmalloc(outlen + 1)) == NULL) return 0;
     }
-    comprlen = lzf_compress(s, len, out, outlen);
-    ssize_t nwritten = comprlen ? rdbSaveLzfBlob(rdb, out, comprlen, len) : 0;
+    comprlen = server.rdb_compression_type->compress(s, len, out, outlen);
+    ssize_t nwritten = comprlen ? rdbSaveCompressedBlob(rdb, out, comprlen, len) : 0;
     if (out != buffer) zfree(out);
     return nwritten;
 }
@@ -419,7 +426,7 @@ ssize_t rdbSaveLzfStringObject(rio *rdb, unsigned char *s, size_t len) {
 /* Load an LZF compressed string in RDB format. The returned value
  * changes according to 'flags'. For more info check the
  * rdbGenericLoadStringObject() function. */
-void *rdbLoadLzfStringObject(rio *rdb, int flags, size_t *lenptr) {
+void *rdbLoadCompressedStringObject(rio *rdb, int flags, size_t *lenptr, int algo_type) {
     int plain = flags & RDB_LOAD_PLAIN;
     int sds = flags & RDB_LOAD_SDS;
     uint64_t len, clen;
@@ -429,7 +436,7 @@ void *rdbLoadLzfStringObject(rio *rdb, int flags, size_t *lenptr) {
     if ((clen = rdbLoadLen(rdb, NULL)) == RDB_LENERR) return NULL;
     if ((len = rdbLoadLen(rdb, NULL)) == RDB_LENERR) return NULL;
     if ((c = ztrymalloc(clen)) == NULL) {
-        serverLog(isRestoreContext() ? LL_VERBOSE : LL_WARNING, "rdbLoadLzfStringObject failed allocating %llu bytes",
+        serverLog(isRestoreContext() ? LL_VERBOSE : LL_WARNING, "rdbLoadCompressedStringObject failed allocating %llu bytes",
                   (unsigned long long)clen);
         goto err;
     }
@@ -441,7 +448,7 @@ void *rdbLoadLzfStringObject(rio *rdb, int flags, size_t *lenptr) {
         val = sdstrynewlen(SDS_NOINIT, len);
     }
     if (!val) {
-        serverLog(isRestoreContext() ? LL_VERBOSE : LL_WARNING, "rdbLoadLzfStringObject failed allocating %llu bytes",
+        serverLog(isRestoreContext() ? LL_VERBOSE : LL_WARNING, "rdbLoadCompressedStringObject failed allocating %llu bytes",
                   (unsigned long long)len);
         goto err;
     }
@@ -450,7 +457,21 @@ void *rdbLoadLzfStringObject(rio *rdb, int flags, size_t *lenptr) {
 
     /* Load the compressed representation and uncompress it to target. */
     if (rioRead(rdb, c, clen) == 0) goto err;
-    if (lzf_decompress(c, clen, val, len) != len) {
+
+    size_t op = -1;
+    switch (algo_type) {
+    case RDB_ENC_LZF:
+        op = compressionTypeLZF()->decompress(c, clen, val, len);
+        break;
+    case RDB_ENC_LZ4:
+        op = compressionTypeLZ4()->decompress(c, clen, val, len);
+        break;
+    default:
+        rdbReportCorruptRDB("unknown compression format");
+        goto err;
+    }
+
+    if (op != len) {
         rdbReportCorruptRDB("Invalid LZF compressed string");
         goto err;
     }
@@ -488,7 +509,7 @@ ssize_t rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
     /* Try LZF compression - under 20 bytes it's unable to compress even
      * aaaaaaaaaaaaaaaaaa so skip it */
     if (server.rdb_compression && len > 20) {
-        n = rdbSaveLzfStringObject(rdb, s, len);
+        n = rdbSaveCompressedStringObject(rdb, s, len);
         if (n == -1) return -1;
         if (n > 0) return n;
         /* Return value of 0 means data can't be compressed, save the old way */
@@ -562,7 +583,9 @@ void *rdbGenericLoadStringObject(rio *rdb, int flags, size_t *lenptr) {
         case RDB_ENC_INT8:
         case RDB_ENC_INT16:
         case RDB_ENC_INT32: return rdbLoadIntegerObject(rdb, len, flags, lenptr);
-        case RDB_ENC_LZF: return rdbLoadLzfStringObject(rdb, flags, lenptr);
+        case RDB_ENC_LZF:
+        case RDB_ENC_LZ4:
+            return rdbLoadCompressedStringObject(rdb, flags, lenptr, len);
         default: rdbReportCorruptRDB("Unknown RDB string encoding type %llu", len); return NULL;
         }
     }
@@ -861,7 +884,7 @@ ssize_t rdbSaveObject(rio *rdb, robj *o, robj *key, int dbid) {
                 if (quicklistNodeIsCompressed(node)) {
                     void *data;
                     size_t compress_len = quicklistGetLzf(node, &data);
-                    if ((n = rdbSaveLzfBlob(rdb, data, compress_len, node->sz)) == -1) return -1;
+                    if ((n = rdbSaveCompressedBlob(rdb, data, compress_len, node->sz)) == -1) return -1;
                     nwritten += n;
                 } else {
                     if ((n = rdbSaveRawString(rdb, node->entry, node->sz)) == -1) return -1;
