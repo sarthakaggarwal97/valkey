@@ -31,6 +31,7 @@
 #include "server.h"
 #include "cluster.h"
 #include "connection.h"
+#include "compression.h"
 #include "bio.h"
 #include "module.h"
 
@@ -2880,6 +2881,32 @@ static int setConfigOOMScoreAdjValuesOption(standardConfig *config, sds *argv, i
     return change ? 1 : 2;
 }
 
+static int setRdbCompressionType(standardConfig *config, sds* argv, int argc, const char **err) {
+    UNUSED(config);
+
+    if (argc != 1) {
+        *err = "wrong number of arguments";
+        return 0;
+    }
+
+    if (!strcasecmp(argv[0], COMP_TYPE_LZF)) {
+        server.rdb_compression_type = compressionTypeLZF();
+    } else if (!strcasecmp(argv[0], COMP_TYPE_LZ4)) {
+        server.rdb_compression_type = compressionTypeLZ4();
+    } else {
+        *err = "Invalid rdb compression type";
+        return 0;
+    }
+    return 1;
+}
+
+static sds getRdbCompressionType(standardConfig *config) {
+    UNUSED(config);
+    sds buf = sdsempty();
+
+    return sdscat(buf, server.rdb_compression_type->name);
+}
+
 static sds getConfigOOMScoreAdjValuesOption(standardConfig *config) {
     UNUSED(config);
     sds buf = sdsempty();
@@ -3382,7 +3409,7 @@ standardConfig static_configs[] = {
     createSpecialConfig("rdma-bind", NULL, MODIFIABLE_CONFIG | MULTI_ARG_CONFIG, setConfigRdmaBindOption, getConfigRdmaBindOption, rewriteConfigRdmaBindOption, applyRdmaBind),
     createSpecialConfig("replicaof", "slaveof", IMMUTABLE_CONFIG | MULTI_ARG_CONFIG, setConfigReplicaOfOption, getConfigReplicaOfOption, rewriteConfigReplicaOfOption, NULL),
     createSpecialConfig("latency-tracking-info-percentiles", NULL, MODIFIABLE_CONFIG | MULTI_ARG_CONFIG, setConfigLatencyTrackingInfoPercentilesOutputOption, getConfigLatencyTrackingInfoPercentilesOutputOption, rewriteConfigLatencyTrackingInfoPercentilesOutputOption, NULL),
-
+    createSpecialConfig("rdbcompression_type", NULL, MODIFIABLE_CONFIG, setRdbCompressionType, getRdbCompressionType, NULL, NULL),
     /* NULL Terminator, this is dropped when we convert to the runtime array. */
     {NULL},
 };
