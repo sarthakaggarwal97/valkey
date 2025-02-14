@@ -22,6 +22,7 @@ size_t lz4_compress(const void *in_data, size_t in_len, void *out_data, size_t o
     gettimeofday(&end, NULL);
     long elapsed_usec = (end.tv_sec - start.tv_sec) * 1000000L + (end.tv_usec - start.tv_usec);
 
+    serverLog(LL_NOTICE, "Compressed Size=%zu", compressed_size);
     if (compressed_size > 0) {
         double ratio = (double)compressed_size / (double)in_len;
         serverLog(LL_NOTICE,
