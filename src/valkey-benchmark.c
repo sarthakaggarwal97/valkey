@@ -1892,6 +1892,32 @@ int main(int argc, char **argv) {
             free(cmd);
         }
 
+        if (test_is_selected("setifeq")) {
+            /*
+             * First, set the key to a known value.
+             * This ensures that when we test SET IFEQ, the key holds the expected value.
+             */
+            len = redisFormatCommand(&cmd, "SET key%s:__rand_int__ %s", tag, data);
+            benchmark("SET (initial for IFEQ)", cmd, len);
+            free(cmd);
+
+            /*
+             * Now test the conditional SET command.
+             * The command uses the syntax:
+             *    SET key IFEQ <comparison-value> <future-value>
+             * In this test, we pass the same 'data' as the expected current value,
+             * and generate a new random string for the future value.
+             */
+            char *newdata = zmalloc(config.datasize + 1);
+            genBenchmarkRandomData(newdata, config.datasize);
+            newdata[config.datasize] = '\0';
+
+            len = redisFormatCommand(&cmd, "SET key%s:__rand_int__ IFEQ %s %s", tag, data, newdata);
+            benchmark("SETIFEQ", cmd, len);
+            free(cmd);
+            zfree(newdata);
+        }
+
         if (test_is_selected("get")) {
             len = redisFormatCommand(&cmd, "GET key%s:__rand_int__", tag);
             benchmark("GET", cmd, len);
