@@ -60,6 +60,17 @@
 /* Size of the static buffer used for rdbcompression */
 #define LZF_STATIC_BUFFER_SIZE (8 * 1024)
 
+#define RDB_BATCH_MAX_SIZE (64 * 1024)  // 64KB maximum batch size
+#define RDB_BATCH_MAX_TOKEN 1000         // Maximum number of keys per batch
+
+/* Global structure for batching string objects */
+static struct {
+    unsigned char *buffer;                     /* Accumulated uncompressed data */
+    size_t buffer_used;                        /* Bytes used in the buffer */
+    size_t token_lengths[RDB_BATCH_MAX_TOKEN];    /* Original lengths of each batched key */
+    size_t token_count;                          /* Number of keys in the current batch */
+} rdbBatch = { NULL, 0, {0}, 0 };
+
 /* This macro is called when the internal RDB structure is corrupt */
 #define rdbReportCorruptRDB(...) rdbReportError(1, __LINE__, __VA_ARGS__)
 /* This macro is called when RDB read failed (possibly a short read) */
@@ -1161,6 +1172,80 @@ size_t rdbSavedObjectLen(robj *o, robj *key, int dbid) {
     return len;
 }
 
+/* Flush the batch buffer: compress and write batch metadata and blob */
+static ssize_t rdbFlushBatchBuffer(rio *rdb) {
+    ssize_t nwritten = 0;
+    if (rdbBatch.token_count == 0) return 0;  /* Nothing to flush */
+
+    size_t uncompressed_size = rdbBatch.buffer_used;
+
+    /* Allocate temporary space for compressed data.
+       Here we use (uncompressed_size - 4) as an estimated maximum output size. */
+    size_t max_compressed = (uncompressed_size > 4) ? (uncompressed_size - 4) : uncompressed_size;
+    unsigned char *compressed_data = zmalloc(max_compressed);
+
+    /* Compress the entire batch buffer */
+    ssize_t actual_compressed_size = server.rdb_compression_type->compress(
+        (char *)rdbBatch.buffer, uncompressed_size, (char *)compressed_data, max_compressed);
+
+    if (actual_compressed_size > 0) {
+        /* Write metadata:
+           - Number of keys in this batch.
+           - For each key, its original length.
+         */
+        nwritten += rdbSaveType(rdb, RDB_TYPE_STREAM_BATCH);
+        nwritten += rdbSaveLen(rdb, rdbBatch.token_count);
+        for (size_t i = 0; i < rdbBatch.token_count; i++) {
+            nwritten += rdbSaveLen(rdb, rdbBatch.token_lengths[i]);
+        }
+        /* Write the compressed blob: header, compressed length, and original uncompressed size */
+        nwritten += rdbSaveCompressedBlob(rdb, compressed_data, actual_compressed_size, uncompressed_size);
+    } else {
+        /* If compression fails, write data uncompressed */
+        nwritten += rdbSaveLen(rdb, uncompressed_size);
+        nwritten += rdbWriteRaw(rdb, rdbBatch.buffer, uncompressed_size);
+    }
+
+    /* Reset the batch buffer */
+    rdbBatch.buffer_used = 0;
+    rdbBatch.token_count = 0;
+    zfree(compressed_data);
+    return nwritten;
+}
+
+
+/* Modified rdbSaveRawString: Instead of compressing each string individually,
+   we accumulate the string in the batch buffer. */
+ssize_t rdbSaveRawKeyValueString(rio *rdb, const unsigned char *key, size_t key_len, const unsigned char *val, size_t val_len) {
+    /* Initialize the batch buffer if needed */
+    if (!rdbBatch.buffer) {
+        rdbBatch.buffer = zmalloc(RDB_BATCH_MAX_SIZE);
+        rdbBatch.buffer_used = 0;
+        rdbBatch.token_count = 0;
+    }
+
+    /* If adding this key would exceed the batch size or key count, flush the batch */
+    if (rdbBatch.buffer_used + key_len + val_len > RDB_BATCH_MAX_SIZE ||
+        rdbBatch.token_count >= RDB_BATCH_MAX_TOKEN) {
+        if (rdbFlushBatchBuffer(rdb) == -1)
+            return -1;
+        }
+
+    /* Append the string into the batch buffer and record its length */
+    memcpy(rdbBatch.buffer + rdbBatch.buffer_used, key, key_len);
+    memcpy(rdbBatch.buffer + rdbBatch.buffer_used, val, val_len);
+    rdbBatch.token_lengths[rdbBatch.token_count] = key_len;
+    rdbBatch.buffer_used += key_len;
+    rdbBatch.token_count++;
+    rdbBatch.token_lengths[rdbBatch.token_count] = val_len;
+    rdbBatch.buffer_used += val_len;
+    rdbBatch.token_count++;
+
+    /* We return 0 to indicate that the string is buffered and not written immediately */
+    return 0;
+}
+
+
 /* Save a key-value pair, with expire time, type, key, value.
  * On error -1 is returned.
  * On success if the key was actually saved 1 is returned. */
@@ -1192,6 +1277,11 @@ int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val, long long expiretime, in
          * a single time when loading does not affect the frequency much. */
         if (rdbSaveType(rdb, RDB_OPCODE_FREQ) == -1) return -1;
         if (rdbWriteRaw(rdb, buf, 1) == -1) return -1;
+    }
+
+    if (val->type == OBJ_STRING) {
+        if (rdbSaveRawKeyValueString(rdb, key->ptr, sdslen(key->ptr), val->ptr, sdslen(val->ptr)) == -1) return -1;
+        return 1;
     }
 
     /* Save type, key, value */
@@ -3039,6 +3129,93 @@ int rdbLoadRioWithLoadingCtxScopedRdb(rio *rdb, int rdbflags, rdbSaveInfo *rsi, 
     return retval;
 }
 
+bool finalizeRDBKeyValuePair(int rdbflags, uint64_t dbid, serverDb *db, int error, long long *empty_keys_skipped, long long *lru_idle, long long *lfu_freq, long long *expiretime, long long now, long long lru_clock, sds key, robj **val, bool *goes_to_eoferr) {
+    goes_to_eoferr = false;
+    /* Check if the key already expired. This function is used when loading
+         * an RDB file from disk, either at startup, or when an RDB was
+         * received from the primary. In the latter case, the primary is
+         * responsible for key expiry. If we would expire keys here, the
+         * snapshot taken by the primary may not be reflected on the replica.
+         * Similarly, if the base AOF is RDB format, we want to load all
+         * the keys they are, since the log of operations in the incr AOF
+         * is assumed to work in the exact keyspace state. */
+    if (*val == NULL) {
+        /* Since we used to have bug that could lead to empty keys
+             * (See #8453), we rather not fail when empty key is encountered
+             * in an RDB file, instead we will silently discard it and
+             * continue loading. */
+        if (error == RDB_LOAD_ERR_EMPTY_KEY) {
+            if ((*empty_keys_skipped)++ < 10) serverLog(LL_NOTICE, "rdbLoadObject skipping empty key: %s", key);
+            sdsfree(key);
+        } else {
+            sdsfree(key);
+            *goes_to_eoferr = true;
+            return false;
+        }
+    } else if (iAmPrimary() && !(rdbflags & RDBFLAGS_AOF_PREAMBLE) && *expiretime != -1 && *expiretime < now) {
+        if (rdbflags & RDBFLAGS_FEED_REPL) {
+            /* Caller should have created replication backlog,
+                 * and now this path only works when rebooting,
+                 * so we don't have replicas yet. */
+            serverAssert(server.repl_backlog != NULL && listLength(server.replicas) == 0);
+            robj keyobj;
+            initStaticStringObject(keyobj, key);
+            robj *argv[2];
+            argv[0] = server.lazyfree_lazy_expire ? shared.unlink : shared.del;
+            argv[1] = &keyobj;
+            replicationFeedReplicas(dbid, argv, 2);
+        }
+        sdsfree(key);
+        decrRefCount(*val);
+        server.rdb_last_load_keys_expired++;
+    } else {
+        robj keyobj;
+        initStaticStringObject(keyobj, key);
+
+        /* Add the new object in the hash table */
+        int added = dbAddRDBLoad(db, key, &*val);
+        server.rdb_last_load_keys_loaded++;
+        if (!added) {
+            if (rdbflags & RDBFLAGS_ALLOW_DUP) {
+                /* This flag is useful for DEBUG RELOAD special modes.
+                     * When it's set we allow new keys to replace the current
+                     * keys with the same name. */
+                dbSyncDelete(db, &keyobj);
+                added = dbAddRDBLoad(db, key, &*val);
+                serverAssert(added);
+            } else {
+                serverLog(LL_WARNING, "RDB has duplicated key '%s' in DB %d", key, db->id);
+                serverPanic("Duplicated key found in RDB file");
+            }
+        }
+
+        /* Set the expire time if needed */
+        if (*expiretime != -1) {
+            *val = setExpire(NULL, db, &keyobj, *expiretime);
+        }
+
+        /* Set usage information (for eviction). */
+        objectSetLRUOrLFU(*val, *lfu_freq, *lru_idle, lru_clock, 1000);
+
+        /* call key space notification on key loaded for modules only */
+        moduleNotifyKeyspaceEvent(NOTIFY_LOADED, "loaded", &keyobj, db->id);
+
+        /* Release key (sds), dictEntry stores a copy of it in embedded data */
+        sdsfree(key);
+    }
+
+    /* Loading the database more slowly is useful in order to test
+         * certain edge cases. */
+    if (server.key_load_delay) debugDelay(server.key_load_delay);
+
+    /* Reset the state that is key-specified and is populated by
+         * opcodes before the key, so that we start from scratch again. */
+    *expiretime = -1;
+    *lfu_freq = -1;
+    *lru_idle = -1;
+    return false;
+}
+
 /* Load an RDB file from the rio stream 'rdb'. On success C_OK is returned,
  * otherwise C_ERR is returned.
  * The rdb_loading_ctx argument holds objects to which the rdb will be loaded to,
@@ -3311,92 +3488,135 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             should_expand_db = 0;
         }
 
+        bool goes_to_eoferr;
+        if (type == RDB_TYPE_STREAM_BATCH) {
+
+            uint64_t token_count = rdbLoadLen(rdb, NULL);
+            if (token_count == RDB_LENERR) goto eoferr;
+
+            /* token_count should be even (key and value for each pair) */
+            if (token_count % 2 != 0) {
+                serverLog(LL_WARNING, "Batch token count is not even: %llu", token_count);
+                goto eoferr;
+            }
+
+            /* Allocate an array for token lengths */
+            size_t *token_lengths = zmalloc(token_count * sizeof(size_t));
+            if (token_lengths == NULL) goto eoferr;
+
+            for (uint64_t i = 0; i < token_count; i++) {
+                token_lengths[i] = rdbLoadLen(rdb, NULL);
+                if (token_lengths[i] == RDB_LENERR) {
+                    zfree(token_lengths);
+                    goto eoferr;
+                }
+            }
+
+            unsigned char encoding;
+            if (rioRead(rdb, &encoding, 1) == 0) {
+                zfree(token_lengths);
+                goto eoferr;
+            }
+
+            /* Read the compressed blob: */
+
+            int algo_type;
+            if ((encoding & 0x3F) == RDB_ENC_LZF) {
+                algo_type = RDB_ENC_LZF;
+            } else if ((encoding & 0x3F) == RDB_ENC_LZ4) {
+                algo_type = RDB_ENC_LZ4;
+            } else {
+                rdbReportCorruptRDB("Unknown compression encoding in batch: %d", encoding);
+                zfree(token_lengths);
+                goto eoferr;
+            }
+
+            uint64_t comp_len = rdbLoadLen(rdb, NULL);
+            if (comp_len == RDB_LENERR) { zfree(token_lengths); goto eoferr; }
+
+            uint64_t orig_size = rdbLoadLen(rdb, NULL);
+            if (orig_size == RDB_LENERR) { zfree(token_lengths); goto eoferr; }
+
+            unsigned char *compressed_data = zmalloc(comp_len);
+            if (compressed_data == NULL) { zfree(token_lengths); goto eoferr; }
+            if (rioRead(rdb, compressed_data, comp_len) == 0) {
+                zfree(token_lengths);
+                zfree(compressed_data);
+                goto eoferr;
+            }
+
+            /* Decompress the entire blob into a buffer */
+            unsigned char *decompressed_data = zmalloc(orig_size);
+            if (decompressed_data == NULL) { zfree(token_lengths); zfree(compressed_data); goto eoferr; }
+            size_t decompressed_size;
+            switch (algo_type) {
+                case RDB_ENC_LZF:
+                    decompressed_size = compressionTypeLZF()->decompress((char *)compressed_data, comp_len, (char *)decompressed_data, orig_size);
+                break;
+                case RDB_ENC_LZ4:
+                    decompressed_size = compressionTypeLZ4()->decompress((char *)compressed_data, comp_len, (char *)decompressed_data, orig_size);
+                break;
+                default:
+                    rdbReportCorruptRDB("unknown compression format");
+                goto eoferr;
+            }
+            zfree(compressed_data);
+            if (decompressed_size != orig_size) {
+                serverLog(LL_WARNING, "Decompression error in batch load: expected %llu, got %zu", orig_size, decompressed_size);
+                zfree(decompressed_data);
+                zfree(token_lengths);
+                goto eoferr;
+            }
+
+            /* Now, decompressed_data contains the concatenated keys and values.
+               We iterate through token_lengths to extract each key and value pair.
+               For each pair:
+                 - token_lengths[2*i] is the key length
+                 - token_lengths[2*i+1] is the value length
+            */
+            size_t offset = 0;
+            for (uint64_t i = 0; i < token_count; i += 2) {
+                size_t key_len = token_lengths[i];
+                size_t val_len = token_lengths[i+1];
+
+                /* Create SDS strings from the decompressed data */
+                sds batch_key = sdsnewlen((char *)decompressed_data + offset, key_len);
+                offset += key_len;
+
+                sds batch_val_sds = sdsnewlen((char *)decompressed_data + offset, val_len);
+                robj *batch_val = createStringObject(batch_val_sds, sdslen(batch_val_sds));
+                offset += val_len;
+
+                /* Add the key-value pair to the database.
+                   dbAddRDBLoad is the internal function that inserts the key and object
+                   into the current database (db). It expects the key as an SDS string.
+                */
+                if (!dbAddRDBLoad(db, batch_key, &batch_val)) {
+                    serverLog(LL_WARNING, "Failed to add batch key '%s' to DB %d", batch_key, db->id);
+                }
+
+                // server.rdb_last_load_keys_loaded++;
+
+                sdsfree(batch_key);  /* dbAddRDBLoad creates its own copy of the key */
+                sdsfree(batch_val_sds);
+
+                finalizeRDBKeyValuePair(rdbflags, dbid, db, error, &empty_keys_skipped, &lru_idle, &lfu_freq, &expiretime, now,
+                                        lru_clock, batch_key, &batch_val, &goes_to_eoferr);
+            }
+
+            zfree(token_lengths);
+            zfree(decompressed_data);
+            continue;
+
+        }
+
         /* Read key */
         if ((key = rdbGenericLoadStringObject(rdb, RDB_LOAD_SDS, NULL)) == NULL) goto eoferr;
         /* Read value */
         val = rdbLoadObject(type, rdb, key, db->id, &error);
-
-        /* Check if the key already expired. This function is used when loading
-         * an RDB file from disk, either at startup, or when an RDB was
-         * received from the primary. In the latter case, the primary is
-         * responsible for key expiry. If we would expire keys here, the
-         * snapshot taken by the primary may not be reflected on the replica.
-         * Similarly, if the base AOF is RDB format, we want to load all
-         * the keys they are, since the log of operations in the incr AOF
-         * is assumed to work in the exact keyspace state. */
-        if (val == NULL) {
-            /* Since we used to have bug that could lead to empty keys
-             * (See #8453), we rather not fail when empty key is encountered
-             * in an RDB file, instead we will silently discard it and
-             * continue loading. */
-            if (error == RDB_LOAD_ERR_EMPTY_KEY) {
-                if (empty_keys_skipped++ < 10) serverLog(LL_NOTICE, "rdbLoadObject skipping empty key: %s", key);
-                sdsfree(key);
-            } else {
-                sdsfree(key);
-                goto eoferr;
-            }
-        } else if (iAmPrimary() && !(rdbflags & RDBFLAGS_AOF_PREAMBLE) && expiretime != -1 && expiretime < now) {
-            if (rdbflags & RDBFLAGS_FEED_REPL) {
-                /* Caller should have created replication backlog,
-                 * and now this path only works when rebooting,
-                 * so we don't have replicas yet. */
-                serverAssert(server.repl_backlog != NULL && listLength(server.replicas) == 0);
-                robj keyobj;
-                initStaticStringObject(keyobj, key);
-                robj *argv[2];
-                argv[0] = server.lazyfree_lazy_expire ? shared.unlink : shared.del;
-                argv[1] = &keyobj;
-                replicationFeedReplicas(dbid, argv, 2);
-            }
-            sdsfree(key);
-            decrRefCount(val);
-            server.rdb_last_load_keys_expired++;
-        } else {
-            robj keyobj;
-            initStaticStringObject(keyobj, key);
-
-            /* Add the new object in the hash table */
-            int added = dbAddRDBLoad(db, key, &val);
-            server.rdb_last_load_keys_loaded++;
-            if (!added) {
-                if (rdbflags & RDBFLAGS_ALLOW_DUP) {
-                    /* This flag is useful for DEBUG RELOAD special modes.
-                     * When it's set we allow new keys to replace the current
-                     * keys with the same name. */
-                    dbSyncDelete(db, &keyobj);
-                    added = dbAddRDBLoad(db, key, &val);
-                    serverAssert(added);
-                } else {
-                    serverLog(LL_WARNING, "RDB has duplicated key '%s' in DB %d", key, db->id);
-                    serverPanic("Duplicated key found in RDB file");
-                }
-            }
-
-            /* Set the expire time if needed */
-            if (expiretime != -1) {
-                val = setExpire(NULL, db, &keyobj, expiretime);
-            }
-
-            /* Set usage information (for eviction). */
-            objectSetLRUOrLFU(val, lfu_freq, lru_idle, lru_clock, 1000);
-
-            /* call key space notification on key loaded for modules only */
-            moduleNotifyKeyspaceEvent(NOTIFY_LOADED, "loaded", &keyobj, db->id);
-
-            /* Release key (sds), dictEntry stores a copy of it in embedded data */
-            sdsfree(key);
-        }
-
-        /* Loading the database more slowly is useful in order to test
-         * certain edge cases. */
-        if (server.key_load_delay) debugDelay(server.key_load_delay);
-
-        /* Reset the state that is key-specified and is populated by
-         * opcodes before the key, so that we start from scratch again. */
-        expiretime = -1;
-        lfu_freq = -1;
-        lru_idle = -1;
+        finalizeRDBKeyValuePair(rdbflags, dbid, db, error, &empty_keys_skipped, &lru_idle, &lfu_freq, &expiretime, now,
+                                lru_clock, key, &val, &goes_to_eoferr);
+        if (goes_to_eoferr) goto eoferr;
     }
     /* Verify the checksum if RDB version is >= 5 */
     if (rdbver >= 5) {
