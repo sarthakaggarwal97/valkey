@@ -61,7 +61,7 @@
 #define LZF_STATIC_BUFFER_SIZE (8 * 1024)
 
 #define RDB_BATCH_MAX_SIZE (64 * 1024)  // 64KB maximum batch size
-#define RDB_BATCH_MAX_TOKEN 1000         // Maximum number of keys per batch
+#define RDB_BATCH_MAX_TOKEN 2         // Maximum number of keys per batch
 
 /* Global structure for batching string objects */
 static struct {
@@ -1175,33 +1175,47 @@ size_t rdbSavedObjectLen(robj *o, robj *key, int dbid) {
 /* Flush the batch buffer: compress and write batch metadata and blob */
 static ssize_t rdbFlushBatchBuffer(rio *rdb) {
     ssize_t nwritten = 0;
-    if (rdbBatch.token_count == 0) return 0;  /* Nothing to flush */
+    size_t outlen;
+    if (rdbBatch.token_count == 0) return 0; /* Nothing to flush */
 
+    void *out;
+    static void *buffer = NULL;
     size_t uncompressed_size = rdbBatch.buffer_used;
 
-    /* Allocate temporary space for compressed data.
-       Here we use (uncompressed_size - 4) as an estimated maximum output size. */
-    size_t max_compressed = (uncompressed_size > 4) ? (uncompressed_size - 4) : uncompressed_size;
-    unsigned char *compressed_data = zmalloc(max_compressed);
+    /* We require at least four bytes compression for this to be worth it */
+    if (rdbBatch.buffer_used <= 4) return 0;
+    outlen = rdbBatch.buffer_used - 4;
+    if (outlen < RDB_BATCH_MAX_SIZE) {
+        if (!buffer) buffer = zmalloc(RDB_BATCH_MAX_SIZE);
+        out = buffer;
+    } else {
+        if ((out = zmalloc(outlen + 1)) == NULL) return 0;
+    }
 
     /* Compress the entire batch buffer */
-    ssize_t actual_compressed_size = server.rdb_compression_type->compress(
-        (char *)rdbBatch.buffer, uncompressed_size, (char *)compressed_data, max_compressed);
+    size_t actual_compressed_size = server.rdb_compression_type->compress(rdbBatch.buffer, uncompressed_size, out, uncompressed_size);
 
+    nwritten += rdbSaveType(rdb, RDB_TYPE_STREAM_BATCH);
     if (actual_compressed_size > 0) {
         /* Write metadata:
            - Number of keys in this batch.
            - For each key, its original length.
          */
-        nwritten += rdbSaveType(rdb, RDB_TYPE_STREAM_BATCH);
         nwritten += rdbSaveLen(rdb, rdbBatch.token_count);
         for (size_t i = 0; i < rdbBatch.token_count; i++) {
             nwritten += rdbSaveLen(rdb, rdbBatch.token_lengths[i]);
         }
         /* Write the compressed blob: header, compressed length, and original uncompressed size */
-        nwritten += rdbSaveCompressedBlob(rdb, compressed_data, actual_compressed_size, uncompressed_size);
+        nwritten += rdbSaveCompressedBlob(rdb, out, actual_compressed_size, uncompressed_size);
     } else {
+        serverLog(LL_NOTICE, "%s", "no compression bud");
         /* If compression fails, write data uncompressed */
+        nwritten += rdbSaveLen(rdb, rdbBatch.token_count);
+        for (size_t i = 0; i < rdbBatch.token_count; i++) {
+            nwritten += rdbSaveLen(rdb, rdbBatch.token_lengths[i]);
+        }
+        unsigned char byte = (RDB_ENCVAL << 6) | RDB_ENC_BATCH;
+        nwritten += rdbWriteRaw(rdb, &byte, 1);
         nwritten += rdbSaveLen(rdb, uncompressed_size);
         nwritten += rdbWriteRaw(rdb, rdbBatch.buffer, uncompressed_size);
     }
@@ -1209,7 +1223,8 @@ static ssize_t rdbFlushBatchBuffer(rio *rdb) {
     /* Reset the batch buffer */
     rdbBatch.buffer_used = 0;
     rdbBatch.token_count = 0;
-    zfree(compressed_data);
+    if (out != buffer)
+        zfree(out);
     return nwritten;
 }
 
@@ -1233,10 +1248,11 @@ ssize_t rdbSaveRawKeyValueString(rio *rdb, const unsigned char *key, size_t key_
 
     /* Append the string into the batch buffer and record its length */
     memcpy(rdbBatch.buffer + rdbBatch.buffer_used, key, key_len);
-    memcpy(rdbBatch.buffer + rdbBatch.buffer_used, val, val_len);
     rdbBatch.token_lengths[rdbBatch.token_count] = key_len;
     rdbBatch.buffer_used += key_len;
     rdbBatch.token_count++;
+
+    memcpy(rdbBatch.buffer + rdbBatch.buffer_used, val, val_len);
     rdbBatch.token_lengths[rdbBatch.token_count] = val_len;
     rdbBatch.buffer_used += val_len;
     rdbBatch.token_count++;
@@ -3496,7 +3512,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
 
             /* token_count should be even (key and value for each pair) */
             if (token_count % 2 != 0) {
-                serverLog(LL_WARNING, "Batch token count is not even: %llu", token_count);
+                serverLog(LL_WARNING, "Batch token count is not even: %llu", (unsigned long long) token_count);
                 goto eoferr;
             }
 
@@ -3512,60 +3528,76 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
                 }
             }
 
-            unsigned char encoding;
-            if (rioRead(rdb, &encoding, 1) == 0) {
-                zfree(token_lengths);
-                goto eoferr;
-            }
+            int isencoded;
+            unsigned long long algo_type;
 
-            /* Read the compressed blob: */
-
-            int algo_type;
-            if ((encoding & 0x3F) == RDB_ENC_LZF) {
-                algo_type = RDB_ENC_LZF;
-            } else if ((encoding & 0x3F) == RDB_ENC_LZ4) {
-                algo_type = RDB_ENC_LZ4;
+            algo_type = rdbLoadLen(rdb, &isencoded);
+            /* Determine whether data is compressed */
+            int algo;
+            if (algo_type == RDB_ENC_LZF) {
+                algo = RDB_ENC_LZF;
+            } else if (algo_type == RDB_ENC_LZ4) {
+                algo = RDB_ENC_LZ4;
             } else {
-                rdbReportCorruptRDB("Unknown compression encoding in batch: %d", encoding);
-                zfree(token_lengths);
-                goto eoferr;
+                algo = RDB_ENC_BATCH;
             }
 
-            uint64_t comp_len = rdbLoadLen(rdb, NULL);
-            if (comp_len == RDB_LENERR) { zfree(token_lengths); goto eoferr; }
+            unsigned char *decompressed_data = NULL;
 
-            uint64_t orig_size = rdbLoadLen(rdb, NULL);
-            if (orig_size == RDB_LENERR) { zfree(token_lengths); goto eoferr; }
+            if (algo != RDB_ENC_BATCH) {  /* Compressed case */
 
-            unsigned char *compressed_data = zmalloc(comp_len);
-            if (compressed_data == NULL) { zfree(token_lengths); goto eoferr; }
-            if (rioRead(rdb, compressed_data, comp_len) == 0) {
-                zfree(token_lengths);
+                uint64_t orig_size = 0;
+                uint64_t comp_len = rdbLoadLen(rdb, NULL);
+                if (comp_len == RDB_LENERR) { zfree(token_lengths); goto eoferr; }
+
+                orig_size = rdbLoadLen(rdb, NULL);
+                if (orig_size == RDB_LENERR) { zfree(token_lengths); goto eoferr; }
+
+                unsigned char *compressed_data = zmalloc(comp_len);
+                if (compressed_data == NULL) { zfree(token_lengths); goto eoferr; }
+                if (rioRead(rdb, compressed_data, comp_len) == 0) {
+                    zfree(token_lengths);
+                    zfree(compressed_data);
+                    goto eoferr;
+                }
+
+                /* Allocate buffer for decompression */
+                decompressed_data = zmalloc(orig_size);
+                if (decompressed_data == NULL) { zfree(token_lengths); zfree(compressed_data); goto eoferr; }
+
+                /* Perform decompression */
+                size_t decompressed_size;
+                switch (algo) {
+                    case RDB_ENC_LZF:
+                        decompressed_size = compressionTypeLZF()->decompress((char *)compressed_data, comp_len, (char *)decompressed_data, orig_size);
+                        break;
+                    case RDB_ENC_LZ4:
+                        decompressed_size = compressionTypeLZ4()->decompress((char *)compressed_data, comp_len, (char *)decompressed_data, orig_size);
+                        break;
+                    default:
+                        rdbReportCorruptRDB("Unknown compression format");
+                        goto eoferr;
+                }
+
                 zfree(compressed_data);
-                goto eoferr;
-            }
+                if (decompressed_size != orig_size) {
+                    serverLog(LL_WARNING, "Decompression error in batch load: expected %llu, got %zu", (unsigned long long) orig_size, decompressed_size);
+                    zfree(decompressed_data);
+                    zfree(token_lengths);
+                    goto eoferr;
+                }
+            } else { /* Uncompressed case */
 
-            /* Decompress the entire blob into a buffer */
-            unsigned char *decompressed_data = zmalloc(orig_size);
-            if (decompressed_data == NULL) { zfree(token_lengths); zfree(compressed_data); goto eoferr; }
-            size_t decompressed_size;
-            switch (algo_type) {
-                case RDB_ENC_LZF:
-                    decompressed_size = compressionTypeLZF()->decompress((char *)compressed_data, comp_len, (char *)decompressed_data, orig_size);
-                break;
-                case RDB_ENC_LZ4:
-                    decompressed_size = compressionTypeLZ4()->decompress((char *)compressed_data, comp_len, (char *)decompressed_data, orig_size);
-                break;
-                default:
-                    rdbReportCorruptRDB("unknown compression format");
-                goto eoferr;
-            }
-            zfree(compressed_data);
-            if (decompressed_size != orig_size) {
-                serverLog(LL_WARNING, "Decompression error in batch load: expected %llu, got %zu", orig_size, decompressed_size);
-                zfree(decompressed_data);
-                zfree(token_lengths);
-                goto eoferr;
+                uint64_t orig_size = rdbLoadLen(rdb, NULL);
+                if (orig_size == RDB_LENERR) { zfree(token_lengths); goto eoferr; }
+
+                decompressed_data = zmalloc(orig_size);
+                if (decompressed_data == NULL) { zfree(token_lengths); goto eoferr; }
+                if (rioRead(rdb, decompressed_data, orig_size) == 0) {
+                    zfree(token_lengths);
+                    zfree(decompressed_data);
+                    goto eoferr;
+                }
             }
 
             /* Now, decompressed_data contains the concatenated keys and values.
@@ -3587,21 +3619,11 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
                 robj *batch_val = createStringObject(batch_val_sds, sdslen(batch_val_sds));
                 offset += val_len;
 
-                /* Add the key-value pair to the database.
-                   dbAddRDBLoad is the internal function that inserts the key and object
-                   into the current database (db). It expects the key as an SDS string.
-                */
-                if (!dbAddRDBLoad(db, batch_key, &batch_val)) {
-                    serverLog(LL_WARNING, "Failed to add batch key '%s' to DB %d", batch_key, db->id);
-                }
-
-                // server.rdb_last_load_keys_loaded++;
-
-                sdsfree(batch_key);  /* dbAddRDBLoad creates its own copy of the key */
-                sdsfree(batch_val_sds);
-
                 finalizeRDBKeyValuePair(rdbflags, dbid, db, error, &empty_keys_skipped, &lru_idle, &lfu_freq, &expiretime, now,
                                         lru_clock, batch_key, &batch_val, &goes_to_eoferr);
+
+                sdsfree(batch_key);
+                sdsfree(batch_val_sds);
             }
 
             zfree(token_lengths);

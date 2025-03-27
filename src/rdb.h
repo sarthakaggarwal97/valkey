@@ -87,6 +87,7 @@ static_assert(RDB_VERSION < RDB_FOREIGN_VERSION_MIN || RDB_VERSION > RDB_FOREIGN
 #define RDB_ENC_INT32 2 /* 32 bit signed integer */
 #define RDB_ENC_LZF 3   /* string compressed with FASTLZ */
 #define RDB_ENC_LZ4 4   /* string compressed with LZ4 */
+#define RDB_ENC_BATCH 5   /* string compressed with LZ4 */
 
 /* Map object types to RDB object types. Macros starting with OBJ_ are for
  * memory storage and may change. Instead RDB types must be fixed because
