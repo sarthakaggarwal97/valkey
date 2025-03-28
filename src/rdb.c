@@ -1458,6 +1458,14 @@ werr:
     return -1;
 }
 
+int rdbSaveRawKeyValueStringFinalFlush(rio *rdb) {
+    if (rdbBatch.buffer_used > 0 && rdbBatch.token_count > 0) {
+        return rdbFlushBatchBuffer(rdb) < 0 ? -1 : 1;
+    }
+    return 0; /* Nothing to flush */
+}
+
+
 ssize_t rdbSaveDb(rio *rdb, int dbid, int rdbflags, long *key_counter) {
     ssize_t written = 0;
     ssize_t res;
@@ -1530,6 +1538,11 @@ ssize_t rdbSaveDb(rio *rdb, int dbid, int rdbflags, long *key_counter) {
             }
         }
     }
+
+    // final buffer push
+    if ((res = rdbSaveRawKeyValueStringFinalFlush(rdb)) < 0) goto werr;
+    written += res;
+
     kvstoreIteratorRelease(kvs_it);
     return written;
 
