@@ -1208,7 +1208,6 @@ static ssize_t rdbFlushBatchBuffer(rio *rdb) {
         /* Write the compressed blob: header, compressed length, and original uncompressed size */
         nwritten += rdbSaveCompressedBlob(rdb, out, actual_compressed_size, uncompressed_size);
     } else {
-        serverLog(LL_NOTICE, "%s", "no compression bud");
         /* If compression fails, write data uncompressed */
         nwritten += rdbSaveLen(rdb, rdbBatch.token_count);
         for (size_t i = 0; i < rdbBatch.token_count; i++) {
@@ -3517,7 +3516,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             should_expand_db = 0;
         }
 
-        bool goes_to_eoferr;
+        bool goes_to_eoferr = false;
         if (type == RDB_TYPE_STREAM_BATCH) {
 
             uint64_t token_count = rdbLoadLen(rdb, NULL);
