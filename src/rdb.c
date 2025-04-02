@@ -1205,6 +1205,7 @@ static ssize_t rdbFlushBatchBuffer(rio *rdb) {
         for (size_t i = 0; i < rdbBatch.token_count; i++) {
             nwritten += rdbSaveLen(rdb, rdbBatch.token_lengths[i]);
         }
+
         /* Write the compressed blob: header, compressed length, and original uncompressed size */
         nwritten += rdbSaveCompressedBlob(rdb, out, actual_compressed_size, uncompressed_size);
     } else {
@@ -3589,10 +3590,10 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
                 switch (algo) {
                     case RDB_ENC_LZF:
                         decompressed_size = compressionTypeLZF()->decompress(compressed_data, comp_len, decompressed_data, orig_size);
-                        break;
+                    break;
                     case RDB_ENC_LZ4:
                         decompressed_size = compressionTypeLZ4()->decompress(compressed_data, comp_len, decompressed_data, orig_size);
-                        break;
+                    break;
                     default:
                         rdbReportCorruptRDB("Unknown compression format");
                         goto eoferr;

@@ -2860,7 +2860,7 @@ void initServer(void) {
     server.client_pause_in_transaction = 0;
     server.child_pid = -1;
     server.child_type = CHILD_TYPE_NONE;
-    server.rdb_compression_type = compressionTypeLZF(); /* By default, we want the compression algorithm to be LZ4 */
+    server.rdb_compression_type = compressionTypeLZ4(); /* By default, we want the compression algorithm to be LZ4 */
     server.rdb_child_type = RDB_CHILD_TYPE_NONE;
     server.rdb_pipe_conns = NULL;
     server.rdb_pipe_numconns = 0;
