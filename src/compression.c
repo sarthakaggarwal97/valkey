@@ -1,6 +1,7 @@
 #include "compression.h"
 #include "lzf.h"
 #include "lz4.h"
+#include "lz4_dict.h"
 #include "server.h"
 
 size_t lz4_compress(const void *in_data, size_t in_len, void *out_data, size_t out_len) {
@@ -13,8 +14,8 @@ size_t lz4_decompress(const void *in_data, size_t in_len, void *out_data, size_t
 
 static CompressionType CompressionType_LZ4 = {
     .name = COMP_TYPE_LZ4,
-    .compress = lz4_compress,
-    .decompress = lz4_decompress,
+    .compress = lz4_compress_using_dict,
+    .decompress = lz4_decompress_using_dict,
     .encode_value = RDB_ENC_LZ4
 };
 
