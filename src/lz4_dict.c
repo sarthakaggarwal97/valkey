@@ -6,22 +6,25 @@
  * LZ4_compress_fast_continue, then free the state.
  */
 size_t lz4_compress_using_dict(const void *in_data, size_t in_len, void *out_data, size_t out_len) {
-    serverLog(LL_NOTICE, "Compressing via dictionary");
     static LZ4_stream_t *lz4Stream = NULL;
     static char dictBuffer[64 * 1024] = {0};
+    static size_t dictSize = 0;  // Track dictionary size to avoid unnecessary reloads
+
     if (!lz4Stream) {
         lz4Stream = LZ4_createStream();
         if (!lz4Stream) return 0;
     }
 
-    /* Load the dictionary if available */
-    LZ4_loadDict(lz4Stream, dictBuffer, sizeof(dictBuffer)); // Uses internally stored dictionary
+    /* Load dictionary only if it exists */
+    if (dictSize > 0) {
+        LZ4_loadDict(lz4Stream, dictBuffer, dictSize);
+    }
 
-    /* Perform compression with dictionary support */
-    int compressed = LZ4_compress_fast_continue(lz4Stream, (const char *)in_data, (char *)out_data, in_len, out_len, 1);
+    /* Perform fast compression with speed-optimized acceleration */
+    int compressed = LZ4_compress_fast_continue(lz4Stream, (const char *)in_data, (char *)out_data, in_len, out_len, 8);
 
     /* Save updated dictionary state */
-    LZ4_saveDict(lz4Stream, dictBuffer, sizeof(dictBuffer)); // LZ4 maintains the last 64KB dictionary internally
+    dictSize = LZ4_saveDict(lz4Stream, dictBuffer, sizeof(dictBuffer));
 
     return (compressed > 0) ? (size_t)compressed : 0;
 }
@@ -31,7 +34,6 @@ size_t lz4_compress_using_dict(const void *in_data, size_t in_len, void *out_dat
  * then free the state.
  */
 size_t lz4_decompress_using_dict(const void *in_data, size_t in_len, void *out_data, size_t out_len) {
-    serverLog(LL_NOTICE, "Decompressing via dictionary");
     static LZ4_streamDecode_t *lz4StreamDecode = NULL;
 
     if (!lz4StreamDecode) {
