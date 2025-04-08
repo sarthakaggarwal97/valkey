@@ -1286,13 +1286,166 @@ static void updateClusterSlotsConfiguration(void) {
 
 /* Generate random data for the benchmark. See #7196. */
 static void genBenchmarkRandomData(char *data, int count) {
-    static uint32_t state = 1234;
-    int i = 0;
 
-    while (count--) {
-        state = (state * 1103515245 + 12345);
-        data[i++] = '0' + ((state >> 16) & 63);
+    srand(time(NULL));
+    const int random_range = rand() % count;
+
+    uint32_t counter = random_range;
+    counter++;
+
+    uint32_t uid = counter;
+    uint32_t uname_val = counter * 2;
+    uint32_t email_val = counter * 3;
+    uint32_t ts = 1600000000 + counter;
+    uint32_t street_num = 100 + (counter % 900);
+    uint32_t referral = counter;
+    uint32_t city_mod = counter % 100;
+    uint32_t phone_num = counter % 10000;
+    uint32_t ip_last = counter % 255;
+    uint32_t device_id = counter;
+
+    const char *status = (counter % 2 == 0) ? "active" : "inactive";
+    const char *role = ((counter % 10) < 9) ? "standard_user" : "system_administrator";
+    const char *theme = (counter % 2 == 0) ? "light_mode_theme" : "dark_mode_theme";
+    const char *notifications = (counter % 2 == 0) ? "true" : "false";
+
+    const char *language = (counter % 3 == 0) ? "en-US-English" :
+                           (counter % 3 == 1) ? "es-ES-Spanish" : "fr-FR-French";
+    const char *currency = (counter % 2 == 0) ? "USD - United States Dollar" : "EUR - Euro";
+    const char *timezone = (counter % 3 == 0) ? "America/Los_Angeles - Pacific Time" :
+                            (counter % 3 == 1) ? "Europe/London - GMT" : "Asia/Tokyo - JST";
+    const char *membership_status = (counter % 4 == 0) ? "Bronze Member" :
+                                    (counter % 4 == 1) ? "Silver Member" :
+                                    (counter % 4 == 2) ? "Gold Member" : "Platinum Member";
+
+    const char *device_type = (counter % 2 == 0) ? "mobile_smartphone_device" : "desktop_workstation_computer";
+    const char *os_version = (counter % 2 == 0) ? "Android_13.0" : "Windows_11_Pro";
+    const char *browser = (counter % 2 == 0) ? "Chrome_v110.0.5481" : "Firefox_v108.0";
+    const char *subscription = (counter % 2 == 0) ? "monthly_auto_renewal" : "annual_billing_plan";
+    const char *two_factor = (counter % 2 == 0) ? "enabled_via_app" : "disabled";
+    const char *account_type = (counter % 2 == 0) ? "personal_account_type" : "business_account_type";
+    const char *login_method = (counter % 3 == 0) ? "email_password" : (counter % 3 == 1) ? "oauth_google" : "oauth_github";
+    const char *security_level = (counter % 2 == 0) ? "standard_security" : "enhanced_security";
+    const char *region = (counter % 2 == 0) ? "North America - West" : "Europe - Central";
+    const char *customer_segment = (counter % 3 == 0) ? "enterprise_clients" :
+                                   (counter % 3 == 1) ? "small_business_owners" : "individual_consumers";
+
+    const char *last_login_location = (counter % 2 == 0) ? "San Francisco, CA" : "Berlin, Germany";
+    const char *email_verified = (counter % 2 == 0) ? "true" : "false";
+    const char *secondary_email = "alt_email@example.com";
+    const char *preferred_contact_method = (counter % 2 == 0) ? "email" : "sms";
+    const char *last_sync_time = "2025-04-01T12:30:00Z";
+    const char *manufacturer = (counter % 2 == 0) ? "Apple Inc." : "Samsung Electronics";
+    const char *password_last_changed = "2025-03-15T09:00:00Z";
+    int login_attempts = counter % 5;
+    int total_logins = counter * 3;
+    float avg_session_duration = 12.5 + (counter % 7);
+
+    const char *template =
+        "{"
+            "\"account\":{"
+                "\"user_id\":\"user_%07u\","
+                "\"name\":\"User_%07u\","
+                "\"email\":\"user_%07u@example.com\","
+                "\"timestamp\":%u,"
+                "\"dob\":\"1980-01-01\","
+                "\"membership_status\":\"%s\","
+                "\"referral_code\":\"REF%07u\","
+                "\"last_login_location\":\"%s\","
+                "\"email_verified\":%s"
+            "},"
+            "\"contact\":{"
+                "\"phone\":\"+1-555-%04u\","
+                "\"ip_address\":\"192.168.1.%u\","
+                "\"address\":{"
+                    "\"street_address\":\"%u Main Street Suite 200\","
+                    "\"city\":\"City_%02u\","
+                    "\"state\":\"California\","
+                    "\"region\":\"%s\""
+                "},"
+                "\"secondary_email\":\"%s\","
+                "\"preferred_contact_method\":\"%s\""
+            "},"
+            "\"preferences\":{"
+                "\"theme\":\"%s\","
+                "\"notifications_enabled\":%s,"
+                "\"language_preference\":\"%s\","
+                "\"currency_preference\":\"%s\","
+                "\"timezone_setting\":\"%s\""
+            "},"
+            "\"device\":{"
+                "\"device_id\":\"Device_%07u\","
+                "\"device_type\":\"%s\","
+                "\"operating_system\":\"%s\","
+                "\"browser_version\":\"%s\","
+                "\"last_sync_time\":\"%s\","
+                "\"manufacturer\":\"%s\""
+            "},"
+            "\"security\":{"
+                "\"role\":\"%s\","
+                "\"login_method\":\"%s\","
+                "\"2fa_status\":\"%s\","
+                "\"account_type\":\"%s\","
+                "\"security_level\":\"%s\","
+                "\"password_last_changed\":\"%s\","
+                "\"login_attempts\":%d"
+            "},"
+            "\"subscription_info\":{"
+                "\"plan_type\":\"%s\","
+                "\"customer_segment\":\"%s\""
+            "},"
+            "\"usage_metrics\":{"
+                "\"total_logins\":%d,"
+                "\"average_session_duration\":%.2f"
+            "},"
+            "\"status\":\"%s\","
+            "\"payload\":\"%s\""
+        "}";
+
+    int base_len = snprintf(NULL, 0, template,
+        uid, uname_val, email_val, ts, membership_status, referral, last_login_location, email_verified,
+        phone_num, ip_last, street_num, city_mod, region,
+        secondary_email, preferred_contact_method,
+        theme, notifications, language, currency, timezone,
+        device_id, device_type, os_version, browser, last_sync_time, manufacturer,
+        role, login_method, two_factor, account_type, security_level, password_last_changed, login_attempts,
+        subscription, customer_segment,
+        total_logins, avg_session_duration,
+        status, "");
+
+    int filler_len = count - base_len;
+    if (filler_len < 0) {
+        fprintf(stderr, "Error: provided datasize (%d) is too small, minimum required is %d\n", count, base_len);
+        exit(1);
     }
+
+    char *filler = malloc(filler_len + 1);
+    if (!filler) {
+        fprintf(stderr, "Error allocating memory for filler\n");
+        exit(1);
+    }
+
+    for (int i = 0; i < filler_len; i++) {
+        filler[i] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[i % 36];
+    }
+    filler[filler_len] = '\0';
+
+    int written = snprintf(data, count + 1, template,
+        uid, uname_val, email_val, ts, membership_status, referral, last_login_location, email_verified,
+        phone_num, ip_last, street_num, city_mod, region,
+        secondary_email, preferred_contact_method,
+        theme, notifications, language, currency, timezone,
+        device_id, device_type, os_version, browser, last_sync_time, manufacturer,
+        role, login_method, two_factor, account_type, security_level, password_last_changed, login_attempts,
+        subscription, customer_segment,
+        total_logins, avg_session_duration,
+        status, filler);
+
+    if (written != count) {
+        fprintf(stderr, "Warning: generated JSON length (%d) does not match expected (%d)\n", written, count);
+    }
+
+    free(filler);
 }
 
 /* Returns number of consumed options. */
