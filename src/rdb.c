@@ -60,7 +60,7 @@
 /* Size of the static buffer used for rdbcompression */
 #define LZF_STATIC_BUFFER_SIZE (8 * 1024)
 
-#define RDB_BATCH_MAX_SIZE (5 * 1024 * 1024)  // 64KB maximum batch size
+#define RDB_BATCH_MAX_SIZE (1 * 1024 * 1024)  // 64KB maximum batch size
 #define RDB_BATCH_MAX_TOKEN 1000         // Maximum number of keys per batch
 
 /* Global structure for batching string objects */
