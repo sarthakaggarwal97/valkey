@@ -3213,8 +3213,8 @@ bool finalizeRDBKeyValuePair(int rdbflags, uint64_t dbid, serverDb *db, int erro
                 added = dbAddRDBLoad(db, key, &*val);
                 serverAssert(added);
             } else {
-                serverLog(LL_WARNING, "RDB has duplicated key '%s' in DB %d", key, db->id);
-                serverPanic("Duplicated key found in RDB file");
+                // serverLog(LL_WARNING, "RDB has duplicated key '%s' in DB %d", key, db->id);
+                // serverPanic("Duplicated key found in RDB file");
             }
         }
 
