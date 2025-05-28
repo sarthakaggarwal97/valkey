@@ -1638,6 +1638,7 @@ clusterNode *createClusterNode(char *nodename, int flags) {
     node->replicaof = NULL;
     node->last_in_ping_gossip = 0;
     node->ping_sent = node->pong_received = 0;
+    node->last_reconnect_attempted = 0;
     node->data_received = 0;
     node->meet_sent = 0;
     node->fail_time = 0;
@@ -5297,10 +5298,12 @@ static int nodeExceedsHandshakeTimeout(clusterNode *node, mstime_t now) {
     return now - node->ctime > getHandshakeTimeout() ? 1 : 0;
 }
 
+#define MAX_CONNECTION_ATTEMPTS_PER_CRON 10
+
 /* Check if the node is disconnected and re-establish the connection.
  * Also update a few stats while we are here, that can be used to make
  * better decisions in other part of the code. */
-static int clusterNodeCronHandleReconnect(clusterNode *node, mstime_t now) {
+static int clusterNodeCronHandleReconnect(clusterNode *node, mstime_t now, int *cluster_conn_attempts) {
     /* Not interested in reconnecting the link with myself or nodes
      * for which we have no address. */
     if (node->flags & (CLUSTER_NODE_MYSELF | CLUSTER_NODE_NOADDR)) return 1;
@@ -5329,6 +5332,11 @@ static int clusterNodeCronHandleReconnect(clusterNode *node, mstime_t now) {
     }
 
     if (node->link == NULL) {
+        if (now - node->last_reconnect_attempted <= 1000 || *cluster_conn_attempts > MAX_CONNECTION_ATTEMPTS_PER_CRON) {
+            return 1;
+        }
+        node->last_reconnect_attempted = now;
+        (*cluster_conn_attempts)++;
         clusterLink *link = createClusterLink(node);
         link->conn = connCreate(connTypeOfCluster());
         connSetPrivateData(link->conn, link);
@@ -5385,6 +5393,7 @@ void clusterCron(void) {
     mstime_t min_pong = 0, now = mstime();
     clusterNode *min_pong_node = NULL;
     static unsigned long long iteration = 0;
+    int cluster_node_conn_attempts = 0;
 
     iteration++; /* Number of times this function was called so far. */
 
@@ -5402,8 +5411,9 @@ void clusterCron(void) {
         /* The protocol is that function(s) below return non-zero if the node was
          * terminated.
          */
-        if (clusterNodeCronHandleReconnect(node, now)) continue;
+        if (clusterNodeCronHandleReconnect(node, now, &cluster_node_conn_attempts)) continue;
     }
+    cluster_node_conn_attempts = 0;
     dictReleaseIterator(di);
 
     /* Ping some random node 1 time every 10 iterations, so that we usually ping

@@ -160,6 +160,10 @@ start_cluster 2 0 {tags {external:skip cluster} overrides {cluster-node-timeout 
                 after 100
                 # Since we are in handshake, we use a randomly generated ID we have to find
                 R 1 DEBUG CLUSTERLINK KILL ALL [cluster_get_first_node_in_handshake 1]
+
+                # Since we retry to connect for a specific node once in one second
+                after 1000
+
                 incr meet_retry 1
             }
 
