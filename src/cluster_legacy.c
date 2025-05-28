@@ -5833,6 +5833,7 @@ void clusterCron(void) {
          */
         if (!server.debug_cluster_disable_reconnection && clusterNodeCronHandleReconnect(node, now, &cluster_node_conn_attempts)) continue;
     }
+    cluster_node_conn_attempts = 0;
     dictReleaseIterator(di);
 
     /* Ping some random node 1 time every 10 iterations, so that we usually ping
