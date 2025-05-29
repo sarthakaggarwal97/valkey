@@ -5821,6 +5821,11 @@ void clusterCron(void) {
     /* Clear so clusterNodeCronHandleReconnect can count the number of nodes in PFAIL. */
     server.cluster->stats_pfail_nodes = 0;
     /* Run through some of the operations we want to do on each cluster node. */
+    /* We want to start from the random position within cluster nodes just to be safe. */
+    int total = dictSize(server.cluster->nodes);
+    int skip = rand() % (total == 0 ? 1 : total);
+
+    /* First iterator: from skip point to end */
     di = dictGetSafeIterator(server.cluster->nodes);
     long long cluster_node_conn_attempts = maxConnectionAttemptsPerCron();
     while ((de = dictNext(di)) != NULL) {
@@ -5833,8 +5838,17 @@ void clusterCron(void) {
          */
         if (!server.debug_cluster_disable_reconnection && clusterNodeCronHandleReconnect(node, now, &cluster_node_conn_attempts)) continue;
     }
-    cluster_node_conn_attempts = 0;
     dictReleaseIterator(di);
+
+    /* Second iterator: from start to skip point */
+    di = dictGetSafeIterator(server.cluster->nodes);
+    i = 0;
+    while (i++ < skip && (de = dictNext(di)) != NULL) {
+        clusterNode *node = dictGetVal(de);
+        handleClusterNode(node, now, &cluster_node_conn_attempts);
+    }
+    dictReleaseIterator(di);
+    cluster_node_conn_attempts = 0;
 
     /* Ping some random node 1 time every 10 iterations, so that we usually ping
      * one random node every second. */
