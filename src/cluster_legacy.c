@@ -1638,7 +1638,7 @@ clusterNode *createClusterNode(char *nodename, int flags) {
     node->replicaof = NULL;
     node->last_in_ping_gossip = 0;
     node->ping_sent = node->pong_received = 0;
-    node->last_reconnect_attempted = 0;
+    node->last_connect_attempted = 0;
     node->data_received = 0;
     node->meet_sent = 0;
     node->fail_time = 0;
@@ -5332,10 +5332,10 @@ static int clusterNodeCronHandleReconnect(clusterNode *node, mstime_t now, int *
     }
 
     if (node->link == NULL) {
-        if (now - node->last_reconnect_attempted <= 1000 || *cluster_conn_attempts > MAX_CONNECTION_ATTEMPTS_PER_CRON) {
+        if (now - node->last_connect_attempted <= 1000 || *cluster_conn_attempts > MAX_CONNECTION_ATTEMPTS_PER_CRON) {
             return 1;
         }
-        node->last_reconnect_attempted = now;
+        node->last_connect_attempted = now;
         (*cluster_conn_attempts)++;
         clusterLink *link = createClusterLink(node);
         link->conn = connCreate(connTypeOfCluster());
@@ -5382,6 +5382,18 @@ static void clusterNodeCronFreeLinkOnBufferLimitReached(clusterNode *node) {
     freeClusterLinkOnBufferLimitReached(node->inbound_link);
 }
 
+static void handleClusterNode(clusterNode *node, long long now, int *conn_attempts) {
+    /* We free the inbound or outboud link to the node if the link has an
+     * oversized message send queue and immediately try reconnecting. */
+    clusterNodeCronFreeLinkOnBufferLimitReached(node);
+
+    /* The protocol is that function(s) below return non-zero if the node was
+     * terminated. */
+    if (clusterNodeCronHandleReconnect(node, now, conn_attempts)) {
+        return;
+    }
+}
+
 /* This is executed 10 times every second */
 void clusterCron(void) {
     dictIterator *di;
@@ -5402,19 +5414,33 @@ void clusterCron(void) {
     /* Clear so clusterNodeCronHandleReconnect can count the number of nodes in PFAIL. */
     server.cluster->stats_pfail_nodes = 0;
     /* Run through some of the operations we want to do on each cluster node. */
+    /* We want to start from the random position within cluster nodes just to be safe. */
+    int total = dictSize(server.cluster->nodes);
+    int skip = rand() % (total == 0 ? 1 : total);
+
+    /* First iterator: from skip point to end */
     di = dictGetSafeIterator(server.cluster->nodes);
+    int i = 0;
+
+    /* Skip first 'skip' entries */
+    while (i++ < skip && (de = dictNext(di)) != NULL) {
+    }
+
     while ((de = dictNext(di)) != NULL) {
         clusterNode *node = dictGetVal(de);
-        /* We free the inbound or outboud link to the node if the link has an
-         * oversized message send queue and immediately try reconnecting. */
-        clusterNodeCronFreeLinkOnBufferLimitReached(node);
-        /* The protocol is that function(s) below return non-zero if the node was
-         * terminated.
-         */
-        if (clusterNodeCronHandleReconnect(node, now, &cluster_node_conn_attempts)) continue;
+        handleClusterNode(node, now, &cluster_node_conn_attempts);
     }
-    cluster_node_conn_attempts = 0;
     dictReleaseIterator(di);
+
+    /* Second iterator: from start to skip point */
+    di = dictGetSafeIterator(server.cluster->nodes);
+    i = 0;
+    while (i++ < skip && (de = dictNext(di)) != NULL) {
+        clusterNode *node = dictGetVal(de);
+        handleClusterNode(node, now, &cluster_node_conn_attempts);
+    }
+    dictReleaseIterator(di);
+    cluster_node_conn_attempts = 0;
 
     /* Ping some random node 1 time every 10 iterations, so that we usually ping
      * one random node every second. */
