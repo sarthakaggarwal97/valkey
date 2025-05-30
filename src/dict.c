@@ -855,14 +855,16 @@ dictIterator *dictGetSafeIterator(dict *d) {
 
 /* Initialize a randomized iterator that skips a random number of entries
  * and then iterates over the entire dictionary, wrapping around to cover
- * all entries. */
+ * all entries.
+ * Use dictRandomIterNext to fetch the next element in the iterator.
+ */
 dictRandomIterator *dictGetRandomIterator(dict *d) {
     dictRandomIterator *it = zmalloc(sizeof(dictRandomIterator));
     it->d = d;
     const long size = dictSize(d);
     it->skip = rand() % (size == 0 ? 1 : size);
     it->index = 0;
-    it->phase = 0;
+    it->is_wrapped = 0;
     it->iter = dictGetSafeIterator(d);
 
     // Advance iter to skip entries
@@ -878,15 +880,15 @@ dictRandomIterator *dictGetRandomIterator(dict *d) {
 dictEntry *dictRandomIterNext(dictRandomIterator *it) {
     dictEntry *de = NULL;
 
-    if (it->phase == 0) {
+    if (it->is_wrapped == 0) {
         de = dictNext(it->iter);
         if (de) return de;
         dictReleaseIterator(it->iter);
-        it->phase = 1;
+        it->is_wrapped = 1;
         it->iter = dictGetSafeIterator(it->d);
     }
 
-    if (it->phase == 1 && it->index < it->skip) {
+    if (it->is_wrapped == 1 && it->index < it->skip) {
         de = dictNext(it->iter);
         it->index++;
         if (de) return de;
