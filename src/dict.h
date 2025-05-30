@@ -118,7 +118,7 @@ typedef struct dictRandomIterator {
     dictIterator *iter;  /* For phase 0: from skip to end */
     unsigned long skip;  /* Entries to skip initially */
     unsigned long index; /* Number of entries returned in phase 1 */
-    int phase;           /* 0 = first half, 1 = wrap-around */
+    int is_wrapped;      /* 0 = first half, 1 = wrap-around */
 } dictRandomIterator;
 
 /* This is the initial size of every hash table */
