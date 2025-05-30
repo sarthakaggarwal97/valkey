@@ -1632,7 +1632,7 @@ clusterNode *createClusterNode(char *nodename, int flags) {
     node->replicaof = NULL;
     node->last_in_ping_gossip = 0;
     node->ping_sent = node->pong_received = 0;
-    node->last_connect_attempted = 0;
+    node->outbound_link_attempt_time = 0;
     node->data_received = 0;
     node->meet_sent = 0;
     node->fail_time = 0;
@@ -5284,6 +5284,7 @@ static int nodeExceedsHandshakeTimeout(clusterNode *node, mstime_t now) {
 }
 
 #define MAX_CONNECTION_ATTEMPTS_PER_CRON 10
+#define OUTBOUND_CONN_RETRY_INTERVAL 1000
 
 /* Check if the node is disconnected and re-establish the connection.
  * Also update a few stats while we are here, that can be used to make
@@ -5317,10 +5318,10 @@ static int clusterNodeCronHandleReconnect(clusterNode *node, mstime_t now, int *
     }
 
     if (node->link == NULL) {
-        if (now - node->last_connect_attempted <= 1000 || *cluster_conn_attempts > MAX_CONNECTION_ATTEMPTS_PER_CRON) {
+        if (now - node->outbound_link_attempt_time <= OUTBOUND_CONN_RETRY_INTERVAL || *cluster_conn_attempts > MAX_CONNECTION_ATTEMPTS_PER_CRON) {
             return 1;
         }
-        node->last_connect_attempted = now;
+        node->outbound_link_attempt_time = now;
         (*cluster_conn_attempts)++;
         clusterLink *link = createClusterLink(node);
         link->conn = connCreate(connTypeOfCluster());
