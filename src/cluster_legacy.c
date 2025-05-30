@@ -5695,6 +5695,7 @@ static int nodeExceedsHandshakeTimeout(clusterNode *node, mstime_t now) {
 }
 
 #define NODE_CONNECTION_RETRIES_PER_TIMEOUT 10
+#define OUTBOUND_CONN_RETRY_INTERVAL 1000
 
 /* Check if the node is disconnected and re-establish the connection.
  * Also update a few stats while we are here, that can be used to make
