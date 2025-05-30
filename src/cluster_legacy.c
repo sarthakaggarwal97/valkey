@@ -5839,16 +5839,7 @@ void clusterCron(void) {
          */
         if (!server.debug_cluster_disable_reconnection && clusterNodeCronHandleReconnect(node, now, &cluster_node_conn_attempts)) continue;
     }
-    dictReleaseIterator(di);
-
-    /* Second iterator: from start to skip point */
-    di = dictGetSafeIterator(server.cluster->nodes);
-    i = 0;
-    while (i++ < skip && (de = dictNext(di)) != NULL) {
-        clusterNode *node = dictGetVal(de);
-        handleClusterNode(node, now, &cluster_node_conn_attempts);
-    }
-    dictReleaseIterator(di);
+    dictReleaseRandomIterator(random_iter);
     cluster_node_conn_attempts = 0;
 
     /* Ping some random node 1 time every 10 iterations, so that we usually ping

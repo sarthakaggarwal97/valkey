@@ -108,6 +108,19 @@ typedef struct {
     dictDefragAllocFunction *defragVal;   /* Defrag-realloc values (optional) */
 } dictDefragFunctions;
 
+/* Iterator for randomized full-coverage dictionary traversal.
+ *
+ * Visits every entry in the dictionary exactly once, starting from a
+ * random offset and wrapping around. Useful for fairness in periodic tasks.
+ */
+typedef struct dictRandomIterator {
+    dict *d;
+    dictIterator *iter;  /* For phase 0: from skip to end */
+    unsigned long skip;  /* Entries to skip initially */
+    unsigned long index; /* Number of entries returned in phase 1 */
+    int phase;           /* 0 = first half, 1 = wrap-around */
+} dictRandomIterator;
+
 /* This is the initial size of every hash table */
 #define DICT_HT_INITIAL_EXP 2
 #define DICT_HT_INITIAL_SIZE (1 << (DICT_HT_INITIAL_EXP))
@@ -191,6 +204,9 @@ void dictResetIterator(dictIterator *iter);
 dictEntry *dictNext(dictIterator *iter);
 dictEntry *dictGetNext(const dictEntry *de);
 void dictReleaseIterator(dictIterator *iter);
+dictRandomIterator *dictGetRandomIterator(dict *d);
+dictEntry *dictRandomIterNext(dictRandomIterator *it);
+void dictReleaseRandomIterator(dictRandomIterator *it);
 dictEntry *dictGetRandomKey(dict *d);
 dictEntry *dictGetFairRandomKey(dict *d);
 unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count);
