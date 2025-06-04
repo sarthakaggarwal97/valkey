@@ -325,3 +325,186 @@ int test_dictBenchmark(int argc, char **argv, int flags) {
     dictRelease(dict);
     return 0;
 }
+
+int test_dictRandomIteratorFullCoverage(int argc, char **argv, int flags) {
+    UNUSED(argc);
+    UNUSED(argv);
+    UNUSED(flags);
+
+    unsigned long count = 1000;
+    dict *d = dictCreate(&BenchmarkDictType);
+    for (unsigned long j = 0; j < count; j++) {
+        TEST_ASSERT(dictAdd(d, stringFromLongLong(j), (void *)j) == DICT_OK);
+    }
+
+
+    uint8_t visited[count];
+    memset(visited, 0, sizeof(visited));
+    unsigned long num_returned = 0;
+
+    dictRandomIterator *rit = dictGetRandomIterator(d);
+    dictEntry *de;
+    while ((de = dictRandomIterNext(rit)) != NULL) {
+        const char *k = dictGetKey(de);
+        long long idx = strtoll(k, NULL, 10);
+        TEST_ASSERT(idx >= 0 && (unsigned long)idx < count);
+        visited[idx]++;
+        num_returned++;
+    }
+    dictReleaseRandomIterator(rit);
+
+    if (num_returned != count) {
+        printf("expected %lu elements, got %lu\n", count, num_returned);
+        TEST_ASSERT(num_returned == count);
+    }
+    for (unsigned long j = 0; j < count; j++) {
+        if (visited[j] != 1) {
+            printf("Entry %lu returned %d times\n", j, visited[j]);
+            dictRelease(d);
+            return 0;
+        }
+    }
+
+    dictRelease(d);
+    return 0;
+}
+
+int test_dictRandomIteratorDeleteDuringIteration(int argc, char **argv, int flags) {
+    UNUSED(argc);
+    UNUSED(argv);
+    UNUSED(flags);
+
+    unsigned long count = 1000;
+    dict *d = dictCreate(&BenchmarkDictType);
+    for (unsigned long j = 0; j < count; j++) {
+        TEST_ASSERT(dictAdd(d, stringFromLongLong(j), (void *)j) == DICT_OK);
+    }
+
+
+    uint8_t visited[count];
+    memset(visited, 0, sizeof(visited));
+    unsigned long num_returned = 0;
+
+    dictRandomIterator *rit = dictGetRandomIterator(d);
+    dictEntry *de;
+    while ((de = dictRandomIterNext(rit)) != NULL) {
+        const char *k = dictGetKey(de);
+        long long idx = strtoll(k, NULL, 10);
+        TEST_ASSERT(idx >= 0 && (unsigned long)idx < count);
+        visited[idx]++;
+        num_returned++;
+        TEST_ASSERT(dictDelete(d, k) == DICT_OK);
+    }
+    dictReleaseRandomIterator(rit);
+
+    TEST_ASSERT(dictSize(d) == 0);
+    if (num_returned != count) {
+        printf("expected %lu elements, got %lu\n", count, num_returned);
+        TEST_ASSERT(num_returned == count);
+    }
+    for (unsigned long j = 0; j < count; j++) {
+        if (visited[j] != 1) {
+            printf("Entry %lu returned %d times\n", j, visited[j]);
+            return 0;
+        }
+    }
+
+    dictRelease(d);
+    return 0;
+}
+
+int test_dictRandomIteratorPausesRehash(int argc, char **argv, int flags) {
+    UNUSED(argc);
+    UNUSED(argv);
+    UNUSED(flags);
+
+    unsigned long count = 1000;
+    dict *d = dictCreate(&BenchmarkDictType);
+    for (unsigned long j = 0; j < count; j++) {
+        TEST_ASSERT(dictAdd(d, stringFromLongLong(j), (void *)j) == DICT_OK);
+    }
+
+    /* Start rehashing explicitly. */
+    TEST_ASSERT(dictExpand(d, count * 4) == DICT_OK);
+    TEST_ASSERT(dictIsRehashing(d));
+
+    uint8_t visited[count];
+    memset(visited, 0, sizeof(visited));
+    unsigned long num_returned = 0;
+
+    dictRandomIterator *rit = dictGetRandomIterator(d);
+
+    /* Rehashing should be paused while iterator is active. */
+    TEST_ASSERT(dictRehashMicroseconds(d, 100) == 0);
+
+    dictEntry *de;
+    while ((de = dictRandomIterNext(rit)) != NULL) {
+        const char *k = dictGetKey(de);
+        long long idx = strtoll(k, NULL, 10);
+        TEST_ASSERT(idx >= 0 && (unsigned long)idx < count);
+        visited[idx]++;
+        num_returned++;
+    }
+    dictReleaseRandomIterator(rit);
+
+    /* After releasing, rehashing can proceed. */
+    int progressed = dictRehashMicroseconds(d, 100);
+    TEST_ASSERT(progressed > 0);
+    while (dictIsRehashing(d)) dictRehashMicroseconds(d, 100);
+
+    TEST_ASSERT(num_returned == count);
+    for (unsigned long j = 0; j < count; j++) {
+        if (visited[j] != 1) {
+            printf("Entry %lu returned %d times\n", j, visited[j]);
+            return 0;
+        }
+    }
+
+    dictRelease(d);
+    return 0;
+}
+
+int test_dictRandomIteratorInsertDuringIteration(int argc, char **argv, int flags) {
+    UNUSED(argc);
+    UNUSED(argv);
+    UNUSED(flags);
+
+    unsigned long count = 1000;
+    dict *d = dictCreate(&BenchmarkDictType);
+    for (unsigned long j = 0; j < count; j++) {
+        TEST_ASSERT(dictAdd(d, stringFromLongLong(j), (void *)j) == DICT_OK);
+    }
+
+    uint8_t visited[count * 2];
+    memset(visited, 0, sizeof(visited));
+    unsigned long num_returned = 0;
+    unsigned long next_id = count;
+
+    dictRandomIterator *rit = dictGetRandomIterator(d);
+    dictEntry *de;
+    while ((de = dictRandomIterNext(rit)) != NULL) {
+        const char *k = dictGetKey(de);
+        long long idx = strtoll(k, NULL, 10);
+        TEST_ASSERT(idx >= 0 && (unsigned long)idx < next_id);
+        visited[idx]++;
+        num_returned++;
+        if ((unsigned long)idx < count) {
+            TEST_ASSERT(dictAdd(d, stringFromLongLong(next_id), (void *)next_id) == DICT_OK);
+            next_id++;
+        }
+    }
+    dictReleaseRandomIterator(rit);
+
+    /* We returned at least the original entries, and no entry appears twice. */
+    TEST_ASSERT(num_returned >= count);
+    for (unsigned long j = 0; j < next_id; j++) {
+        if (visited[j] > 1) {
+            printf("Entry %lu returned more than once\n", j);
+            dictRelease(d);
+            return 0;
+        }
+    }
+
+    dictRelease(d);
+    return 0;
+}
