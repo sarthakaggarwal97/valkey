@@ -5318,7 +5318,7 @@ static int clusterNodeCronHandleReconnect(clusterNode *node, mstime_t now, int *
     }
 
     if (node->link == NULL) {
-        if (now - node->outbound_link_attempt_time <= OUTBOUND_CONN_RETRY_INTERVAL || *cluster_conn_attempts > MAX_CONNECTION_ATTEMPTS_PER_CRON) {
+        if (!node->inbound_link && (now - node->outbound_link_attempt_time <= OUTBOUND_CONN_RETRY_INTERVAL || *cluster_conn_attempts > MAX_CONNECTION_ATTEMPTS_PER_CRON)) {
             return 1;
         }
         node->outbound_link_attempt_time = now;
