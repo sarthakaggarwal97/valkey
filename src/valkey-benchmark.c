@@ -61,6 +61,10 @@
 #include "hdr_histogram.h"
 #include "cli_common.h"
 #include "mt19937-64.h"
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 
 #define UNUSED(V) ((void)V)
 #define RANDPTR_INITIAL_SIZE 8
@@ -138,6 +142,12 @@ static struct config {
     pthread_mutex_t liveclients_mutex;
     pthread_mutex_t is_updating_slots_mutex;
     int resp3; /* use RESP3 */
+    int statsd_enabled;
+    char *statsd_host;
+    int statsd_port;
+    int statsd_sock;
+    struct sockaddr_in statsd_addr;
+    long long statsd_last_sent;
 } config;
 
 typedef struct _client {
@@ -205,6 +215,31 @@ static void freeServerConfig(serverConfig *cfg);
 static int fetchClusterSlotsConfiguration(client c);
 static void updateClusterSlotsConfiguration(void);
 static long long showThroughput(struct aeEventLoop *eventLoop, long long id, void *clientData);
+static int statsdInit(const char *host, int port);
+static void statsdSend(const char *key, float value);
+
+static int statsdInit(const char *host, int port) {
+    config.statsd_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (config.statsd_sock < 0) return -1;
+    memset(&config.statsd_addr, 0, sizeof(config.statsd_addr));
+    config.statsd_addr.sin_family = AF_INET;
+    config.statsd_addr.sin_port = htons(port);
+    if (inet_aton(host, &config.statsd_addr.sin_addr) == 0) {
+        struct hostent *he = gethostbyname(host);
+        if (!he) return -1;
+        memcpy(&config.statsd_addr.sin_addr, he->h_addr_list[0], he->h_length);
+    }
+    return 0;
+}
+
+static void statsdSend(const char *key, float value) {
+    if (!config.statsd_enabled || config.statsd_sock < 0) return;
+    char buf[128];
+    int n = snprintf(buf, sizeof(buf), "%s:%.2f|g", key, value);
+    sendto(config.statsd_sock, buf, n, 0,
+           (struct sockaddr *)&config.statsd_addr, sizeof(config.statsd_addr));
+}
+
 
 /* Dict callbacks */
 static uint64_t dictSdsHash(const void *key);
@@ -1000,6 +1035,7 @@ static void benchmarkSequence(const char *title, char *cmd, int len, int seqlen)
     createMissingClients(c);
 
     config.start = mstime();
+    config.statsd_last_sent = config.start;
     if (!config.num_threads)
         aeMain(config.el);
     else
@@ -1463,7 +1499,20 @@ int parseOptions(int argc, char **argv) {
             config.num_functions = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--num-keys-in-fcall")) {
             config.num_keys_in_fcall = atoi(argv[++i]);
-        } else if (!strcmp(argv[i], "--help")) {
+        } else if (!strcmp(argv[i], "--statsd")) {
+            if (lastarg) goto invalid;
+            char *addr = strdup(argv[++i]);
+            char *colon = strrchr(addr, ':');
+            if (!colon) {
+                free(addr);
+                goto invalid;
+            }
+            *colon = '\0';
+            config.statsd_host = addr;
+            config.statsd_port = atoi(colon + 1);
+            config.statsd_enabled = 1;
+        }
+        else if (!strcmp(argv[i], "--help")) {
             exit_status = 0;
             goto usage;
 #ifdef USE_OPENSSL
@@ -1638,7 +1687,8 @@ usage:
         "                    loaded when running the 'function_load' test. (default 10).\n"
         " --num-keys-in-fcall <num>\n"
         "                    Sets the number of keys passed to FCALL command when running\n"
-        "                    the 'fcall' test. (default 1)\n",
+        "                    the 'fcall' test. (default 1)\n"
+        " --statsd <host:port> Send RPS gauge metric to StatsD\n",
         tls_usage,
         rdma_usage,
         " --mptcp            Enable an MPTCP connection.\n"
@@ -1694,6 +1744,11 @@ long long showThroughput(struct aeEventLoop *eventLoop, long long id, void *clie
     const float rps = (float)requests_finished / dt;
     const float instantaneous_dt = (float)(current_tick - config.previous_tick) / 1000.0;
     const float instantaneous_rps = (float)(requests_finished - previous_requests_finished) / instantaneous_dt;
+    printf("%d", config.statsd_enabled);
+    if (config.statsd_enabled && (current_tick - config.statsd_last_sent >= 1000)) {
+        statsdSend("client_rps", instantaneous_rps);
+        config.statsd_last_sent = current_tick;
+    }
     config.previous_tick = current_tick;
     atomic_store_explicit(&config.previous_requests_finished, requests_finished, memory_order_relaxed);
     printf("%*s\r", config.last_printed_bytes, " "); /* ensure there is a clean line */
@@ -1808,10 +1863,22 @@ int main(int argc, char **argv) {
     config.num_functions = 10;
     config.num_keys_in_fcall = 1;
     config.resp3 = 0;
+    config.statsd_enabled = 0;
+    config.statsd_host = NULL;
+    config.statsd_port = 0;
+    config.statsd_sock = -1;
+    config.statsd_last_sent = 0;
 
     i = parseOptions(argc, argv);
     argc -= i;
     argv += i;
+
+    if (config.statsd_enabled) {
+        if (statsdInit(config.statsd_host, config.statsd_port) != 0) {
+            fprintf(stderr, "Failed to initialize StatsD connection\n");
+            config.statsd_enabled = 0;
+        }
+    }
 
     tag = "";
 
@@ -2203,6 +2270,8 @@ int main(int argc, char **argv) {
     zfree(data);
     freeCliConnInfo(config.conn_info);
     if (config.redis_config != NULL) freeServerConfig(config.redis_config);
+    if (config.statsd_host) free(config.statsd_host);
+    if (config.statsd_sock != -1) close(config.statsd_sock);
 
     return 0;
 }
