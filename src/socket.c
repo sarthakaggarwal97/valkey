@@ -334,16 +334,16 @@ static void connSocketAcceptHandler(aeEventLoop *el, int fd, void *privdata, int
 }
 
 static int connSocketAddr(connection *conn, char *ip, size_t ip_len, int *port, int remote) {
-    if (anetFdToString(conn->fd, ip, ip_len, port, remote) == 0) return 0;
+    if (anetFdToString(conn->fd, ip, ip_len, port, remote) == 0) return C_OK;
 
     conn->last_errno = errno;
-    return -1;
+    return C_ERR;
 }
 
 static int connSocketIsLocal(connection *conn) {
     char cip[NET_IP_STR_LEN + 1] = {0};
 
-    if (connSocketAddr(conn, cip, sizeof(cip) - 1, NULL, 1) == -1) return -1;
+    if (connSocketAddr(conn, cip, sizeof(cip) - 1, NULL, 1) == C_ERR) return -1;
 
     return !strncmp(cip, "127.", 4) || !strcmp(cip, "::1");
 }

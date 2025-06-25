@@ -41,7 +41,6 @@ int runTestSuite(struct unitTestSuite *test, int argc, char **argv, int flags) {
     }
 
     /* Check if the test suite has cleaned up all the memory used. */
-    test_num++;
     if (zmalloc_used_memory() > 0) {
         printf("[" KRED "%s" KRESET "] Memory leak detected of %zu bytes\n", test->filename, zmalloc_used_memory());
         failed_tests++;
