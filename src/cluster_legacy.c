@@ -5383,18 +5383,6 @@ static void clusterNodeCronFreeLinkOnBufferLimitReached(clusterNode *node) {
     freeClusterLinkOnBufferLimitReached(node->inbound_link);
 }
 
-static void handleClusterNode(clusterNode *node, long long now, int *conn_attempts) {
-    /* We free the inbound or outboud link to the node if the link has an
-     * oversized message send queue and immediately try reconnecting. */
-    clusterNodeCronFreeLinkOnBufferLimitReached(node);
-
-    /* The protocol is that function(s) below return non-zero if the node was
-     * terminated. */
-    if (clusterNodeCronHandleReconnect(node, now, conn_attempts)) {
-        return;
-    }
-}
-
 /* This is executed 10 times every second */
 void clusterCron(void) {
     dictIterator *di;
@@ -5415,33 +5403,19 @@ void clusterCron(void) {
     /* Clear so clusterNodeCronHandleReconnect can count the number of nodes in PFAIL. */
     server.cluster->stats_pfail_nodes = 0;
     /* Run through some of the operations we want to do on each cluster node. */
-    /* We want to start from the random position within cluster nodes just to be safe. */
-    int total = dictSize(server.cluster->nodes);
-    int skip = rand() % (total == 0 ? 1 : total);
-
-    /* First iterator: from skip point to end */
     di = dictGetSafeIterator(server.cluster->nodes);
-    int i = 0;
-
-    /* Skip first 'skip' entries */
-    while (i++ < skip && (de = dictNext(di)) != NULL) {
-    }
-
     while ((de = dictNext(di)) != NULL) {
         clusterNode *node = dictGetVal(de);
-        handleClusterNode(node, now, &cluster_node_conn_attempts);
+        /* We free the inbound or outboud link to the node if the link has an
+         * oversized message send queue and immediately try reconnecting. */
+        clusterNodeCronFreeLinkOnBufferLimitReached(node);
+        /* The protocol is that function(s) below return non-zero if the node was
+         * terminated.
+         */
+        if (clusterNodeCronHandleReconnect(node, now, &cluster_node_conn_attempts)) continue;
     }
-    dictReleaseIterator(di);
-
-    /* Second iterator: from start to skip point */
-    di = dictGetSafeIterator(server.cluster->nodes);
-    i = 0;
-    while (i++ < skip && (de = dictNext(di)) != NULL) {
-        clusterNode *node = dictGetVal(de);
-        handleClusterNode(node, now, &cluster_node_conn_attempts);
-    }
-    dictReleaseIterator(di);
     cluster_node_conn_attempts = 0;
+    dictReleaseIterator(di);
 
     /* Ping some random node 1 time every 10 iterations, so that we usually ping
      * one random node every second. */
