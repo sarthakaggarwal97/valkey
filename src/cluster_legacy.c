@@ -5298,9 +5298,6 @@ static int nodeExceedsHandshakeTimeout(clusterNode *node, mstime_t now) {
     return now - node->ctime > getHandshakeTimeout() ? 1 : 0;
 }
 
-/* Prevents us from trying to make the same connection within a second */
-#define OUTBOUND_CONN_RETRY_INTERVAL 1000
-
 /* Check if the node is disconnected and re-establish the connection.
  * Also update a few stats while we are here, that can be used to make
  * better decisions in other part of the code. */
@@ -5333,7 +5330,7 @@ static int clusterNodeCronHandleReconnect(clusterNode *node, mstime_t now, int *
     }
 
     if (node->link == NULL) {
-        if (!node->inbound_link && (now - node->outbound_link_attempt_time <= OUTBOUND_CONN_RETRY_INTERVAL && *cluster_conn_attempts > max_conn_attempts)) {
+        if (!node->inbound_link && (now - node->outbound_link_attempt_time < server.cluster_node_timeout / 2 && *cluster_conn_attempts > max_conn_attempts)) {
             return 1;
         }
         node->outbound_link_attempt_time = now;
