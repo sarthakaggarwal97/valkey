@@ -5330,7 +5330,7 @@ static int clusterNodeCronHandleReconnect(clusterNode *node, mstime_t now, int *
     }
 
     if (node->link == NULL) {
-        if (!node->inbound_link && (now - node->outbound_link_attempt_time < server.cluster_node_timeout / 2 && *cluster_conn_attempts > max_conn_attempts)) {
+        if (!node->inbound_link && (now - node->outbound_link_attempt_time < server.cluster_node_timeout / 10 && *cluster_conn_attempts > max_conn_attempts)) {
             return 1;
         }
         node->outbound_link_attempt_time = now;
@@ -5399,7 +5399,7 @@ static long long maxConnectionAttemptsPerCron(const int nodes, const long long t
      * Double the coverage budget so each node can be probed twice
      * inside the timeout, improving resilience to packet loss.
      */
-    return min_nodes_for_coverage * 2;
+    return min_nodes_for_coverage * 10;
 }
 
 /* This is executed 10 times every second */
