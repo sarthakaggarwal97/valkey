@@ -28,7 +28,7 @@ on:
         default: ""
       use_repo:
         description: "repo owner and name"
-        default: "valkey-io/valkey"
+        default: "sarthakaggarwal97/valkey"
       use_git_ref:
         description: "git branch or sha to use"
         default: "unstable"
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'ubuntu')
     timeout-minutes: 1440
@@ -113,7 +113,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       (!contains(github.event.inputs.skipjobs, 'ubuntu') || !contains(github.event.inputs.skipjobs, 'arm'))
     timeout-minutes: 14400
@@ -155,7 +155,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'fortify')
     container: ubuntu:plucky
@@ -201,7 +201,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'malloc')
     timeout-minutes: 1440
@@ -240,7 +240,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'malloc')
     timeout-minutes: 1440
@@ -279,7 +279,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, '32bit')
     timeout-minutes: 1440
@@ -325,7 +325,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'tls')
     timeout-minutes: 1440
@@ -371,7 +371,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'tls')
     timeout-minutes: 1440
@@ -417,7 +417,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'iothreads')
     timeout-minutes: 1440
@@ -451,7 +451,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'tls') && !contains(github.event.inputs.skipjobs, 'iothreads')
     timeout-minutes: 1440
@@ -489,7 +489,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'specific')
     timeout-minutes: 1440
@@ -565,7 +565,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'valgrind') && !contains(github.event.inputs.skiptests, 'valkey')
     timeout-minutes: 1440
@@ -597,7 +597,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'valgrind') && !(contains(github.event.inputs.skiptests, 'modules') && contains(github.event.inputs.skiptests, 'unittest'))
     timeout-minutes: 1440
@@ -634,7 +634,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'valgrind') && !contains(github.event.inputs.skiptests, 'valkey')
     timeout-minutes: 1440
@@ -666,7 +666,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'valgrind') && !(contains(github.event.inputs.skiptests, 'modules') && contains(github.event.inputs.skiptests, 'unittest'))
     timeout-minutes: 1440
@@ -703,7 +703,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'sanitizer')
     timeout-minutes: 1440
@@ -759,7 +759,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'sanitizer')
     timeout-minutes: 1440
@@ -815,7 +815,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'sanitizer')
     timeout-minutes: 1440
@@ -861,7 +861,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'lttng')
     timeout-minutes: 1440
@@ -901,7 +901,7 @@ jobs:
   test-rpm-distros-jemalloc:
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'rpm-distros')
     strategy:
@@ -967,7 +967,7 @@ jobs:
   test-rpm-distros-tls-module:
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'tls')
     strategy:
@@ -1039,7 +1039,7 @@ jobs:
   test-rpm-distros-tls-module-no-tls:
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'tls')
     strategy:
@@ -1112,7 +1112,7 @@ jobs:
     runs-on: macos-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'macos') && !(contains(github.event.inputs.skiptests, 'valkey') && contains(github.event.inputs.skiptests, 'modules'))
     timeout-minutes: 1440
@@ -1143,7 +1143,7 @@ jobs:
     runs-on: macos-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'macos') && !contains(github.event.inputs.skiptests, 'sentinel')
     timeout-minutes: 1440
@@ -1171,7 +1171,7 @@ jobs:
     runs-on: macos-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'macos') && !contains(github.event.inputs.skiptests, 'cluster')
     timeout-minutes: 1440
@@ -1203,7 +1203,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'macos')
     timeout-minutes: 1440
@@ -1231,7 +1231,7 @@ jobs:
     runs-on: macos-13
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'freebsd')
     timeout-minutes: 1440
@@ -1261,7 +1261,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'alpine')
     container: alpine:latest
@@ -1302,7 +1302,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'alpine')
     container: alpine:latest
@@ -1344,7 +1344,7 @@ jobs:
     timeout-minutes: 1440
     if: |
       (github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
+        (github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'reply-schema')
     steps:
@@ -1386,7 +1386,7 @@ jobs:
 
   notify-about-job-results:
     runs-on: ubuntu-latest
-    if: always() && github.event_name == 'schedule' && github.repository == 'valkey-io/valkey'
+    if: always() && github.event_name == 'schedule' && github.repository == 'sarthakaggarwal97/valkey'
     needs:
       - test-ubuntu-jemalloc
       - test-ubuntu-arm
