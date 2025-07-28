@@ -2987,6 +2987,7 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
                     /* Update importing_slots_from to point to the sender, if it is in the
                      * same shard as the previous slot owner */
                     if (areInSameShard(sender, in)) {
+                    if (areInSameShard(sender, in)) {
                         serverLog(LL_VERBOSE,
                                   "Failover occurred in migration source. Update importing "
                                   "source for slot %d to node %.40s (%s) in shard %.40s.",
@@ -3023,6 +3024,11 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
              * any slot to its shard and if there is a primaryship change in
              * the shard. Update the migrating_slots_to state to point to the
              * sender if it has just taken over the primary role. */
+            clusterNode *mn = getMigratingSlotDest(j);
+            if (mn != NULL && mn != sender &&
+                (mn->configEpoch < senderConfigEpoch ||
+                 nodeIsReplica(mn)) &&
+                areInSameShard(mn, sender)) {
             clusterNode *mn = getMigratingSlotDest(j);
             if (mn != NULL && mn != sender &&
                 (mn->configEpoch < senderConfigEpoch ||
@@ -6234,6 +6240,7 @@ void clusterMoveNodeSlots(clusterNode *from_node, clusterNode *to_node, int *slo
         }
 
         if (getImportingSlotSource(j) == from_node) {
+        if (getImportingSlotSource(j) == from_node) {
             serverLog(LL_VERBOSE,
                       "Failover occurred in migration source. Update importing "
                       "source for slot %d to node %.40s (%s) in shard %.40s.",
@@ -6243,10 +6250,16 @@ void clusterMoveNodeSlots(clusterNode *from_node, clusterNode *to_node, int *slo
         }
 
         if (getMigratingSlotDest(j) == from_node) {
+            setImportingSlotSource(j, to_node);
+            importing_processed++;
+        }
+
+        if (getMigratingSlotDest(j) == from_node) {
             serverLog(LL_VERBOSE,
                       "Failover occurred in migration target."
                       " Slot %d is now being migrated to node %.40s (%s) in shard %.40s.",
                       j, to_node->name, to_node->human_nodename, to_node->shard_id);
+            setMigratingSlotDest(j, to_node);
             setMigratingSlotDest(j, to_node);
             migrating_processed++;
         }
