@@ -3978,41 +3978,72 @@ void handleLinkIOError(clusterLink *link) {
 void clusterWriteHandler(connection *conn) {
     clusterLink *link = connGetPrivateData(conn);
     ssize_t nwritten;
-    size_t totwritten = 0;
 
-    while (totwritten < NET_MAX_WRITES_PER_EVENT && listLength(link->send_msg_queue) > 0) {
-        listNode *head = listFirst(link->send_msg_queue);
-        clusterMsgSendBlock *msgblock = (clusterMsgSendBlock *)head->value;
+    /* Build iovec from queued messages. */
+    struct iovec iov[IOV_MAX];
+    int iovcnt = 0;
+    size_t iov_bytes = 0;
+    listIter li;
+    listNode *ln;
+
+    listRewind(link->send_msg_queue, &li);
+    while ((ln = listNext(&li)) &&
+           iovcnt < link->conn->iovcnt &&
+           iov_bytes < NET_MAX_WRITES_PER_EVENT) {
+        clusterMsgSendBlock *msgblock = listNodeValue(ln);
         clusterMsg *msg = getMessageFromSendBlock(msgblock);
-        size_t msg_offset = link->head_msg_send_offset;
-        size_t msg_len = ntohl(msg->totlen);
+        size_t offset = (ln == listFirst(link->send_msg_queue)) ? link->head_msg_send_offset : 0;
+        size_t msglen = ntohl(msg->totlen) - offset;
 
-        nwritten = connWrite(conn, (char *)msg + msg_offset, msg_len - msg_offset);
-        if (nwritten <= 0) {
-            serverLog(LL_DEBUG, "I/O error writing to node link: %s",
-                      (nwritten == -1) ? connGetLastError(conn) : "short write");
-            handleLinkIOError(link);
-            return;
+        iov[iovcnt].iov_base = (char *)msg + offset;
+        iov[iovcnt].iov_len = msglen;
+        iovcnt++;
+        iov_bytes += msglen;
+
+        if (iov_bytes >= NET_MAX_WRITES_PER_EVENT)
+            break;
+    }
+
+    if (iovcnt == 0) {
+        if (listLength(link->send_msg_queue) == 0)
+            connSetWriteHandler(link->conn, NULL);
+        return;
+    }
+
+    nwritten = connWritev(conn, iov, iovcnt);
+    if (nwritten <= 0) {
+        serverLog(LL_DEBUG, "I/O error writing to node link: %s",
+                  (nwritten == -1) ? connGetLastError(conn) : "short write");
+        handleLinkIOError(link);
+        return;
+    }
+
+    size_t sent = nwritten;
+    while (sent > 0 && listLength(link->send_msg_queue) > 0) {
+        listNode *head = listFirst(link->send_msg_queue);
+        clusterMsgSendBlock *msgblock = listNodeValue(head);
+        clusterMsg *msg = getMessageFromSendBlock(msgblock);
+        size_t offset = link->head_msg_send_offset;
+        size_t msglen = ntohl(msg->totlen);
+        size_t remain = msglen - offset;
+
+        if (sent < remain) {
+            link->head_msg_send_offset += sent;
+            sent = 0;
+            break;
         }
-        if (msg_offset + nwritten < msg_len) {
-            /* If full message wasn't written, record the offset
-             * and continue sending from this point next time */
-            link->head_msg_send_offset += nwritten;
-            return;
-        }
-        serverAssert((msg_offset + nwritten) == msg_len);
+
+        sent -= remain;
         link->head_msg_send_offset = 0;
 
-        /* Delete the node and update our memory tracking */
         uint32_t blocklen = msgblock->totlen;
         listDelNode(link->send_msg_queue, head);
         server.stat_cluster_links_memory -= sizeof(listNode);
         link->send_msg_queue_mem -= sizeof(listNode) + blocklen;
-
-        totwritten += nwritten;
     }
 
-    if (listLength(link->send_msg_queue) == 0) connSetWriteHandler(link->conn, NULL);
+    if (listLength(link->send_msg_queue) == 0)
+        connSetWriteHandler(link->conn, NULL);
 }
 
 /* A connect handler that gets called when a connection to another node
