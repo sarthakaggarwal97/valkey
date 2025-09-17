@@ -135,6 +135,8 @@ typedef struct rdbSnapshotOptions {
     int skip_checksum;               /* Skip checksum when sending the snapshot. */
     ChildSnapshotFunc snapshot_func; /* Function to call to take the snapshot. */
     void *privdata;                  /* Private data to pass to snapshot_func. */
+    int use_rdb_framing;             /* Use framed RDB output when true. */
+    rdb_frame_opts frame;            /* Frame configuration to apply when framing is enabled. */
 } rdbSnapshotOptions;
 
 /* Test if a type is an object type. */

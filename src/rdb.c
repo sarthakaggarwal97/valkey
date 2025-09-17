@@ -46,11 +46,14 @@
 #include "module.h"
 #include "cluster.h"
 #include "cluster_migrateslots.h"
+#include "rio_compress.h"
+#include "rio_decompress.h"
 
 #include <math.h>
 #include <fcntl.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/resource.h>
@@ -160,6 +163,76 @@ int rdbRegisterAuxField(char *auxfield, rdbAuxFieldEncoder encoder, rdbAuxFieldD
     codec->encoder = encoder;
     codec->decoder = decoder;
     return dictAdd(rdbAuxFields, sdsnew(auxfield), (void *)codec) == DICT_OK ? C_OK : C_ERR;
+}
+
+static inline rio_compress *rdbRioCompressFromRio(rio *out) {
+    return (rio_compress *)((unsigned char *)out - offsetof(rio_compress, rio_itf));
+}
+
+static int rdbStartFramedWrite(rio *base, rio *out, const rdb_frame_opts *opts) {
+    if (base == NULL || out == NULL) return 0;
+    if (opts == NULL) {
+        *out = *base;
+        return 0;
+    }
+
+    rio_compress *rc = rdbRioCompressFromRio(out);
+    if (rioInitCompress(rc, base, opts) == C_ERR) {
+        *out = *base;
+        return -1;
+    }
+    rc->rio_itf.flags = base->flags | RIO_FLAG_RDB_FRAMED;
+    rc->rio_itf.cksum = 0;
+    return 1;
+}
+
+static int rdbEndFramedWrite(int framed, rio_compress *rc, int success) {
+    int retval = C_OK;
+    if (!framed || rc == NULL) return C_OK;
+
+    if (success) {
+        if (rioCompressFlush(rc, 1) == C_ERR) retval = C_ERR;
+        if (rc->dst && rc->dst->flush && rc->dst->flush(rc->dst) == 0) retval = C_ERR;
+    }
+
+    if (rc->cctx) {
+        rdbCodecFree(rc->cctx);
+        rc->cctx = NULL;
+    }
+    if (rc->rawbuf) {
+        sdsfree(rc->rawbuf);
+        rc->rawbuf = NULL;
+    }
+    if (rc->cmpbuf) {
+        sdsfree(rc->cmpbuf);
+        rc->cmpbuf = NULL;
+    }
+    return retval;
+}
+
+static inline void rdbCompressionBoundary(rio *rdb) {
+    if (rdb == NULL) return;
+    if ((rdb->flags & RIO_FLAG_RDB_FRAMED) == 0) return;
+    if (rdb->flush && rioFlush(rdb) == 0) rdb->flags |= RIO_FLAG_WRITE_ERROR;
+}
+
+static int rdbRewindStream(rio *rdb, size_t len) {
+    if (len == 0 || rdb == NULL) return C_OK;
+    uint8_t type = rioCheckType(rdb);
+    switch (type) {
+    case RIO_TYPE_FILE:
+        if (fseeko(rdb->io.file.fp, -(off_t)len, SEEK_CUR) == -1) return C_ERR;
+        break;
+    case RIO_TYPE_BUFFER:
+        if (len > (size_t)rdb->io.buffer.pos) return C_ERR;
+        rdb->io.buffer.pos -= len;
+        break;
+    default:
+        return C_ERR;
+    }
+    if (rdb->processed_bytes >= len) rdb->processed_bytes -= len;
+    else rdb->processed_bytes = 0;
+    return C_OK;
 }
 
 ssize_t rdbWriteRaw(rio *rdb, void *p, size_t len) {
@@ -1381,6 +1454,7 @@ ssize_t rdbSaveDb(rio *rdb, int dbid, int rdbflags, long *key_counter) {
     written += res;
     if ((res = rdbSaveLen(rdb, dbid)) < 0) goto werr;
     written += res;
+    rdbCompressionBoundary(rdb);
 
     /* Write the RESIZE DB opcode. */
     unsigned long long expires_size = kvstoreSize(db->expires) + kvstoreImportingSize(db->expires);
@@ -1390,6 +1464,7 @@ ssize_t rdbSaveDb(rio *rdb, int dbid, int rdbflags, long *key_counter) {
     written += res;
     if ((res = rdbSaveLen(rdb, expires_size)) < 0) goto werr;
     written += res;
+    rdbCompressionBoundary(rdb);
 
     kvs_it = kvstoreIteratorInit(db->keys, HASHTABLE_ITER_SAFE | HASHTABLE_ITER_PREFETCH_VALUES | HASHTABLE_ITER_INCLUDE_IMPORTING);
     int last_slot = -1;
@@ -1421,6 +1496,7 @@ ssize_t rdbSaveDb(rio *rdb, int dbid, int rdbflags, long *key_counter) {
         expire = objectGetExpire(o);
         if ((res = rdbSaveKeyValuePair(rdb, &key, o, expire, dbid)) < 0) goto werr;
         written += res;
+        rdbCompressionBoundary(rdb);
 
         /* In fork child process, we can try to release memory back to the
          * OS and possibly avoid or decrease COW. We give the dismiss
@@ -1465,7 +1541,9 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     snprintf(magic, sizeof(magic), "VALKEY%03d", RDB_VERSION);
     if (rdbWriteRaw(rdb, magic, 9) == -1) goto werr;
     if (rdbSaveInfoAuxFields(rdb, rdbflags, rsi) == -1) goto werr;
+    rdbCompressionBoundary(rdb);
     if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA) && rdbSaveModulesAux(rdb, VALKEYMODULE_AUX_BEFORE_RDB) == -1) goto werr;
+    if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA)) rdbCompressionBoundary(rdb);
 
     /* save functions */
     if (!(req & REPLICA_REQ_RDB_EXCLUDE_FUNCTIONS) && rdbSaveFunctions(rdb) == -1) goto werr;
@@ -1478,6 +1556,7 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     }
 
     if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA) && rdbSaveModulesAux(rdb, VALKEYMODULE_AUX_AFTER_RDB) == -1) goto werr;
+    if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA)) rdbCompressionBoundary(rdb);
 
     /* EOF opcode */
     if (rdbSaveType(rdb, RDB_OPCODE_EOF) == -1) goto werr;
@@ -1527,6 +1606,9 @@ werr: /* Write error. */
 static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int rdbflags) {
     char cwd[MAXPATHLEN]; /* Current working dir path for error messages. */
     rio rdb;
+    rio *out = &rdb;
+    rio_compress rc;
+    int framed = 0;
     int error = 0;
     int saved_errno;
     char *err_op; /* For a detailed log */
@@ -1551,10 +1633,29 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
         if (!(rdbflags & RDBFLAGS_KEEP_CACHE)) rioSetReclaimCache(&rdb, 1);
     }
 
-    if (rdbSaveRio(req, &rdb, &error, rdbflags, rsi) == C_ERR) {
+    const rdb_frame_opts *frame_opts =
+        (server.rdb_frame_config.file_mode == RDB_FR_FILE_MODE_BLOCK) ? &server.rdb_frame_config : NULL;
+    if (frame_opts) {
+        framed = rdbStartFramedWrite(&rdb, &rc.rio_itf, frame_opts);
+        if (framed == -1) {
+            err_op = "rioInitCompress";
+            goto werr;
+        }
+        if (framed == 1) out = &rc.rio_itf;
+    }
+
+    if (rdbSaveRio(req, out, &error, rdbflags, rsi) == C_ERR) {
         errno = error;
         err_op = "rdbSaveRio";
         goto werr;
+    }
+
+    if (framed == 1) {
+        if (rdbEndFramedWrite(framed, &rc, 1) == C_ERR) {
+            err_op = "rioCompressFlush";
+            goto werr;
+        }
+        framed = 0;
     }
 
     /* Make sure data will not remain on the OS's output buffers */
@@ -1579,6 +1680,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
 
 werr:
     saved_errno = errno;
+    if (framed == 1) rdbEndFramedWrite(framed, &rc, 0);
     serverLog(LL_WARNING, "Write error while saving DB to the disk(%s): %s", err_op, strerror(errno));
     if (fp) fclose(fp);
     unlink(filename);
@@ -3092,8 +3194,9 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
     int error;
     long long empty_keys_skipped = 0;
     bool is_valkey_magic = false, is_redis_magic = false;
+    rio_decompress rdb_decomp;
+    int using_decompress = 0;
 
-    rdb->update_cksum = rdbLoadProgressCallback;
     rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
     if (rioRead(rdb, buf, 9) == 0) goto eoferr;
     buf[9] = '\0';
@@ -3102,9 +3205,35 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
     } else if (memcmp(buf, "VALKEY", 6) == 0) {
         is_valkey_magic = true;
     } else {
-        serverLog(LL_WARNING, "Wrong signature trying to load DB from file");
-        return C_ERR;
+        int try_framed = 0;
+        if (server.rdb_frame_config.file_mode == RDB_FR_FILE_MODE_BLOCK && rioCheckType(rdb) == RIO_TYPE_FILE) {
+            if (rdbRewindStream(rdb, 9) == C_OK && rioInitDecompress(&rdb_decomp, rdb) != C_ERR) {
+                try_framed = 1;
+            }
+        }
+        if (try_framed) {
+            using_decompress = 1;
+            rdb = &rdb_decomp.rio_itf;
+            if (server.loading_rio) server.loading_rio = rdb;
+            rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
+            rdb->update_cksum = rdbLoadProgressCallback;
+            if (rioRead(rdb, buf, 9) == 0) goto eoferr;
+            buf[9] = '\0';
+            if (memcmp(buf, "REDIS0", 6) == 0) {
+                is_redis_magic = true;
+            } else if (memcmp(buf, "VALKEY", 6) == 0) {
+                is_valkey_magic = true;
+            } else {
+                serverLog(LL_WARNING, "Wrong signature trying to load DB from file");
+                if (using_decompress) sdsfree(rdb_decomp.rawbuf);
+                return C_ERR;
+            }
+        } else {
+            serverLog(LL_WARNING, "Wrong signature trying to load DB from file");
+            return C_ERR;
+        }
     }
+    if (!using_decompress) rdb->update_cksum = rdbLoadProgressCallback;
     rdbver = atoi(buf + 6);
     if (!rdbIsVersionAccepted(rdbver, is_valkey_magic, is_redis_magic)) {
         serverLog(LL_WARNING, "Can't handle RDB format version %d", rdbver);
@@ -3496,6 +3625,8 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         }
     }
 
+    if (using_decompress) sdsfree(rdb_decomp.rawbuf);
+
     if (empty_keys_skipped) {
         serverLog(LL_NOTICE, "Done loading RDB, keys loaded: %lld, keys expired: %lld, empty keys skipped: %lld.",
                   server.rdb_last_load_keys_loaded, server.rdb_last_load_keys_expired, empty_keys_skipped);
@@ -3510,6 +3641,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
      * the RDB file from a socket during initial SYNC (diskless replica mode),
      * we'll report the error to the caller, so that we can retry. */
 eoferr:
+    if (using_decompress) sdsfree(rdb_decomp.rawbuf);
     serverLog(LL_WARNING, "Short read or OOM loading DB. Unrecoverable error, aborting now.");
     rdbReportReadError("Unexpected EOF reading RDB file");
     return C_ERR;
@@ -3700,6 +3832,9 @@ int saveSnapshotToConnectionSockets(rdbSnapshotOptions options) {
         /* Child */
         int retval, dummy;
         rio rdb;
+        rio *out = &rdb;
+        rio_compress rc;
+        int framed = 0;
         if (!options.use_pipe) {
             rioInitWithConnset(&rdb, options.conns, options.connsnum);
         } else {
@@ -3718,7 +3853,28 @@ int saveSnapshotToConnectionSockets(rdbSnapshotOptions options) {
 
         if (options.skip_checksum) rdb.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
 
-        retval = options.snapshot_func(options.req, &rdb, options.privdata);
+        if (options.use_rdb_framing) {
+            framed = rdbStartFramedWrite(&rdb, &rc.rio_itf, &options.frame);
+            if (framed == -1) {
+                retval = C_ERR;
+                goto snapshot_done;
+            }
+            if (framed == 1) out = &rc.rio_itf;
+        }
+
+        retval = options.snapshot_func(options.req, out, options.privdata);
+
+        if (framed == 1) {
+            if (retval == C_OK) {
+                if (rdbEndFramedWrite(framed, &rc, 1) == C_ERR) retval = C_ERR;
+                framed = 0;
+            } else {
+                rdbEndFramedWrite(framed, &rc, 0);
+                framed = 0;
+            }
+        }
+
+    snapshot_done:
         if (retval == C_OK && rioFlush(&rdb) == 0) retval = C_ERR;
 
         if (retval == C_OK) {
