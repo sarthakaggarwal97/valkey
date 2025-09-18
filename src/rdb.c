@@ -3699,11 +3699,41 @@ int saveSnapshotToConnectionSockets(rdbSnapshotOptions options) {
     if ((childpid = serverFork(CHILD_TYPE_RDB)) == 0) {
         /* Child */
         int retval, dummy;
-        rio rdb;
+        rio base;
+        rio *out = &base;
+        rio_compress rc;
+
         if (!options.use_pipe) {
-            rioInitWithConnset(&rdb, options.conns, options.connsnum);
+            rioInitWithConnset(&base, options.conns, options.connsnum);
+
+            client *framed_replica = NULL;
+            int framing_possible = 1;
+            if (options.connsnum == 0) framing_possible = 0;
+            for (int i = 0; framing_possible && i < options.connsnum; i++) {
+                connection *conn = options.conns[i];
+                client *slave = conn ? connGetPrivateData(conn) : NULL;
+                if (!slave || !slave->replx.rdb_framing_enabled) {
+                    framing_possible = 0;
+                    break;
+                }
+                if (!framed_replica) {
+                    framed_replica = slave;
+                } else if (slave->replx.rdb_codec_selected != framed_replica->replx.rdb_codec_selected ||
+                           slave->replx.rdb_blk_selected != framed_replica->replx.rdb_blk_selected) {
+                    framing_possible = 0;
+                    break;
+                }
+            }
+
+            if (framing_possible && framed_replica) {
+                rdbFrameOpts opts = server.rdb_frame_opts;
+                opts.codec = framed_replica->replx.rdb_codec_selected;
+                opts.block_bytes = framed_replica->replx.rdb_blk_selected;
+                rioInitCompress(&rc, &base, &opts);
+                out = &rc.rio_itf;
+            }
         } else {
-            rioInitWithFd(&rdb, rdb_pipe_write);
+            rioInitWithFd(&base, rdb_pipe_write);
         }
 
         /* Close the reading part, so that if the parent crashes, the child will
@@ -3716,21 +3746,24 @@ int saveSnapshotToConnectionSockets(rdbSnapshotOptions options) {
         }
         serverSetCpuAffinity(server.bgsave_cpulist);
 
-        if (options.skip_checksum) rdb.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
+        if (options.skip_checksum) {
+            base.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
+            out->flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
+        }
 
-        retval = options.snapshot_func(options.req, &rdb, options.privdata);
-        if (retval == C_OK && rioFlush(&rdb) == 0) retval = C_ERR;
+        retval = options.snapshot_func(options.req, out, options.privdata);
+        if (retval == C_OK && rioFlush(out) == 0) retval = C_ERR;
 
         if (retval == C_OK) {
             sendChildCowInfo(CHILD_INFO_TYPE_RDB_COW_SIZE, "RDB");
             if (!options.use_pipe) {
-                sendChildInfoGeneric(CHILD_INFO_TYPE_REPL_OUTPUT_BYTES, 0, rdb.processed_bytes, -1, "RDB");
+                sendChildInfoGeneric(CHILD_INFO_TYPE_REPL_OUTPUT_BYTES, 0, out->processed_bytes, -1, "RDB");
             }
         }
         if (!options.use_pipe) {
-            rioFreeConnset(&rdb);
+            rioFreeConnset(&base);
         } else {
-            rioFreeFd(&rdb);
+            rioFreeFd(&base);
             /* wake up the reader, tell it we're done. */
             close(rdb_pipe_write);
             close(server.rdb_child_exit_pipe); /* close write end so that we can detect the close on the parent. */

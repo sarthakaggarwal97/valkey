@@ -107,10 +107,26 @@ struct _rio {
             off_t pos;
             sds buf;
         } connset;
+        /* Generic target used by wrapper implementations. */
+        struct {
+            void *data;
+        } custom;
     } io;
 };
 
 typedef struct _rio rio;
+
+/* Options controlling RDB framing for compressed streams. */
+typedef struct rdbFrameOpts {
+    int codec;
+    size_t block_bytes;
+} rdbFrameOpts;
+
+typedef struct rio_compress {
+    rio *target;
+    rdbFrameOpts opts;
+    rio rio_itf;
+} rio_compress;
 
 /* The following functions are our interface with the stream. They'll call the
  * actual implementation of read / write / tell, and will update the checksum
@@ -195,6 +211,8 @@ size_t rioWriteBulkCount(rio *r, char prefix, long count);
 size_t rioWriteBulkString(rio *r, const char *buf, size_t len);
 size_t rioWriteBulkLongLong(rio *r, long long l);
 size_t rioWriteBulkDouble(rio *r, double d);
+
+void rioInitCompress(rio_compress *rc, rio *target, const rdbFrameOpts *opts);
 
 struct serverObject;
 int rioWriteBulkObject(rio *r, struct serverObject *obj);

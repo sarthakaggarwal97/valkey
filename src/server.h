@@ -1216,6 +1216,12 @@ typedef struct ClientReplicationData {
     sds replica_nodeid;                  /* Node id in cluster mode. */
 } ClientReplicationData;
 
+typedef struct ClientReplicationExtraData {
+    int rdb_framing_enabled; /* Replica requested framed RDB transfer. */
+    int rdb_codec_selected;  /* Codec chosen for framed transfer. */
+    size_t rdb_blk_selected; /* Block size selected for framed transfer. */
+} ClientReplicationExtraData;
+
 typedef struct ClientModuleData {
     void *module_blocked_client;               /* Pointer to the ValkeyModuleBlockedClient associated with this
                                                 * client. This is set in case of module authentication before the
@@ -1291,6 +1297,7 @@ typedef struct client {
     /* Client state structs. */
     ClientPubSubData *pubsub_data;        /* Required for: pubsub commands and tracking. lazily initialized when first needed */
     ClientReplicationData *repl_data;     /* Required for Replication operations. lazily initialized when first needed */
+    ClientReplicationExtraData replx;     /* Additional replication metadata. */
     ClientModuleData *module_data;        /* Required for Module operations. lazily initialized when first needed */
     multiState *mstate;                   /* MULTI/EXEC state, lazily initialized when first needed */
     blockingState *bstate;                /* Blocking state, lazily initialized when first needed */
@@ -1883,6 +1890,7 @@ struct valkeyServer {
     int active_defrag_enabled;
     int sanitize_dump_payload;                   /* Enables deep sanitization for ziplist and listpack in RDB and RESTORE. */
     int skip_checksum_validation;                /* Disable checksum validation for RDB and RESTORE payload. */
+    rdbFrameOpts rdb_frame_opts;                 /* Default options for framed RDB transfer. */
     int rdb_version_check;                       /* Try to load RDB produced by a future version. */
     int jemalloc_bg_thread;                      /* Enable jemalloc background thread */
     int active_defrag_configuration_changed;     /* Config changed; need to recompute active_defrag_cpu_percent. */

@@ -2232,6 +2232,8 @@ void initServerConfig(void) {
     server.active_expire_enabled = 1;
     server.lazy_expire_disabled = 0;
     server.skip_checksum_validation = 0;
+    server.rdb_frame_opts.codec = 0;
+    server.rdb_frame_opts.block_bytes = 0;
     server.loading = 0;
     server.async_loading = 0;
     server.loading_rdb_used_mem = 0;
