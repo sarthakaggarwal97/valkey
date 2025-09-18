@@ -55,4 +55,41 @@ start_server {tags {"repl"}} {
 
         close $fd
     }
+
+    test "Replication stream omits framing preface when snapshot is legacy" {
+        $master config set rdb-compression-mode auto
+        $master config set rdb-compression-file-mode legacy
+
+        set fd [socket $master_host $master_port]
+        fconfigure $fd -translation binary -encoding binary -buffering none
+
+        repl_preface_send_command $fd {PING}
+        set line [gets $fd]
+        assert_equal "+PONG" [string trimright $line "\r"]
+
+        repl_preface_send_command $fd {REPLCONF listening-port 0}
+        set reply [gets $fd]
+        assert_equal "+OK" [string trimright $reply "\r"]
+
+        repl_preface_send_command $fd {REPLCONF rdb-framing yes}
+        set reply [gets $fd]
+        assert_equal "+OK" [string trimright $reply "\r"]
+
+        repl_preface_send_command $fd {REPLCONF rdb-codecs raw,lzf,lz4}
+        set reply [gets $fd]
+        assert_equal "+OK" [string trimright $reply "\r"]
+
+        repl_preface_send_command $fd {REPLCONF rdb-blkmax 262144}
+        set reply [gets $fd]
+        assert_equal "+OK" [string trimright $reply "\r"]
+
+        repl_preface_send_command $fd {PSYNC ? -1}
+        set fullresync [string trimright [gets $fd] "\r"]
+        assert {[regexp {^\+FULLRESYNC} $fullresync]}
+
+        set first_line [string trimright [gets $fd] "\r"]
+        assert {[regexp {^\$[0-9]+$} $first_line]}
+
+        close $fd
+    }
 }

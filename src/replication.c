@@ -175,12 +175,16 @@ static sds build_rdb_framing_preface(client *replica) {
     return sdscatfmt(sdsempty(), "+RDBFRAMED codec=%s blk=%u checksum=%s\r\n", codec, blk, checksum);
 }
 
-static void decide_framing_for_replica(client *slave) {
+static void decide_framing_for_replica(client *slave, int disk_transfer) {
     slave->replx.rdb_framing_enabled = 0;
     slave->replx.rdb_blk_selected = 0;
     slave->replx.rdb_codec_selected = RDBC_RAW;
 
-    if (server.rdb_frame_config.mode == RDB_FR_MODE_LEGACY) return;
+    if (disk_transfer) {
+        if (server.rdb_frame_config.file_mode != RDB_FR_FILE_MODE_BLOCK) return;
+    } else if (server.rdb_frame_config.mode == RDB_FR_MODE_LEGACY) {
+        return;
+    }
     if (!slave->replx.rdb_framing_advertised) return;
     if (!slave->replx.rdb_codec_mask) return;
 
@@ -1051,7 +1055,7 @@ int startBgsaveForReplication(int mincapa, int req) {
                 client *replica = ln->value;
                 if (replica->repl_data->repl_state == REPLICA_STATE_WAIT_BGSAVE_START &&
                     replica->repl_data->replica_req == req)
-                    decide_framing_for_replica(replica);
+                    decide_framing_for_replica(replica, 0);
             }
             retval = rdbSaveToReplicasSockets(req, rsiptr);
         } else {
@@ -2039,7 +2043,7 @@ void updateReplicasWaitingBgsave(int bgsaveerr, int type) {
                     close(repldbfd);
                     continue;
                 }
-                decide_framing_for_replica(replica);
+                decide_framing_for_replica(replica, 1);
                 replica->repl_data->repldbfd = repldbfd;
                 replica->repl_data->repldboff = 0;
                 replica->repl_data->repldbsize = buf.st_size;
