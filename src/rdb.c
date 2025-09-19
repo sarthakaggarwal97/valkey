@@ -1573,7 +1573,10 @@ int rdbSaveRioWithEOFMark(int req, rio *rdb, int *error, rdbSaveInfo *rsi) {
     if (rioWrite(rdb, "$EOF:", 5) == 0) goto werr;
     if (rioWrite(rdb, eofmark, RDB_EOF_MARK_SIZE) == 0) goto werr;
     if (rioWrite(rdb, "\r\n", 2) == 0) goto werr;
-    if (server.rdb_frame_config.mode == RDB_FR_MODE_BLOCK) frame_opts = &server.rdb_frame_config;
+    if (server.use_replication_framing)
+        frame_opts = &server.rdb_frame_opts;
+    else if (server.rdb_frame_config.mode == RDB_FR_MODE_BLOCK)
+        frame_opts = &server.rdb_frame_config;
     if (frame_opts) {
         int start = rdbStartFramedWrite(rdb, &rc.rio_itf, frame_opts);
         if (start == -1) {
@@ -1634,7 +1637,10 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
     rio_compress rc;
     int framed = 0;
     const rdb_frame_opts *frame_opts = NULL;
-    if (server.rdb_frame_config.file_mode == RDB_FR_FILE_MODE_BLOCK) frame_opts = &server.rdb_frame_config;
+    if (server.use_replication_framing)
+        frame_opts = &server.rdb_frame_opts;
+    else if (server.rdb_frame_config.file_mode == RDB_FR_FILE_MODE_BLOCK)
+        frame_opts = &server.rdb_frame_config;
     if (frame_opts) {
         int start = rdbStartFramedWrite(&rdb, &rc.rio_itf, frame_opts);
         if (start == -1) {

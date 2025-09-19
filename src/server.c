@@ -2292,6 +2292,14 @@ void initServerConfig(void) {
     server.repl_transfer_tmpfile = NULL;
     server.repl_transfer_fd = -1;
     server.repl_transfer_s = NULL;
+    server.repl_transfer_use_framed_rdb = 0;
+    server.repl_transfer_framed_codec = RDBC_RAW;
+    server.repl_transfer_framed_blk = 0;
+    server.repl_transfer_framed_checksum = RDB_FR_CHECKSUM_CRC64;
+    memset(&server.rdb_frame_opts, 0, sizeof(server.rdb_frame_opts));
+    server.rdb_frame_replica_codec_mask = 0;
+    server.rdb_frame_replica_block_bytes = 0;
+    server.use_replication_framing = 0;
     server.repl_syncio_timeout = CONFIG_REPL_SYNCIO_TIMEOUT;
     server.repl_down_since = 0; /* Never connected, repl is down since EVER. */
     server.primary_repl_offset = 0;

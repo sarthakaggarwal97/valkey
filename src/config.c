@@ -194,6 +194,10 @@ configEnum rdb_compression_checksum_enum[] = {{"crc64", RDB_FR_CHECKSUM_CRC64},
 
 static int applyRdbFrameConfig(const char **err) {
     UNUSED(err);
+    server.rdb_frame_opts = server.rdb_frame_config;
+    server.rdb_frame_replica_codec_mask = 0;
+    server.rdb_frame_replica_block_bytes = 0;
+    server.use_replication_framing = 0;
     serverLog(LL_NOTICE,
               "RDB framing configuration updated. Changes apply to the next BGSAVE / next full resync.");
     return 1;

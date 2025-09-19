@@ -420,6 +420,9 @@ typedef enum {
     REPL_STATE_RECEIVE_PORT_REPLY,    /* Wait for REPLCONF reply */
     REPL_STATE_RECEIVE_IP_REPLY,      /* Wait for REPLCONF reply */
     REPL_STATE_RECEIVE_CAPA_REPLY,    /* Wait for REPLCONF reply */
+    REPL_STATE_RECEIVE_RDB_FRAMING_REPLY, /* Wait for REPLCONF reply */
+    REPL_STATE_RECEIVE_RDB_CODECS_REPLY,  /* Wait for REPLCONF reply */
+    REPL_STATE_RECEIVE_RDB_BLKMAX_REPLY,  /* Wait for REPLCONF reply */
     REPL_STATE_RECEIVE_VERSION_REPLY, /* Wait for REPLCONF reply */
     REPL_STATE_RECEIVE_NODEID_REPLY,  /* Wait for REPLCONF reply */
     REPL_STATE_SEND_PSYNC,            /* Send PSYNC */
@@ -2004,6 +2007,10 @@ struct valkeyServer {
     int rdb_compression;                  /* Use compression in RDB? */
     int rdb_checksum;                     /* Use RDB checksum? */
     rdb_frame_opts rdb_frame_config;      /* Configured RDB framing options. */
+    rdb_frame_opts rdb_frame_opts;        /* Active RDB framing options for replication. */
+    uint8_t rdb_frame_replica_codec_mask; /* Intersection of replica-advertised codecs. */
+    uint32_t rdb_frame_replica_block_bytes; /* Selected block size for framed replication. */
+    int use_replication_framing;          /* Primary will emit framed RDB for replication. */
     int rdb_del_sync_files;               /* Remove RDB files used only for SYNC if
                                              the instance does not use persistence. */
     time_t lastsave;                      /* Unix time of last successful save */
@@ -2123,6 +2130,10 @@ struct valkeyServer {
     off_t repl_transfer_size;            /* Size of RDB to read from primary during sync. */
     off_t repl_transfer_read;            /* Amount of RDB read from primary during sync. */
     off_t repl_transfer_last_fsync_off;  /* Offset when we fsync-ed last time. */
+    int repl_transfer_use_framed_rdb;    /* Primary announced framed RDB stream. */
+    uint8_t repl_transfer_framed_codec;  /* Codec advertised in framed preface. */
+    uint32_t repl_transfer_framed_blk;   /* Block size advertised in framed preface. */
+    int repl_transfer_framed_checksum;   /* Checksum mode advertised in framed preface. */
     connection *repl_transfer_s;         /* Replica -> Primary SYNC connection */
     connection *repl_rdb_transfer_s;     /* Primary FULL SYNC connection (RDB download) */
     int repl_transfer_fd;                /* Replica -> Primary SYNC temp file descriptor */
