@@ -53,6 +53,7 @@ set(VALKEY_SERVER_SRCS
     ${CMAKE_SOURCE_DIR}/src/eval.c
     ${CMAKE_SOURCE_DIR}/src/bio.c
     ${CMAKE_SOURCE_DIR}/src/rio.c
+    ${CMAKE_SOURCE_DIR}/src/rio_compress.c
     ${CMAKE_SOURCE_DIR}/src/rand.c
     ${CMAKE_SOURCE_DIR}/src/memtest.c
     ${CMAKE_SOURCE_DIR}/src/syscheck.c
