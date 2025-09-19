@@ -41,10 +41,15 @@ static int rdbCodecEnsureOutputBuffer(sds *buf) {
 
 static int rdbCodecEnsureCapacity(sds *buf, size_t needed) {
     if (needed == 0) return C_OK;
-    size_t avail = sdsalloc(*buf);
-    if (avail >= needed) return C_OK;
-    size_t add = needed - avail;
-    *buf = sdsMakeRoomFor(*buf, add);
+
+    size_t len = sdslen(*buf);
+    if (needed <= len) return C_OK;
+
+    size_t free_space = sdsavail(*buf);
+    if (len + free_space >= needed) return C_OK;
+
+    size_t required = needed - len;
+    *buf = sdsMakeRoomFor(*buf, required);
     return *buf ? C_OK : C_ERR;
 }
 
