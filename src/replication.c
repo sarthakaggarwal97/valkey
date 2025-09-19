@@ -284,6 +284,22 @@ static sds build_rdb_framing_preface(client *replica) {
     return sdscatfmt(sdsempty(), "+RDBFRAMED codec=%s blk=%u checksum=%s\r\n", codec, blk, checksum);
 }
 
+int replicationEmitFramingPreface(client *replica) {
+    sds preface = build_rdb_framing_preface(replica);
+    if (preface == NULL) return C_OK;
+
+    ssize_t len = sdslen(preface);
+    ssize_t written = connWrite(replica->conn, preface, len);
+    if (written != len) {
+        sdsfree(preface);
+        freeClientAsync(replica);
+        return C_ERR;
+    }
+
+    sdsfree(preface);
+    return C_OK;
+}
+
 static void decide_framing_for_replica(client *slave, int disk_transfer) {
     slave->replx.rdb_framing_enabled = 0;
     slave->replx.rdb_blk_selected = 0;

@@ -3137,6 +3137,7 @@ long long replicationGetReplicaOffset(void);
 char *replicationGetReplicaName(client *c);
 long long getPsyncInitialOffset(void);
 int replicationSetupReplicaForFullResync(client *replica, long long offset);
+int replicationEmitFramingPreface(client *replica);
 void changeReplicationId(void);
 void clearReplicationId2(void);
 void createReplicationBacklog(void);

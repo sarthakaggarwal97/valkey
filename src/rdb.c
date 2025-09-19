@@ -3953,11 +3953,15 @@ int rdbSaveToReplicasSockets(int req, rdbSaveInfo *rsi) {
     listRewind(server.replicas, &li);
     while ((ln = listNext(&li))) {
         client *replica = ln->value;
+
+        /* do not skip RDB checksum on the primary if connection doesn't have integrity check or if the replica doesn't support it */
+        if (!connIsIntegrityChecked(replica->conn) || !(replica->repl_data->replica_capa & REPLICA_CAPA_SKIP_RDB_CHECKSUM))
+            skip_rdb_checksum = 0;
+
         if (replica->repl_data->repl_state == REPLICA_STATE_WAIT_BGSAVE_START) {
             /* Check replica has the exact requirements */
             if (replica->repl_data->replica_req != req) continue;
 
-            conns[connsnum++] = replica->conn;
             if (dual_channel) {
                 connSendTimeout(replica->conn, server.repl_timeout * 1000);
                 /* This replica uses diskless dual channel sync, hence we need
@@ -3968,12 +3972,11 @@ int rdbSaveToReplicasSockets(int req, rdbSaveInfo *rsi) {
                 /* Put the socket in blocking mode to simplify RDB transfer. */
                 connBlock(replica->conn);
             }
-            replicationSetupReplicaForFullResync(replica, getPsyncInitialOffset());
-        }
+            if (replicationSetupReplicaForFullResync(replica, getPsyncInitialOffset()) == C_ERR) continue;
+            if (replicationEmitFramingPreface(replica) == C_ERR) continue;
 
-        /* do not skip RDB checksum on the primary if connection doesn't have integrity check or if the replica doesn't support it */
-        if (!connIsIntegrityChecked(replica->conn) || !(replica->repl_data->replica_capa & REPLICA_CAPA_SKIP_RDB_CHECKSUM))
-            skip_rdb_checksum = 0;
+            conns[connsnum++] = replica->conn;
+        }
     }
 
     rdbSnapshotOptions options = {
