@@ -2093,6 +2093,9 @@ struct valkeyServer {
                                                 * replica's bio thread without touching main thread vars */
     off_t bio_repl_transfer_read;              /* Used to calculate bio_repl_transfer_read on the
                                                 * replica's bio thread without touching main thread vars */
+    int bio_repl_use_framed_rdb;               /* Replica bio thread saw +RDBFRAMED preface. */
+    uint8_t bio_repl_rdb_codec;                /* Codec advertised in +RDBFRAMED preface. */
+    uint32_t bio_repl_rdb_blk_size;            /* Block size advertised in +RDBFRAMED preface. */
     int wait_before_rdb_client_free;           /* Grace period in seconds for replica main channel
                                                 * to establish psync. */
     int debug_pause_after_fork;                /* Debug param that pauses the main process
@@ -2128,6 +2131,9 @@ struct valkeyServer {
     int repl_transfer_fd;                /* Replica -> Primary SYNC temp file descriptor */
     char *repl_transfer_tmpfile;         /* Replica-> Primary SYNC temp file name */
     _Atomic time_t repl_transfer_lastio; /* Unix time of the latest read, for timeout */
+    int repl_transfer_use_framed_rdb;    /* Replica main thread saw +RDBFRAMED preface. */
+    uint8_t repl_transfer_rdb_codec;     /* Codec advertised in +RDBFRAMED preface. */
+    uint32_t repl_transfer_rdb_blk_size; /* Block size advertised in +RDBFRAMED preface. */
     int repl_serve_stale_data;           /* Serve stale data when link is down? */
     int repl_replica_ro;                 /* Replica is read only? */
     int repl_replica_ignore_maxmemory;   /* If true replicas do not evict. */

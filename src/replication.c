@@ -2278,52 +2278,134 @@ void replicationAttachToNewPrimary(void) {
  * (newline) to keep the connection alive, in which case this function
  * should be called again later.
  * Returns C_OK on success, C_ERR on error, or C_RETRY for primary ping. */
-int tryReadBulkPayloadMetadata(connection *conn, char *buf, char *eofmark, char *lastbytes, int *usemark, off_t *repl_transfer_size) {
-    ssize_t nread = connSyncReadLine(conn, buf, 1024, server.repl_syncio_timeout * 1000);
-    if (nread == -1) {
-        serverLog(LL_WARNING, "I/O error reading bulk count from PRIMARY: %s", connGetLastError(conn));
-        return C_ERR;
-    } else {
-        /* nread here is returned by connSyncReadLine(), which calls syncReadLine() and
-         * convert "\r\n" to '\0' so 1 byte is lost. */
-        if (inBioThread())
-            server.bio_stat_net_repl_input_bytes += nread + 1;
-        else
-            server.stat_net_repl_input_bytes += nread + 1;
-    }
+int tryReadBulkPayloadMetadata(connection *conn, char *buf, char *eofmark, char *lastbytes, int *usemark,
+                               off_t *repl_transfer_size, int *use_framed_rdb, uint8_t *preface_codec,
+                               uint32_t *preface_blk) {
+    for (;;) {
+        ssize_t nread = connSyncReadLine(conn, buf, 1024, server.repl_syncio_timeout * 1000);
+        if (nread == -1) {
+            serverLog(LL_WARNING, "I/O error reading bulk count from PRIMARY: %s", connGetLastError(conn));
+            return C_ERR;
+        } else {
+            /* nread here is returned by connSyncReadLine(), which calls syncReadLine() and
+             * convert "\r\n" to '\0' so 1 byte is lost. */
+            if (inBioThread())
+                server.bio_stat_net_repl_input_bytes += nread + 1;
+            else
+                server.stat_net_repl_input_bytes += nread + 1;
+        }
 
-    /* Check the bulk payload header for errors */
-    if (buf[0] == '-') {
-        serverLog(LL_WARNING, "PRIMARY aborted replication with an error: %s", buf + 1);
-        return C_ERR;
-    } else if (buf[0] == '\0') {
-        /* At this stage just a newline works as a PING in order to take
-         * the connection live. So we refresh our last interaction
-         * timestamp. */
-        server.repl_transfer_lastio = server.unixtime;
-        return C_RETRY;
-    } else if (buf[0] != '$') {
-        serverLog(LL_WARNING,
-                  "Bad protocol from PRIMARY, the first byte is not '$' (we received '%s'), are you sure the host "
-                  "and port are right?",
-                  buf);
-        return C_ERR;
-    }
+        /* Check the bulk payload header for errors */
+        if (buf[0] == '-') {
+            serverLog(LL_WARNING, "PRIMARY aborted replication with an error: %s", buf + 1);
+            return C_ERR;
+        }
 
-    /* Check if this is an EOF-based transfer ($EOF:<delimiter>) or size-based ($<size>) */
-    if (strncmp(buf + 1, "EOF:", 4) == 0 && strlen(buf + 5) >= RDB_EOF_MARK_SIZE) {
-        /* EOF-based transfer: extract the delimiter */
-        memcpy(eofmark, buf + 5, RDB_EOF_MARK_SIZE);
-        memset(lastbytes, 0, RDB_EOF_MARK_SIZE);
-        *usemark = true;
-        *repl_transfer_size = 0;
-    } else {
-        /* Size-based transfer: parse the size */
-        *usemark = false;
-        *repl_transfer_size = strtol(buf + 1, NULL, 10);
-    }
+        if (buf[0] == '\0') {
+            /* At this stage just a newline works as a PING in order to take
+             * the connection live. So we refresh our last interaction
+             * timestamp. */
+            server.repl_transfer_lastio = server.unixtime;
+            return C_RETRY;
+        }
 
-    return C_OK;
+        if (!strncmp(buf, "+RDBFRAMED", 10)) {
+            const size_t prefix_len = 10;
+            char *payload = buf + prefix_len;
+            while (*payload == ' ') payload++;
+
+            uint8_t parsed_codec = RDBC_RAW;
+            uint32_t parsed_blk = 0;
+            int codec_seen = 0, blk_seen = 0, checksum_seen = 0;
+
+            while (*payload) {
+                char *token = payload;
+                while (*payload && *payload != ' ') payload++;
+                if (*payload) *payload++ = '\0';
+
+                char *eq = strchr(token, '=');
+                if (eq == NULL || eq == token || eq[1] == '\0') {
+                    serverLog(LL_WARNING, "Malformed RDB framing preface token '%s'", token);
+                    return C_ERR;
+                }
+                *eq = '\0';
+                char *value = eq + 1;
+
+                if (!strcmp(token, "codec")) {
+                    if (!strcmp(value, "raw")) {
+                        parsed_codec = RDBC_RAW;
+                        codec_seen = 1;
+                    } else if (!strcmp(value, "lzf")) {
+                        parsed_codec = RDBC_LZF;
+                        codec_seen = 1;
+                    } else if (!strcmp(value, "lz4")) {
+                        parsed_codec = RDBC_LZ4;
+                        codec_seen = 1;
+                    } else {
+                        serverLog(LL_WARNING, "PRIMARY advertised unsupported RDB framing codec '%s'", value);
+                        return C_ERR;
+                    }
+                } else if (!strcmp(token, "blk")) {
+                    char *endptr = NULL;
+                    errno = 0;
+                    unsigned long blk = strtoul(value, &endptr, 10);
+                    if (value[0] == '\0' || endptr == NULL || *endptr != '\0' || errno == ERANGE || blk == 0 ||
+                        blk > UINT32_MAX) {
+                        serverLog(LL_WARNING, "PRIMARY advertised invalid RDB framing block size '%s'", value);
+                        return C_ERR;
+                    }
+                    parsed_blk = (uint32_t)blk;
+                    blk_seen = 1;
+                } else if (!strcmp(token, "checksum")) {
+                    if (!strcmp(value, "crc64") || !strcmp(value, "none")) {
+                        checksum_seen = 1;
+                    } else {
+                        serverLog(LL_WARNING, "PRIMARY advertised unsupported RDB framing checksum '%s'", value);
+                        return C_ERR;
+                    }
+                } else {
+                    serverLog(LL_WARNING, "PRIMARY advertised unknown RDB framing option '%s'", token);
+                    return C_ERR;
+                }
+                while (*payload == ' ') payload++;
+            }
+
+            if (!codec_seen || !blk_seen || !checksum_seen) {
+                serverLog(LL_WARNING,
+                          "PRIMARY sent incomplete RDB framing preface (codec=%d blk=%u checksum_seen=%d)",
+                          codec_seen, parsed_blk, checksum_seen);
+                return C_ERR;
+            }
+
+            if (use_framed_rdb) *use_framed_rdb = 1;
+            if (preface_codec) *preface_codec = parsed_codec;
+            if (preface_blk) *preface_blk = parsed_blk;
+            continue;
+        }
+
+        if (buf[0] != '$') {
+            serverLog(LL_WARNING,
+                      "Bad protocol from PRIMARY, the first byte is not '$' (we received '%s'), are you sure the host "
+                      "and port are right?",
+                      buf);
+            return C_ERR;
+        }
+
+        /* Check if this is an EOF-based transfer ($EOF:<delimiter>) or size-based ($<size>) */
+        if (strncmp(buf + 1, "EOF:", 4) == 0 && strlen(buf + 5) >= RDB_EOF_MARK_SIZE) {
+            /* EOF-based transfer: extract the delimiter */
+            memcpy(eofmark, buf + 5, RDB_EOF_MARK_SIZE);
+            memset(lastbytes, 0, RDB_EOF_MARK_SIZE);
+            *usemark = true;
+            *repl_transfer_size = 0;
+        } else {
+            /* Size-based transfer: parse the size */
+            *usemark = false;
+            *repl_transfer_size = strtol(buf + 1, NULL, 10);
+        }
+
+        return C_OK;
+    }
 }
 
 void replicaBeforeLoadPrimaryRDB(connection *conn, int use_diskless_load) {
@@ -2454,28 +2536,40 @@ int replicaLoadPrimaryRDBFromSocket(connection *conn, char *buf, char *eofmark, 
     startLoading(server.repl_transfer_size, RDBFLAGS_REPLICATION, asyncLoading);
     if (replicationSupportSkipRDBChecksum(conn, 1, *usemark)) rdb.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
     int loadingFailed = 0;
-    unsigned char peek[9];
-    off_t saved_pos = rdb.io.conn.pos;
-    size_t saved_processed = rdb.processed_bytes;
-    size_t saved_read_so_far = rdb.io.conn.read_so_far;
-    if (rioRead(&rdb, peek, sizeof(peek)) == 0) {
-        serverLog(LL_WARNING, "PRIMARY <-> REPLICA sync: Failed reading RDB preamble from primary: %s", strerror(errno));
-        loadingFailed = 1;
+    if (server.repl_transfer_use_framed_rdb) {
+        if (rioInitDecompress(&decomp, &rdb) == C_ERR) {
+            serverLog(LL_WARNING, "PRIMARY <-> REPLICA sync: Failed initializing framed RDB reader: %s", strerror(errno));
+            loadingFailed = 1;
+        } else {
+            load_rio = &decomp.rio_itf;
+            using_decompress = 1;
+        }
     } else {
-        size_t peeklen = (size_t)(rdb.io.conn.pos - saved_pos);
-        rdb.io.conn.pos = saved_pos;
-        rdb.io.conn.read_so_far = saved_read_so_far;
-        rdb.processed_bytes = saved_processed;
-        int has_frame_magic = peeklen >= 4 && rdbFrameHasMagicPrefix(peek, peeklen);
-        int has_redis_magic = peeklen >= 5 && memcmp(peek, "REDIS", 5) == 0;
-        int has_valkey_magic = peeklen >= 6 && memcmp(peek, "VALKEY", 6) == 0;
-        if (has_frame_magic || (server.rdb_frame_config.mode == RDB_FR_MODE_BLOCK && peeklen > 0 && !has_redis_magic && !has_valkey_magic)) {
-            if (rioInitDecompress(&decomp, &rdb) == C_ERR) {
-                serverLog(LL_WARNING, "PRIMARY <-> REPLICA sync: Failed initializing framed RDB reader: %s", strerror(errno));
-                loadingFailed = 1;
-            } else {
-                load_rio = &decomp.rio_itf;
-                using_decompress = 1;
+        unsigned char peek[9];
+        off_t saved_pos = rdb.io.conn.pos;
+        size_t saved_processed = rdb.processed_bytes;
+        size_t saved_read_so_far = rdb.io.conn.read_so_far;
+        if (rioRead(&rdb, peek, sizeof(peek)) == 0) {
+            serverLog(LL_WARNING, "PRIMARY <-> REPLICA sync: Failed reading RDB preamble from primary: %s", strerror(errno));
+            loadingFailed = 1;
+        } else {
+            size_t peeklen = (size_t)(rdb.io.conn.pos - saved_pos);
+            rdb.io.conn.pos = saved_pos;
+            rdb.io.conn.read_so_far = saved_read_so_far;
+            rdb.processed_bytes = saved_processed;
+            int has_frame_magic = peeklen >= 4 && rdbFrameHasMagicPrefix(peek, peeklen);
+            int has_redis_magic = peeklen >= 5 && memcmp(peek, "REDIS", 5) == 0;
+            int has_valkey_magic = peeklen >= 6 && memcmp(peek, "VALKEY", 6) == 0;
+            if (has_frame_magic ||
+                (server.rdb_frame_config.mode == RDB_FR_MODE_BLOCK && peeklen > 0 && !has_redis_magic && !has_valkey_magic)) {
+                if (rioInitDecompress(&decomp, &rdb) == C_ERR) {
+                    serverLog(LL_WARNING,
+                              "PRIMARY <-> REPLICA sync: Failed initializing framed RDB reader: %s", strerror(errno));
+                    loadingFailed = 1;
+                } else {
+                    load_rio = &decomp.rio_itf;
+                    using_decompress = 1;
+                }
             }
         }
     }
@@ -2650,7 +2744,9 @@ void replicaReceiveRDBFromPrimaryToMemory(connection *conn) {
      * from the primary reply in a previous call to this handler. */
     if (server.repl_transfer_size != -1) goto read_from_socket;
 
-    ret = tryReadBulkPayloadMetadata(conn, buf, eofmark, lastbytes, &usemark, &server.repl_transfer_size);
+    ret = tryReadBulkPayloadMetadata(conn, buf, eofmark, lastbytes, &usemark, &server.repl_transfer_size,
+                                     &server.repl_transfer_use_framed_rdb, &server.repl_transfer_rdb_codec,
+                                     &server.repl_transfer_rdb_blk_size);
     /* If we got C_RETRY, then tryReadBulkPayloadMetadata will be re-attempted in the next call to this handler,
      * since server.repl_transfer_size is still -1. If we got C_OK, then server.repl_transfer_size is not -1, and we
      * will skip directly to the read-from-socket part. */
@@ -2736,7 +2832,9 @@ void replicaReceiveRDBFromPrimaryToDisk(connection *conn, int is_dual_channel) {
             error = 1;
             goto done;
         }
-        ret = tryReadBulkPayloadMetadata(conn, buf, eofmark, lastbytes, &usemark, &server.bio_repl_transfer_size);
+        ret = tryReadBulkPayloadMetadata(conn, buf, eofmark, lastbytes, &usemark, &server.bio_repl_transfer_size,
+                                         &server.bio_repl_use_framed_rdb, &server.bio_repl_rdb_codec,
+                                         &server.bio_repl_rdb_blk_size);
         if (ret == C_ERR) {
             replicaBioSaveServerLog(LL_WARNING, "Error reading sync metadata");
             error = 1;
@@ -3154,8 +3252,14 @@ static int dualChannelReplHandleEndOffsetResponse(connection *conn, sds *err) {
     server.repl_transfer_read = 0;
     server.repl_transfer_last_fsync_off = 0;
     server.repl_transfer_lastio = server.unixtime;
+    server.repl_transfer_use_framed_rdb = 0;
+    server.repl_transfer_rdb_codec = RDBC_RAW;
+    server.repl_transfer_rdb_blk_size = 0;
     server.bio_repl_transfer_size = -1;
     server.bio_repl_transfer_read = 0;
+    server.bio_repl_use_framed_rdb = 0;
+    server.bio_repl_rdb_codec = RDBC_RAW;
+    server.bio_repl_rdb_blk_size = 0;
     if (!useDisklessLoad()) {
         /* Only create the Bio thread once the first piece of data is sent by the primary */
         serverAssert(connSetReadHandler(server.repl_rdb_transfer_s, receiveRDBinBioThreadDualChannel) != C_ERR);
@@ -4306,8 +4410,14 @@ void syncWithPrimary(connection *conn) {
     server.repl_transfer_read = 0;
     server.repl_transfer_last_fsync_off = 0;
     server.repl_transfer_lastio = server.unixtime;
+    server.repl_transfer_use_framed_rdb = 0;
+    server.repl_transfer_rdb_codec = RDBC_RAW;
+    server.repl_transfer_rdb_blk_size = 0;
     server.bio_repl_transfer_size = -1;
     server.bio_repl_transfer_read = 0;
+    server.bio_repl_use_framed_rdb = 0;
+    server.bio_repl_rdb_codec = RDBC_RAW;
+    server.bio_repl_rdb_blk_size = 0;
 }
 
 int connectWithPrimary(void) {
@@ -4331,6 +4441,9 @@ void resetBioRDBSaveState(void) {
     server.bio_repl_transfer_size = 0;
     server.bio_repl_transfer_read = 0;
     server.replica_bio_disk_save_state = REPL_BIO_DISK_SAVE_STATE_NONE;
+    server.bio_repl_use_framed_rdb = 0;
+    server.bio_repl_rdb_codec = RDBC_RAW;
+    server.bio_repl_rdb_blk_size = 0;
 }
 
 /* In disk-based replication, replica will open a temp db file to store the RDB file.
