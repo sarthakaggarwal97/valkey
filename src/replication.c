@@ -170,6 +170,84 @@ static int replicationCodecToFrame(int codec) {
     }
 }
 
+static int replicationFrameToCodec(int frame_codec) {
+    switch (frame_codec) {
+    case RDB_FR_CODEC_LZ4: return RDBC_LZ4;
+    case RDB_FR_CODEC_LZF: return RDBC_LZF;
+    case RDB_FR_CODEC_RAW:
+    default: return RDBC_RAW;
+    }
+}
+
+typedef struct replicationFrameNegotiationState {
+    int in_progress;
+    int disk_transfer;
+    int req;
+    uint8_t aggregated_mask;
+    uint32_t aggregated_block;
+    int aggregated_codec;
+    int candidates;
+    int all_compatible;
+} replicationFrameNegotiationState;
+
+static replicationFrameNegotiationState replication_frame_negotiation = {0};
+
+static void replicationUpdateAllFramingCodec(int codec);
+static void replicationUpdateAllFramingBlock(uint32_t block_bytes);
+
+static void replicationStartFramingNegotiation(int disk_transfer, int req) {
+    replication_frame_negotiation.in_progress = 1;
+    replication_frame_negotiation.disk_transfer = disk_transfer;
+    replication_frame_negotiation.req = req;
+    replication_frame_negotiation.aggregated_mask = config_codec_mask();
+    replication_frame_negotiation.aggregated_block = 0;
+    replication_frame_negotiation.aggregated_codec = RDBC_RAW;
+    replication_frame_negotiation.candidates = 0;
+    replication_frame_negotiation.all_compatible = 1;
+}
+
+static void replicationFinalizeFramingNegotiation(void) {
+    replicationFrameNegotiationState *neg = &replication_frame_negotiation;
+    if (!neg->in_progress) return;
+
+    if (!neg->all_compatible || !neg->candidates) {
+        neg->in_progress = 0;
+        return;
+    }
+
+    server.use_replication_framing = 1;
+    server.rdb_frame_replica_codec_mask = neg->aggregated_mask;
+    server.rdb_frame_replica_block_bytes = neg->aggregated_block;
+    server.rdb_frame_opts.codec = replicationCodecToFrame(neg->aggregated_codec);
+    server.rdb_frame_opts.block_bytes = neg->aggregated_block;
+    server.rdb_frame_opts.mode = RDB_FR_MODE_BLOCK;
+
+    replicationUpdateAllFramingCodec(neg->aggregated_codec);
+    replicationUpdateAllFramingBlock(neg->aggregated_block);
+
+    listIter li;
+    listNode *ln;
+    listRewind(server.replicas, &li);
+    while ((ln = listNext(&li))) {
+        client *replica = ln->value;
+        if (replica->repl_data->repl_state != REPLICA_STATE_WAIT_BGSAVE_START) continue;
+        if (replica->repl_data->replica_req != neg->req) continue;
+
+        replica->replx.rdb_framing_enabled = 1;
+        replica->replx.rdb_blk_selected = neg->aggregated_block;
+        replica->replx.rdb_codec_selected = (uint8_t)neg->aggregated_codec;
+
+        serverLog(LL_NOTICE, "Selected framed RDB for replica %s: codec=%s blk=%u",
+                  getClientPeerId(replica),
+                  neg->aggregated_codec == RDBC_LZ4
+                      ? "lz4"
+                      : neg->aggregated_codec == RDBC_LZF ? "lzf" : "raw",
+                  neg->aggregated_block);
+    }
+
+    neg->in_progress = 0;
+}
+
 static void replicationUpdateAllFramingCodec(int codec) {
     listIter li;
     listNode *ln;
@@ -211,17 +289,44 @@ static void decide_framing_for_replica(client *slave, int disk_transfer) {
     slave->replx.rdb_blk_selected = 0;
     slave->replx.rdb_codec_selected = RDBC_RAW;
 
-    if (disk_transfer) {
-        if (server.rdb_frame_config.file_mode != RDB_FR_FILE_MODE_BLOCK) return;
-    } else if (server.rdb_frame_config.mode == RDB_FR_MODE_LEGACY) {
+    replicationFrameNegotiationState *neg = &replication_frame_negotiation;
+    if (!neg->in_progress) {
+        if (!server.use_replication_framing) return;
+        if (disk_transfer && server.rdb_frame_opts.mode != RDB_FR_MODE_BLOCK) return;
+
+        slave->replx.rdb_framing_enabled = 1;
+        slave->replx.rdb_blk_selected = server.rdb_frame_opts.block_bytes;
+        slave->replx.rdb_codec_selected = (uint8_t)replicationFrameToCodec(server.rdb_frame_opts.codec);
         return;
     }
-    if (!slave->replx.rdb_framing_advertised) return;
-    if (!slave->replx.rdb_codec_mask) return;
+
+    if (!neg->all_compatible) return;
+    serverAssert(neg->disk_transfer == disk_transfer);
+
+    if (disk_transfer) {
+        if (server.rdb_frame_config.file_mode != RDB_FR_FILE_MODE_BLOCK) {
+            neg->all_compatible = 0;
+            return;
+        }
+    } else if (server.rdb_frame_config.mode == RDB_FR_MODE_LEGACY) {
+        neg->all_compatible = 0;
+        return;
+    }
+    if (!slave->replx.rdb_framing_advertised) {
+        neg->all_compatible = 0;
+        return;
+    }
+    if (!slave->replx.rdb_codec_mask) {
+        neg->all_compatible = 0;
+        return;
+    }
 
     uint8_t master_mask = config_codec_mask();
     int codec = pick_codec(master_mask, slave->replx.rdb_codec_mask);
-    if (codec < 0) return;
+    if (codec < 0) {
+        neg->all_compatible = 0;
+        return;
+    }
 
     size_t configured_block = server.rdb_frame_config.block_bytes;
     if (configured_block == 0) configured_block = 65536;
@@ -229,20 +334,19 @@ static void decide_framing_for_replica(client *slave, int disk_transfer) {
     uint32_t blk = (uint32_t)configured_block;
 
     if (slave->replx.rdb_blkmax && slave->replx.rdb_blkmax < blk) {
-        if (disk_transfer) return;
+        if (disk_transfer) {
+            neg->all_compatible = 0;
+            return;
+        }
         blk = slave->replx.rdb_blkmax;
     }
     if (blk < 65536) blk = 65536;
 
-    slave->replx.rdb_codec_selected = (uint8_t)codec;
-    slave->replx.rdb_blk_selected = blk;
-    slave->replx.rdb_framing_enabled = 1;
-
-    uint8_t new_mask = server.rdb_frame_replica_codec_mask & slave->replx.rdb_codec_mask;
+    uint8_t new_mask = neg->aggregated_mask & slave->replx.rdb_codec_mask;
     if (new_mask == 0) {
         serverLog(LL_NOTICE,
                   "Replica %s framing request rejected: no common codec", getClientPeerId(slave));
-        slave->replx.rdb_framing_enabled = 0;
+        neg->all_compatible = 0;
         return;
     }
 
@@ -250,33 +354,18 @@ static void decide_framing_for_replica(client *slave, int disk_transfer) {
     if (aggregated_codec < 0) {
         serverLog(LL_NOTICE,
                   "Replica %s framing request rejected: codec negotiation failed", getClientPeerId(slave));
-        slave->replx.rdb_framing_enabled = 0;
+        neg->all_compatible = 0;
         return;
     }
 
-    uint32_t aggregated_block = server.rdb_frame_replica_block_bytes == 0
-                                     ? blk
-                                     : (blk < server.rdb_frame_replica_block_bytes ? blk : server.rdb_frame_replica_block_bytes);
+    uint32_t aggregated_block = neg->aggregated_block == 0
+                                    ? blk
+                                    : (blk < neg->aggregated_block ? blk : neg->aggregated_block);
 
-    server.use_replication_framing = 1;
-    server.rdb_frame_replica_codec_mask = new_mask;
-    server.rdb_frame_replica_block_bytes = aggregated_block;
-    server.rdb_frame_opts.codec = replicationCodecToFrame(aggregated_codec);
-    server.rdb_frame_opts.block_bytes = aggregated_block;
-    server.rdb_frame_opts.mode = RDB_FR_MODE_BLOCK;
-
-    replicationUpdateAllFramingCodec(aggregated_codec);
-    replicationUpdateAllFramingBlock(aggregated_block);
-
-    codec = aggregated_codec;
-    blk = aggregated_block;
-    slave->replx.rdb_codec_selected = (uint8_t)codec;
-    slave->replx.rdb_blk_selected = blk;
-
-    serverLog(LL_NOTICE, "Selected framed RDB for replica %s: codec=%s blk=%u",
-              getClientPeerId(slave),
-              codec == RDBC_LZ4 ? "lz4" : codec == RDBC_LZF ? "lzf" : "raw",
-              blk);
+    neg->aggregated_mask = new_mask;
+    neg->aggregated_block = aggregated_block;
+    neg->aggregated_codec = aggregated_codec;
+    neg->candidates = 1;
 }
 
 static int parse_rdb_framing_preface(const char *line, uint8_t *codec, uint32_t *blk, int *checksum) {
@@ -1176,6 +1265,7 @@ int startBgsaveForReplication(int mincapa, int req) {
      * otherwise replica will miss repl-stream-db. */
     if (rsiptr) {
         if (socket_target) {
+            replicationStartFramingNegotiation(0, req);
             listRewind(server.replicas, &li);
             while ((ln = listNext(&li))) {
                 client *replica = ln->value;
@@ -1183,8 +1273,10 @@ int startBgsaveForReplication(int mincapa, int req) {
                     replica->repl_data->replica_req == req)
                     decide_framing_for_replica(replica, 0);
             }
+            replicationFinalizeFramingNegotiation();
             retval = rdbSaveToReplicasSockets(req, rsiptr);
         } else {
+            replicationStartFramingNegotiation(1, req);
             listRewind(server.replicas, &li);
             while ((ln = listNext(&li))) {
                 client *replica = ln->value;
@@ -1192,6 +1284,7 @@ int startBgsaveForReplication(int mincapa, int req) {
                     replica->repl_data->replica_req == req)
                     decide_framing_for_replica(replica, 1);
             }
+            replicationFinalizeFramingNegotiation();
             /* Keep the page cache since it'll get used soon */
             retval = rdbSaveBackground(req, server.rdb_filename, rsiptr, RDBFLAGS_REPLICATION | RDBFLAGS_KEEP_CACHE);
         }
