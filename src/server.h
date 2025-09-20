@@ -1215,6 +1215,8 @@ typedef struct ClientReplicationData {
     long long repl_ack_time;             /* Replication ack time, if this is a replica. */
     long long repl_last_partial_write;   /* The last time the server did a partial write from the RDB child pipe to this
                                             replica  */
+    mstime_t repl_fullsync_wait_deadline; /* Deadline for diskless full sync handshake progress. */
+    mstime_t repl_ack_deadline;           /* Deadline for receiving REPLCONF ACK after diskless transfer. */
     long long psync_initial_offset;      /* FULLRESYNC reply offset other replicas
                                             copying this replica output buffer
                                             should use. */

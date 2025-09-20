@@ -1108,6 +1108,8 @@ int replicationSetupReplicaForFullResync(client *replica, long long offset) {
 
     replica->repl_data->psync_initial_offset = offset;
     replica->repl_data->repl_state = REPLICA_STATE_WAIT_BGSAVE_END;
+    replica->repl_data->repl_fullsync_wait_deadline = mstime() + (mstime_t)server.repl_timeout * 1000;
+    replica->repl_data->repl_ack_deadline = 0;
     /* We are going to accumulate the incremental changes for this
      * replica as well. Set replicas_eldb to -1 in order to force to re-emit
      * a SELECT statement in the replication stream. */
@@ -1599,6 +1601,8 @@ void freeClientReplicationData(client *c) {
             serverLog(LL_NOTICE, "Background saving, persistence disabled, last replica dropped, killing fork child.");
             killRDBChild();
         }
+        c->repl_data->repl_fullsync_wait_deadline = 0;
+        c->repl_data->repl_ack_deadline = 0;
         if (c->repl_data->repl_state == REPLICA_STATE_SEND_BULK) {
             if (c->repl_data->repldbfd != -1) close(c->repl_data->repldbfd);
             if (c->repl_data->replpreamble) sdsfree(c->repl_data->replpreamble);
@@ -1737,6 +1741,7 @@ void replconfCommand(client *c) {
                 if (offset > c->repl_data->repl_aof_off) c->repl_data->repl_aof_off = offset;
             }
             c->repl_data->repl_ack_time = server.unixtime;
+            c->repl_data->repl_ack_deadline = 0;
             /* If this was a diskless replication, we need to really put
              * the replica online when the first ACK is received (which
              * confirms replica is online and ready to get more data). This
@@ -1945,6 +1950,8 @@ int replicaPutOnline(client *replica) {
 void replicaStartCommandStream(client *replica) {
     serverAssert(!(replica->flag.repl_rdbonly));
     replica->repl_data->repl_start_cmd_stream_on_ack = 0;
+    replica->repl_data->repl_fullsync_wait_deadline = 0;
+    replica->repl_data->repl_ack_deadline = 0;
 
     putClientInPendingWriteQueue(replica);
 }
@@ -2143,10 +2150,21 @@ void rdbPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *clientData,
         if (server.rdb_pipe_bufflen == 0) {
             /* EOF - write end was closed. */
             int stillUp = 0;
+            mstime_t now = mstime();
             aeDeleteFileEvent(server.el, server.rdb_pipe_read, AE_READABLE);
             for (i = 0; i < server.rdb_pipe_numconns; i++) {
                 connection *conn = server.rdb_pipe_conns[i];
                 if (!conn) continue;
+                client *replica = connGetPrivateData(conn);
+                if (replica->repl_data->repl_fullsync_wait_deadline &&
+                    now > replica->repl_data->repl_fullsync_wait_deadline) {
+                    serverLog(LL_WARNING,
+                              "Diskless rdb transfer, disconnecting replica %s after full sync timeout.",
+                              replicationGetReplicaName(replica));
+                    freeClient(replica);
+                    server.rdb_pipe_conns[i] = NULL;
+                    continue;
+                }
                 stillUp++;
             }
             if (stillUp) {
@@ -2160,12 +2178,21 @@ void rdbPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *clientData,
             return;
         }
 
+        mstime_t now = mstime();
         for (i = 0; i < server.rdb_pipe_numconns; i++) {
             ssize_t nwritten;
             connection *conn = server.rdb_pipe_conns[i];
             if (!conn) continue;
 
             client *replica = connGetPrivateData(conn);
+            if (replica->repl_data->repl_fullsync_wait_deadline &&
+                now > replica->repl_data->repl_fullsync_wait_deadline) {
+                serverLog(LL_WARNING, "Diskless rdb transfer, disconnecting replica %s after full sync timeout.",
+                          replicationGetReplicaName(replica));
+                freeClient(replica);
+                server.rdb_pipe_conns[i] = NULL;
+                continue;
+            }
             if ((nwritten = connWrite(conn, server.rdb_pipe_buff, server.rdb_pipe_bufflen)) == -1) {
                 if (connGetState(conn) != CONN_STATE_CONNECTED) {
                     serverLog(LL_WARNING, "Diskless rdb transfer, write error sending DB to replica: %s",
@@ -2180,6 +2207,8 @@ void rdbPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *clientData,
                 /* Note: when use diskless replication, 'repldboff' is the offset
                  * of 'rdb_pipe_buff' sent rather than the offset of entire RDB. */
                 replica->repl_data->repldboff = nwritten;
+                replica->repl_data->repl_fullsync_wait_deadline =
+                    mstime() + (mstime_t)server.repl_timeout * 1000;
                 if (getClientType(replica) == CLIENT_TYPE_SLOT_EXPORT) {
                     server.stat_net_cluster_slot_export_bytes += nwritten;
                 } else {
@@ -2272,6 +2301,9 @@ void updateReplicasWaitingBgsave(int bgsaveerr, int type) {
                     continue;
                 }
                 replica->repl_data->repl_start_cmd_stream_on_ack = 1;
+                mstime_t deadline = mstime() + (mstime_t)server.repl_timeout * 1000;
+                replica->repl_data->repl_fullsync_wait_deadline = deadline;
+                replica->repl_data->repl_ack_deadline = deadline;
             } else {
                 repldbfd = open(server.rdb_filename, O_RDONLY);
                 if (repldbfd == -1) {
@@ -5691,11 +5723,25 @@ void replicationCron(void) {
     if (listLength(server.replicas)) {
         listIter li;
         listNode *ln;
+        mstime_t now_ms = mstime();
 
         listRewind(server.replicas, &li);
         while ((ln = listNext(&li))) {
             client *replica = ln->value;
 
+            if (replica->repl_data->repl_fullsync_wait_deadline &&
+                now_ms > replica->repl_data->repl_fullsync_wait_deadline) {
+                serverLog(LL_WARNING, "Disconnecting timedout replica (diskless full sync): %s",
+                          replicationGetReplicaName(replica));
+                freeClient(replica);
+                continue;
+            }
+            if (replica->repl_data->repl_ack_deadline && now_ms > replica->repl_data->repl_ack_deadline) {
+                serverLog(LL_WARNING, "Disconnecting timedout replica (diskless sync ACK): %s",
+                          replicationGetReplicaName(replica));
+                freeClient(replica);
+                continue;
+            }
             if (replica->repl_data->repl_state == REPLICA_STATE_ONLINE) {
                 if (replica->flag.pre_psync) continue;
                 if ((server.unixtime - replica->repl_data->repl_ack_time) > server.repl_timeout) {
