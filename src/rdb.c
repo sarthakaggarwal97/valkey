@@ -204,6 +204,37 @@ static int rdbStartFramedWrite(rio *base, rio *out, const rdb_frame_opts *opts) 
     return 1;
 }
 
+static int rdbMaybeStartCompression(rio *base, const rdb_frame_opts *opts, rio_compress *rc, rio **target, int *framed) {
+    serverAssert(base != NULL);
+    serverAssert(target != NULL);
+    serverAssert(framed != NULL);
+
+    *target = base;
+    *framed = 0;
+    if (opts == NULL) return C_OK;
+
+    int start = rdbStartFramedWrite(base, &rc->rio_itf, opts);
+    if (start == -1) return C_ERR;
+    if (start == 1) {
+        *target = &rc->rio_itf;
+        *framed = 1;
+    }
+    return C_OK;
+}
+
+static int rdbFlushCompressionIfNeeded(rio_compress *rc, int framed) {
+    if (!framed) return C_OK;
+    return rioCompressFlush(rc, 1);
+}
+
+static void rdbCleanupCompressionIfNeeded(rio_compress *rc, int *framed) {
+    serverAssert(framed != NULL);
+    if (*framed) {
+        rioCompressCleanup(rc);
+        *framed = 0;
+    }
+}
+
 int rdbSaveType(rio *rdb, unsigned char type) {
     return rdbWriteRaw(rdb, &type, 1);
 }
@@ -1561,30 +1592,23 @@ int rdbSaveRioWithEOFMark(int req, rio *rdb, int *error, rdbSaveInfo *rsi) {
     if (rioWrite(rdb, eofmark, RDB_EOF_MARK_SIZE) == 0) goto werr;
     if (rioWrite(rdb, "\r\n", 2) == 0) goto werr;
     if (server.rdb_frame_config.mode == RDB_FR_MODE_BLOCK) frame_opts = &server.rdb_frame_config;
-    if (frame_opts) {
-        int start = rdbStartFramedWrite(rdb, &rc.rio_itf, frame_opts);
-        if (start == -1) {
-            if (error && *error == 0) *error = errno;
-            goto werr;
-        }
-        if (start == 1) {
-            framed = 1;
-            target = &rc.rio_itf;
-        }
+    if (rdbMaybeStartCompression(rdb, frame_opts, &rc, &target, &framed) == C_ERR) {
+        if (error && *error == 0) *error = errno;
+        goto werr;
     }
     if (rdbSaveRio(req, target, error, RDBFLAGS_REPLICATION, rsi) == C_ERR) goto werr;
-    if (framed && rioCompressFlush(&rc, 1) == C_ERR) {
+    if (rdbFlushCompressionIfNeeded(&rc, framed) == C_ERR) {
         if (error && *error == 0) *error = errno;
         goto werr;
     }
     if (rioWrite(rdb, eofmark, RDB_EOF_MARK_SIZE) == 0) goto werr;
-    if (framed) rioCompressCleanup(&rc);
+    rdbCleanupCompressionIfNeeded(&rc, &framed);
     stopSaving(1);
     return C_OK;
 
 werr: /* Write error. */
     /* Set 'error' only if not already set by rdbSaveRio() call. */
-    if (framed) rioCompressCleanup(&rc);
+    rdbCleanupCompressionIfNeeded(&rc, &framed);
     if (error && *error == 0) *error = errno;
     stopSaving(0);
     return C_ERR;
@@ -1660,16 +1684,9 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
 
         frame_opts = &local_frame_opts;
     }
-    if (frame_opts) {
-        int start = rdbStartFramedWrite(&rdb, &rc.rio_itf, frame_opts);
-        if (start == -1) {
-            err_op = "rdbStartFramedWrite";
-            goto werr;
-        }
-        if (start == 1) {
-            framed = 1;
-            target = &rc.rio_itf;
-        }
+    if (rdbMaybeStartCompression(&rdb, frame_opts, &rc, &target, &framed) == C_ERR) {
+        err_op = "rdbStartFramedWrite";
+        goto werr;
     }
 
     if (rdbSaveRio(req, target, &error, rdbflags, rsi) == C_ERR) {
@@ -1678,14 +1695,11 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
         goto werr;
     }
 
-    if (framed && rioCompressFlush(&rc, 1) == C_ERR) {
+    if (rdbFlushCompressionIfNeeded(&rc, framed) == C_ERR) {
         err_op = "rioCompressFlush";
         goto werr;
     }
-    if (framed) {
-        rioCompressCleanup(&rc);
-        framed = 0;
-    }
+    rdbCleanupCompressionIfNeeded(&rc, &framed);
 
     /* Make sure data will not remain on the OS's output buffers */
     if (fflush(fp)) {
@@ -1709,10 +1723,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
 
 werr:
     saved_errno = errno;
-    if (framed) {
-        rioCompressCleanup(&rc);
-        framed = 0;
-    }
+    rdbCleanupCompressionIfNeeded(&rc, &framed);
     serverLog(LL_WARNING, "Write error while saving DB to the disk(%s): %s", err_op, strerror(errno));
     if (fp) fclose(fp);
     unlink(filename);

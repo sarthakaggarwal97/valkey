@@ -153,6 +153,37 @@ start_server [list overrides [list "dir" $server_path] keep_persistence true] {
     r del stream
 }
 
+start_server {} {
+    r config set save ""
+    r config set rdb-compression-mode block
+    r config set rdb-compression-file-mode block
+    r config set rdb-compression-block-bytes 65536
+    r config set rdb-compression-checksum crc64
+
+    set dump_dir [lindex [r config get dir] 1]
+    set dump_name [lindex [r config get dbfilename] 1]
+    set dump_file [file join $dump_dir $dump_name]
+    foreach codec {raw lzf lz4} {
+        test "SAVE writes framed RDB header for codec $codec" {
+            r config set rdb-compression-codec $codec
+            r flushall
+            r set "framed:$codec" $codec
+            r save
+
+            set fd [open $dump_file rb]
+            fconfigure $fd -translation binary -encoding binary
+            set preamble [read $fd 7]
+            binary scan $preamble c* preamble_bytes
+            assert_equal {86 75 70 82 77 1 10} $preamble_bytes
+            set header_line [string trimright [gets $fd] "\r\n"]
+            close $fd
+
+            set expected [format "codec=%s blk=%u checksum=%s" $codec 65536 "crc64"]
+            assert_equal $expected $header_line
+        }
+    }
+}
+
 set dump_path [file join $server_path dump.rdb]
 
 # Prepare custom umask test scenario
