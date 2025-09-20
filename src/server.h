@@ -419,8 +419,11 @@ typedef enum {
     REPL_STATE_RECEIVE_AUTH_REPLY,    /* Wait for AUTH reply */
     REPL_STATE_RECEIVE_PORT_REPLY,    /* Wait for REPLCONF reply */
     REPL_STATE_RECEIVE_IP_REPLY,      /* Wait for REPLCONF reply */
-    REPL_STATE_RECEIVE_CAPA_REPLY,    /* Wait for REPLCONF reply */
-    REPL_STATE_RECEIVE_VERSION_REPLY, /* Wait for REPLCONF reply */
+    REPL_STATE_RECEIVE_CAPA_REPLY,        /* Wait for REPLCONF reply */
+    REPL_STATE_RECEIVE_RDBFRAMING_REPLY,  /* Wait for REPLCONF reply */
+    REPL_STATE_RECEIVE_RDBCODECS_REPLY,   /* Wait for REPLCONF reply */
+    REPL_STATE_RECEIVE_RDBBLKMAX_REPLY,   /* Wait for REPLCONF reply */
+    REPL_STATE_RECEIVE_VERSION_REPLY,     /* Wait for REPLCONF reply */
     REPL_STATE_RECEIVE_NODEID_REPLY,  /* Wait for REPLCONF reply */
     REPL_STATE_SEND_PSYNC,            /* Send PSYNC */
     REPL_STATE_RECEIVE_PSYNC_REPLY,   /* Wait for PSYNC reply */
@@ -2128,6 +2131,10 @@ struct valkeyServer {
     int repl_transfer_fd;                /* Replica -> Primary SYNC temp file descriptor */
     char *repl_transfer_tmpfile;         /* Replica-> Primary SYNC temp file name */
     _Atomic time_t repl_transfer_lastio; /* Unix time of the latest read, for timeout */
+    int repl_transfer_use_framed_rdb;    /* Primary announced framed RDB stream. */
+    uint8_t repl_transfer_framed_codec;  /* Codec announced in the framed RDB preface. */
+    uint32_t repl_transfer_framed_blk;   /* Block size announced in the framed RDB preface. */
+    uint8_t repl_transfer_framed_checksum; /* Checksum mode announced in the framed RDB preface. */
     int repl_serve_stale_data;           /* Serve stale data when link is down? */
     int repl_replica_ro;                 /* Replica is read only? */
     int repl_replica_ignore_maxmemory;   /* If true replicas do not evict. */
