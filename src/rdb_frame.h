@@ -18,6 +18,8 @@
 #define RDB_FR_MAGIC2 'C'
 #define RDB_FR_MAGIC3 1 /* version */
 
+#define RDB_FR_FILE_PREAMBLE "VKFRM\x01\n"
+
 /* Supported frame codecs. */
 #define RDB_FR_CODEC_RAW 0
 #define RDB_FR_CODEC_LZ4 1

@@ -1439,12 +1439,14 @@ int loadSingleAppendOnlyFile(char *filename) {
     /* Check if the AOF file is in RDB format (it may be RDB encoded base AOF
      * or old style RDB-preamble AOF). In that case we need to load the RDB file
      * and later continue loading the AOF tail if it is an old style RDB-preamble AOF. */
-    char sig[6]; /* "REDIS" or "VALKEY" */
+    unsigned char sig[sizeof(RDB_FR_FILE_PREAMBLE) - 1];
     size_t siglen = fread(sig, 1, sizeof(sig), fp);
-    int is_rdb_magic = siglen == sizeof(sig) &&
-                       (memcmp(sig, "REDIS0", sizeof(sig)) == 0 || memcmp(sig, "VALKEY", sizeof(sig)) == 0);
-    int is_frame_magic = siglen >= 4 && rdbFrameHasMagicPrefix((unsigned char *)sig, siglen);
-    if (!is_rdb_magic && !is_frame_magic) {
+    int is_rdb_magic = siglen >= 6 &&
+                       (memcmp(sig, "REDIS0", 6) == 0 || memcmp(sig, "VALKEY", 6) == 0);
+    int has_frame_preamble =
+        siglen >= sizeof(RDB_FR_FILE_PREAMBLE) - 1 && memcmp(sig, RDB_FR_FILE_PREAMBLE, sizeof(RDB_FR_FILE_PREAMBLE) - 1) == 0;
+    int is_frame_magic = siglen >= 4 && rdbFrameHasMagicPrefix(sig, siglen);
+    if (!is_rdb_magic && !is_frame_magic && !has_frame_preamble) {
         /* Not in RDB format, seek back at 0 offset. */
         if (fseek(fp, 0, SEEK_SET) == -1) goto readerr;
     } else {
@@ -1463,7 +1465,61 @@ int loadSingleAppendOnlyFile(char *filename) {
         clearerr(fp);
         rioInitWithFile(&rdb, fp);
         reader = &rdb;
-        if (is_frame_magic) {
+        if (has_frame_preamble) {
+            unsigned char magicbuf[sizeof(RDB_FR_FILE_PREAMBLE) - 1];
+            if (rioRead(&rdb, magicbuf, sizeof(magicbuf)) == 0) {
+                serverLog(LL_WARNING, "Failed reading framed RDB preamble while loading %s", filename);
+                ret = AOF_FAILED;
+                goto cleanup;
+            }
+
+            char header_line[256];
+            size_t hdr_len = 0;
+            while (hdr_len + 1 < sizeof(header_line)) {
+                unsigned char ch;
+                if (rioRead(&rdb, &ch, 1) == 0) {
+                    serverLog(LL_WARNING, "Failed reading framed RDB header line while loading %s", filename);
+                    ret = AOF_FAILED;
+                    goto cleanup;
+                }
+                header_line[hdr_len++] = (char)ch;
+                if (ch == '\n') break;
+            }
+            if (hdr_len == 0 || header_line[hdr_len - 1] != '\n') {
+                serverLog(LL_WARNING, "Failed loading RDB: invalid framed RDB header in %s", filename);
+                ret = AOF_FAILED;
+                goto cleanup;
+            }
+            header_line[hdr_len - 1] = '\0';
+
+            const char *codec_token = NULL;
+            const char *blk_token = NULL;
+            const char *checksum_token = NULL;
+            rdbFrameParseResult parse_res =
+                rdbFrameParseConfigTriplet(header_line, &codec_token, &blk_token, &checksum_token);
+            if (parse_res != RDB_FRAME_PARSE_OK) {
+                serverLog(LL_WARNING, "Failed loading RDB: invalid framed RDB header in %s", filename);
+                ret = AOF_FAILED;
+                goto cleanup;
+            }
+
+            char *endptr = NULL;
+            errno = 0;
+            unsigned long long blk_val = strtoull(blk_token, &endptr, 10);
+            if (errno == ERANGE || endptr == blk_token || *endptr != '\0' || blk_val == 0) {
+                serverLog(LL_WARNING, "Failed loading RDB: invalid framed RDB header in %s", filename);
+                ret = AOF_FAILED;
+                goto cleanup;
+            }
+
+            if (rioInitDecompress(&decomp, &rdb) == C_ERR) {
+                serverLog(LL_WARNING, "Error initializing RDB decompressor for %s: %s", filename, strerror(errno));
+                ret = AOF_FAILED;
+                goto cleanup;
+            }
+            reader = &decomp.rio_itf;
+            using_decompress = 1;
+        } else if (is_frame_magic) {
             if (rioInitDecompress(&decomp, &rdb) == C_ERR) {
                 serverLog(LL_WARNING, "Error initializing RDB decompressor for %s: %s", filename, strerror(errno));
                 ret = AOF_FAILED;

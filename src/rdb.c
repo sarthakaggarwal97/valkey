@@ -64,8 +64,6 @@
 #include <sys/param.h>
 #include <stddef.h>
 
-#define RDB_FR_FILE_PREAMBLE "VKFRM\x01\n"
-
 /* Size of the static buffer used for rdbcompression */
 #define LZF_STATIC_BUFFER_SIZE (8 * 1024)
 
@@ -1560,10 +1558,8 @@ int rdbSaveRioWithEOFMark(int req, rio *rdb, int *error, rdbSaveInfo *rsi) {
     if (rioWrite(rdb, "$EOF:", 5) == 0) goto werr;
     if (rioWrite(rdb, eofmark, RDB_EOF_MARK_SIZE) == 0) goto werr;
     if (rioWrite(rdb, "\r\n", 2) == 0) goto werr;
-    if (server.rdb_child_type == RDB_CHILD_TYPE_SOCKET) {
-        if (server.rdb_child_socket_frame_config.mode == RDB_FR_MODE_BLOCK) {
-            frame_opts = &server.rdb_child_socket_frame_config;
-        }
+    if (server.rdb_child_socket_frame_config.mode == RDB_FR_MODE_BLOCK) {
+        frame_opts = &server.rdb_child_socket_frame_config;
     } else if (server.rdb_frame_config.mode == RDB_FR_MODE_BLOCK) {
         frame_opts = &server.rdb_frame_config;
     }
