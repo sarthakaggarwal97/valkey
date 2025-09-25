@@ -1996,6 +1996,7 @@ struct valkeyServer {
     int rdb_compression;                  /* Use compression in RDB? */
     int rdb_checksum;                     /* Use RDB checksum? */
     rdb_frame_opts rdb_frame_config;      /* Configured RDB framing options. */
+    rdb_frame_opts rdb_child_socket_frame_config; /* Diskless child framing negotiated with replicas. */
     int rdb_del_sync_files;               /* Remove RDB files used only for SYNC if
                                              the instance does not use persistence. */
     time_t lastsave;                      /* Unix time of last successful save */

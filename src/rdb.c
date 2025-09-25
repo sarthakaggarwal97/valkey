@@ -1560,7 +1560,12 @@ int rdbSaveRioWithEOFMark(int req, rio *rdb, int *error, rdbSaveInfo *rsi) {
     if (rioWrite(rdb, "$EOF:", 5) == 0) goto werr;
     if (rioWrite(rdb, eofmark, RDB_EOF_MARK_SIZE) == 0) goto werr;
     if (rioWrite(rdb, "\r\n", 2) == 0) goto werr;
-    if (server.rdb_frame_config.mode == RDB_FR_MODE_BLOCK) frame_opts = &server.rdb_frame_config;
+    if (server.rdb_child_type == RDB_CHILD_TYPE_SOCKET &&
+        server.rdb_child_socket_frame_config.mode == RDB_FR_MODE_BLOCK) {
+        frame_opts = &server.rdb_child_socket_frame_config;
+    } else if (server.rdb_frame_config.mode == RDB_FR_MODE_BLOCK) {
+        frame_opts = &server.rdb_frame_config;
+    }
     if (frame_opts) {
         int start = rdbStartFramedWrite(rdb, &rc.rio_itf, frame_opts);
         if (start == -1) {
@@ -4006,6 +4011,9 @@ int rdbSaveToReplicasSockets(int req, rdbSaveInfo *rsi) {
     listNode *ln;
     listIter li;
     int dual_channel = (req & REPLICA_REQ_RDB_CHANNEL);
+    int all_framing_supported = (server.rdb_frame_config.mode == RDB_FR_MODE_BLOCK);
+    int selected_rdb_codec = -1;
+    uint32_t min_block = 0;
 
     /*
      * For replicas with repl_state == REPLICA_STATE_WAIT_BGSAVE_END and replica_req == req:
@@ -4027,6 +4035,20 @@ int rdbSaveToReplicasSockets(int req, rdbSaveInfo *rsi) {
             if (replica->repl_data->replica_req != req) continue;
 
             conns[connsnum++] = replica->conn;
+            if (all_framing_supported) {
+                if (!replica->replx.rdb_framing_enabled) {
+                    all_framing_supported = 0;
+                } else {
+                    if (selected_rdb_codec == -1) {
+                        selected_rdb_codec = replica->replx.rdb_codec_selected;
+                    } else if (selected_rdb_codec != replica->replx.rdb_codec_selected) {
+                        all_framing_supported = 0;
+                    }
+                    if (!min_block || replica->replx.rdb_blk_selected < min_block) {
+                        min_block = replica->replx.rdb_blk_selected;
+                    }
+                }
+            }
             if (dual_channel) {
                 connSendTimeout(replica->conn, server.repl_timeout * 1000);
                 /* This replica uses diskless dual channel sync, hence we need
@@ -4043,6 +4065,34 @@ int rdbSaveToReplicasSockets(int req, rdbSaveInfo *rsi) {
         /* do not skip RDB checksum on the primary if connection doesn't have integrity check or if the replica doesn't support it */
         if (!connIsIntegrityChecked(replica->conn) || !(replica->repl_data->replica_capa & REPLICA_CAPA_SKIP_RDB_CHECKSUM))
             skip_rdb_checksum = 0;
+    }
+
+    server.rdb_child_socket_frame_config = server.rdb_frame_config;
+    server.rdb_child_socket_frame_config.mode = RDB_FR_MODE_LEGACY;
+    size_t diskless_block_bytes = 0;
+    if (all_framing_supported && selected_rdb_codec != -1 && min_block != 0) {
+        int frame_codec = rdbFrameCodecFromRdbCodecOrDefault(selected_rdb_codec, RDB_FR_CODEC_RAW);
+        diskless_block_bytes = rdbFrameBlockSizeOrDefault(min_block, 65536, 65536);
+        server.rdb_child_socket_frame_config.mode = RDB_FR_MODE_BLOCK;
+        server.rdb_child_socket_frame_config.codec = frame_codec;
+        server.rdb_child_socket_frame_config.block_bytes = diskless_block_bytes;
+        server.rdb_child_socket_frame_config.checksum =
+            rdbFrameChecksumOrDefault(server.rdb_frame_config.checksum, RDB_FR_CHECKSUM_CRC64);
+    } else {
+        all_framing_supported = 0;
+    }
+
+    listRewind(server.replicas, &li);
+    while ((ln = listNext(&li))) {
+        client *replica = ln->value;
+        if (replica->repl_data->repl_state != REPLICA_STATE_WAIT_BGSAVE_START || replica->repl_data->replica_req != req)
+            continue;
+        if (!all_framing_supported) {
+            replica->replx.rdb_framing_enabled = 0;
+        } else {
+            replica->replx.rdb_codec_selected = (uint8_t)selected_rdb_codec;
+            replica->replx.rdb_blk_selected = (uint32_t)diskless_block_bytes;
+        }
     }
 
     rdbSnapshotOptions options = {
