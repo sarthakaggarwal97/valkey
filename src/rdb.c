@@ -1560,9 +1560,10 @@ int rdbSaveRioWithEOFMark(int req, rio *rdb, int *error, rdbSaveInfo *rsi) {
     if (rioWrite(rdb, "$EOF:", 5) == 0) goto werr;
     if (rioWrite(rdb, eofmark, RDB_EOF_MARK_SIZE) == 0) goto werr;
     if (rioWrite(rdb, "\r\n", 2) == 0) goto werr;
-    if (server.rdb_child_type == RDB_CHILD_TYPE_SOCKET &&
-        server.rdb_child_socket_frame_config.mode == RDB_FR_MODE_BLOCK) {
-        frame_opts = &server.rdb_child_socket_frame_config;
+    if (server.rdb_child_type == RDB_CHILD_TYPE_SOCKET) {
+        if (server.rdb_child_socket_frame_config.mode == RDB_FR_MODE_BLOCK) {
+            frame_opts = &server.rdb_child_socket_frame_config;
+        }
     } else if (server.rdb_frame_config.mode == RDB_FR_MODE_BLOCK) {
         frame_opts = &server.rdb_frame_config;
     }
@@ -4011,7 +4012,7 @@ int rdbSaveToReplicasSockets(int req, rdbSaveInfo *rsi) {
     listNode *ln;
     listIter li;
     int dual_channel = (req & REPLICA_REQ_RDB_CHANNEL);
-    int all_framing_supported = (server.rdb_frame_config.mode == RDB_FR_MODE_BLOCK);
+    int all_framing_supported = (server.rdb_frame_config.mode != RDB_FR_MODE_LEGACY);
     int selected_rdb_codec = -1;
     uint32_t min_block = 0;
 
@@ -4089,7 +4090,10 @@ int rdbSaveToReplicasSockets(int req, rdbSaveInfo *rsi) {
             continue;
         if (!all_framing_supported) {
             replica->replx.rdb_framing_enabled = 0;
+            replica->replx.rdb_blk_selected = 0;
+            replica->replx.rdb_codec_selected = RDBC_RAW;
         } else {
+            replica->replx.rdb_framing_enabled = 1;
             replica->replx.rdb_codec_selected = (uint8_t)selected_rdb_codec;
             replica->replx.rdb_blk_selected = (uint32_t)diskless_block_bytes;
         }
