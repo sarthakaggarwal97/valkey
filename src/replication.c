@@ -161,14 +161,11 @@ static sds build_rdb_framing_preface(client *replica) {
 
     size_t blk = rdbFrameBlockSizeOrDefault(replica->replx.rdb_blk_selected, 65536, 65536);
     int frame_codec = rdbFrameCodecFromRdbCodecOrDefault(replica->replx.rdb_codec_selected, RDB_FR_CODEC_RAW);
-    int checksum = rdbFrameChecksumOrDefault(server.rdb_frame_config.checksum, RDB_FR_CHECKSUM_CRC64);
-
     char config_line[128];
-    ssize_t len = rdbFrameFormatConfigLine(config_line, sizeof(config_line), frame_codec, blk, checksum);
+    ssize_t len = rdbFrameFormatConfigLine(config_line, sizeof(config_line), frame_codec, blk);
     if (len < 0) {
         frame_codec = RDB_FR_CODEC_RAW;
-        checksum = RDB_FR_CHECKSUM_CRC64;
-        len = rdbFrameFormatConfigLine(config_line, sizeof(config_line), frame_codec, blk, checksum);
+        len = rdbFrameFormatConfigLine(config_line, sizeof(config_line), frame_codec, blk);
         if (len < 0) return NULL;
     }
 
@@ -2502,19 +2499,17 @@ int replicaLoadPrimaryRDBFromSocket(connection *conn, char *buf, char *eofmark, 
 
                     const char *codec_str = NULL;
                     const char *blk_str = NULL;
-                    const char *checksum_str = NULL;
                     rdbFrameParseResult parse_res =
-                        rdbFrameParseConfigTriplet(config, &codec_str, &blk_str, &checksum_str);
+                        rdbFrameParseConfigLine(config, &codec_str, &blk_str);
                     if (parse_res != RDB_FRAME_PARSE_OK) {
                         serverLog(LL_WARNING, "PRIMARY <-> REPLICA sync: Incomplete RDB preface '%s'", line);
                         loadingFailed = 1;
                     } else {
                         use_framed_rdb = 1;
                         serverLog(LL_DEBUG,
-                                  "PRIMARY <-> REPLICA sync: Received framed RDB preface codec=%s blk=%s checksum=%s",
+                                  "PRIMARY <-> REPLICA sync: Received framed RDB preface codec=%s blk=%s",
                                   codec_str ? codec_str : "(null)",
-                                  blk_str ? blk_str : "(null)",
-                                  checksum_str ? checksum_str : "(null)");
+                                  blk_str ? blk_str : "(null)");
                     }
                 }
             }

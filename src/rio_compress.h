@@ -26,7 +26,6 @@ typedef struct rio_compress {
     size_t blk_target, blk_limit; /* limit can be = 2*target */
     sds rawbuf, cmpbuf;
     uint64_t blocks;          /* emitted count */
-    int checksum;             /* crc64|none */
     /* embed a rio vtable so this object *is* a rio */
     rio rio_itf;
 } rio_compress;

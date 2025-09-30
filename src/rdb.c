@@ -1630,9 +1630,8 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
         local_frame_opts.block_bytes = block_bytes;
 
         const char *codec = rdbFrameCodecToString(local_frame_opts.codec);
-        const char *checksum = rdbFrameChecksumToString(local_frame_opts.checksum);
-        if (codec == NULL || checksum == NULL) {
-            serverLog(LL_WARNING, "Unsupported framed RDB configuration (codec or checksum)");
+        if (codec == NULL) {
+            serverLog(LL_WARNING, "Unsupported framed RDB configuration (codec)");
             err_op = "framed configuration";
             goto werr;
         }
@@ -1643,8 +1642,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
         }
 
         char hdrline[128];
-        ssize_t hdrlen = rdbFrameFormatConfigLine(hdrline, sizeof(hdrline), local_frame_opts.codec, block_bytes,
-                                                  local_frame_opts.checksum);
+        ssize_t hdrlen = rdbFrameFormatConfigLine(hdrline, sizeof(hdrline), local_frame_opts.codec, block_bytes);
         if (hdrlen < 0) {
             err_op = "format framed header";
             errno = EINVAL;
@@ -3237,9 +3235,8 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
 
             const char *codec_token = NULL;
             const char *blk_token = NULL;
-            const char *checksum_token = NULL;
             rdbFrameParseResult parse_res =
-                rdbFrameParseConfigTriplet(header_line, &codec_token, &blk_token, &checksum_token);
+                rdbFrameParseConfigLine(header_line, &codec_token, &blk_token);
             if (parse_res != RDB_FRAME_PARSE_OK) {
                 serverLog(LL_WARNING, "Failed loading RDB: invalid framed RDB header");
                 return C_ERR;
@@ -4073,8 +4070,6 @@ int rdbSaveToReplicasSockets(int req, rdbSaveInfo *rsi) {
         server.rdb_child_socket_frame_config.mode = RDB_FR_MODE_BLOCK;
         server.rdb_child_socket_frame_config.codec = frame_codec;
         server.rdb_child_socket_frame_config.block_bytes = diskless_block_bytes;
-        server.rdb_child_socket_frame_config.checksum =
-            rdbFrameChecksumOrDefault(server.rdb_frame_config.checksum, RDB_FR_CHECKSUM_CRC64);
     } else {
         all_framing_supported = 0;
     }

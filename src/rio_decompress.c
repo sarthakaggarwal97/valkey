@@ -13,7 +13,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "crc64.h"
 #include "endianconv.h"
 #include "rdb_codec.h"
 #include "rdb_frame.h"
@@ -79,9 +78,6 @@ static int rioDecompressLoadBlock(rio_decompress *rd) {
     size_t raw_len = raw_len32;
     size_t cmp_len = cmp_len32;
 
-    uint64_t stored_crc = hdr.crc64_le;
-    memrev64ifbe(&stored_crc);
-
     int codec_val = rdbFrameCodecToRdbCodec(hdr.codec);
     if (codec_val == -1) {
         errno = EINVAL;
@@ -109,14 +105,6 @@ static int rioDecompressLoadBlock(rio_decompress *rd) {
             sdsIncrLen(rd->rawbuf, raw_len);
         }
 
-        if (stored_crc != 0) {
-            uint64_t crc = crc64(0, hdrbuf, offsetof(RdbFrameBlockHdr, crc64_le));
-            if (raw_len > 0) crc = crc64(crc, (unsigned char *)rd->rawbuf, raw_len);
-            if (crc != stored_crc) {
-                errno = EIO;
-                return C_ERR;
-            }
-        }
         return C_OK;
     }
 
@@ -129,16 +117,6 @@ static int rioDecompressLoadBlock(rio_decompress *rd) {
         }
         if (rioDecompressReadFromSrc(rd, payload, cmp_len) == C_ERR) {
             zfree(payload);
-            return C_ERR;
-        }
-    }
-
-    if (stored_crc != 0) {
-        uint64_t crc = crc64(0, hdrbuf, offsetof(RdbFrameBlockHdr, crc64_le));
-        if (cmp_len > 0) crc = crc64(crc, payload, cmp_len);
-        if (crc != stored_crc) {
-            if (payload) zfree(payload);
-            errno = EIO;
             return C_ERR;
         }
     }

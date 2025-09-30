@@ -1571,7 +1571,6 @@ typedef struct rdb_frame_opts {
     int file_mode;      /* legacy|block */
     int codec;          /* RAW/LZ4/LZF */
     size_t block_bytes; /* target block size */
-    int checksum;       /* crc64|none */
 } rdb_frame_opts;
 
 static inline uint8_t codec_to_mask(int c) {

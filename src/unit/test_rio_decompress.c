@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../crc64.h"
 #include "../endianconv.h"
 #include "../rdb_codec.h"
 #include "../rdb_frame.h"
@@ -19,7 +18,6 @@ int test_rio_decompress(int argc, char **argv, int flags) {
     UNUSED(argv);
     UNUSED(flags);
 
-    crc64_init();
     srand(1);
 
     FILE *fp = tmpfile();
@@ -32,7 +30,6 @@ int test_rio_decompress(int argc, char **argv, int flags) {
     rdb_frame_opts opts = {0};
     opts.codec = RDB_FR_CODEC_LZ4;
     opts.block_bytes = 64 * 1024;
-    opts.checksum = RDB_FR_CHECKSUM_CRC64;
 
     rio_compress rc;
     TEST_ASSERT(rioInitCompress(&rc, &dst, &opts) == C_OK);

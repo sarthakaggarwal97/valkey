@@ -57,7 +57,7 @@ start_server {tags {"repl"}} {
 
     test "Replication stream includes framing preface when enabled" {
         set preface_line [repl_preface_handshake_preface $master_host $master_port "raw,lzf,lz4"]
-        assert {[regexp {^\+RDBFRAMED codec=(raw|lzf|lz4) blk=[0-9]+ checksum=(crc64|none)$} $preface_line]}
+        assert {[regexp {^\+RDBFRAMED codec=(raw|lzf|lz4) blk=[0-9]+$} $preface_line]}
     }
 
     test "Replication stream omits framing preface when snapshot is legacy" {
@@ -106,7 +106,7 @@ start_server {tags {"repl"}} {
         $master config set rdb-compression-codec lzf
 
         set preface_line [repl_preface_handshake_preface $master_host $master_port "raw,lzf,lz4"]
-        assert {[regexp {^\+RDBFRAMED codec=lzf blk=[0-9]+ checksum=crc64$} $preface_line]}
+        assert {[regexp {^\+RDBFRAMED codec=lzf blk=[0-9]+$} $preface_line]}
     }
 
     test "Replication preface uses configured raw codec when selected" {
@@ -115,7 +115,7 @@ start_server {tags {"repl"}} {
         $master config set rdb-compression-codec raw
 
         set preface_line [repl_preface_handshake_preface $master_host $master_port "raw,lzf,lz4"]
-        assert {[regexp {^\+RDBFRAMED codec=raw blk=[0-9]+ checksum=crc64$} $preface_line]}
+        assert {[regexp {^\+RDBFRAMED codec=raw blk=[0-9]+$} $preface_line]}
     }
 
     test "Replication preface updates after codec changes" {
@@ -124,7 +124,7 @@ start_server {tags {"repl"}} {
         foreach codec {raw lzf lz4} {
             $master config set rdb-compression-codec $codec
             set preface_line [repl_preface_handshake_preface $master_host $master_port "raw,lzf,lz4"]
-            set pattern [format {^\+RDBFRAMED codec=%s blk=[0-9]+ checksum=crc64$} $codec]
+            set pattern [format {^\+RDBFRAMED codec=%s blk=[0-9]+$} $codec]
             assert {[regexp $pattern $preface_line]}
         }
     }
@@ -133,7 +133,7 @@ start_server {tags {"repl"}} {
         $master config set rdb-compression-codec lz4
 
         set preface_line [repl_preface_handshake_preface $master_host $master_port "raw"]
-        assert {[regexp {^\+RDBFRAMED codec=raw blk=[0-9]+ checksum=crc64$} $preface_line]}
+        assert {[regexp {^\+RDBFRAMED codec=raw blk=[0-9]+$} $preface_line]}
 
         $master config set rdb-compression-codec raw
     }
@@ -143,7 +143,7 @@ start_server {tags {"repl"}} {
         $master config set rdb-compression-block-bytes 524288
 
         set preface_line [repl_preface_handshake_preface $master_host $master_port "raw,lzf,lz4" 65536]
-        assert {[regexp {^\+RDBFRAMED codec=lz4 blk=65536 checksum=crc64$} $preface_line]}
+        assert {[regexp {^\+RDBFRAMED codec=lz4 blk=65536$} $preface_line]}
 
         $master config set rdb-compression-block-bytes 262144
     }
@@ -153,7 +153,7 @@ start_server {tags {"repl"}} {
         $master config set rdb-compression-block-bytes 32768
 
         set preface_line [repl_preface_handshake_preface $master_host $master_port "raw,lzf,lz4"]
-        assert {[regexp {^\+RDBFRAMED codec=raw blk=65536 checksum=crc64$} $preface_line]}
+        assert {[regexp {^\+RDBFRAMED codec=raw blk=65536$} $preface_line]}
 
         $master config set rdb-compression-block-bytes 262144
     }
@@ -163,10 +163,10 @@ start_server {tags {"repl"}} {
         $master config set rdb-compression-mode auto
 
         set auto_preface [repl_preface_handshake_preface $master_host $master_port "raw,lzf,lz4"]
-        assert {[regexp {^\+RDBFRAMED codec=lzf blk=[0-9]+ checksum=crc64$} $auto_preface]}
+        assert {[regexp {^\+RDBFRAMED codec=lzf blk=[0-9]+$} $auto_preface]}
 
         $master config set rdb-compression-mode block
         set block_preface [repl_preface_handshake_preface $master_host $master_port "raw,lzf,lz4"]
-        assert {[regexp {^\+RDBFRAMED codec=lzf blk=[0-9]+ checksum=crc64$} $block_preface]}
+        assert {[regexp {^\+RDBFRAMED codec=lzf blk=[0-9]+$} $block_preface]}
     }
 }

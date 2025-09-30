@@ -1494,9 +1494,8 @@ int loadSingleAppendOnlyFile(char *filename) {
 
             const char *codec_token = NULL;
             const char *blk_token = NULL;
-            const char *checksum_token = NULL;
             rdbFrameParseResult parse_res =
-                rdbFrameParseConfigTriplet(header_line, &codec_token, &blk_token, &checksum_token);
+                rdbFrameParseConfigLine(header_line, &codec_token, &blk_token);
             if (parse_res != RDB_FRAME_PARSE_OK) {
                 serverLog(LL_WARNING, "Failed loading RDB: invalid framed RDB header in %s", filename);
                 ret = AOF_FAILED;

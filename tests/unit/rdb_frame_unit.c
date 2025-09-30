@@ -29,37 +29,18 @@ int test_rdb_frame_codec_helpers(int argc, char **argv, int flags) {
     return 0;
 }
 
-int test_rdb_frame_checksum_helpers(int argc, char **argv, int flags) {
-    UNUSED(argc);
-    UNUSED(argv);
-    UNUSED(flags);
-
-    TEST_ASSERT(strcmp(rdbFrameChecksumToString(RDB_FR_CHECKSUM_CRC64), "crc64") == 0);
-    TEST_ASSERT(strcmp(rdbFrameChecksumToString(RDB_FR_CHECKSUM_NONE), "none") == 0);
-    TEST_ASSERT(rdbFrameChecksumToString(-1) == NULL);
-
-    TEST_ASSERT(rdbFrameChecksumFromString("crc64") == RDB_FR_CHECKSUM_CRC64);
-    TEST_ASSERT(rdbFrameChecksumFromString("NONE") == RDB_FR_CHECKSUM_NONE);
-    TEST_ASSERT(rdbFrameChecksumFromString("invalid") == -1);
-    TEST_ASSERT(rdbFrameChecksumFromString(NULL) == -1);
-    return 0;
-}
-
 int test_rdb_frame_parse_triplet_success(int argc, char **argv, int flags) {
     UNUSED(argc);
     UNUSED(argv);
     UNUSED(flags);
 
-    char line[] = "codec=lz4 blk=131072 checksum=crc64";
+    char line[] = "codec=lz4 blk=131072";
     const char *codec = NULL;
     const char *blk = NULL;
-    const char *checksum = NULL;
-    TEST_ASSERT(rdbFrameParseConfigTriplet(line, &codec, &blk, &checksum) == RDB_FRAME_PARSE_OK);
-    TEST_ASSERT(codec && blk && checksum);
+    TEST_ASSERT(rdbFrameParseConfigLine(line, &codec, &blk) == RDB_FRAME_PARSE_OK);
+    TEST_ASSERT(codec && blk);
     TEST_ASSERT(strcmp(codec, "lz4") == 0);
-    TEST_ASSERT(strcmp(checksum, "crc64") == 0);
     TEST_ASSERT(rdbFrameCodecFromString(codec) == RDB_FR_CODEC_LZ4);
-    TEST_ASSERT(rdbFrameChecksumFromString(checksum) == RDB_FR_CHECKSUM_CRC64);
     TEST_ASSERT(strtoull(blk, NULL, 10) == 131072ULL);
     return 0;
 }
@@ -71,16 +52,15 @@ int test_rdb_frame_parse_triplet_errors(int argc, char **argv, int flags) {
 
     const char *codec = NULL;
     const char *blk = NULL;
-    const char *checksum = NULL;
 
-    char missing[] = "codec=lz4 blk=65536";
-    TEST_ASSERT(rdbFrameParseConfigTriplet(missing, &codec, &blk, &checksum) == RDB_FRAME_PARSE_INVALID_FORMAT);
+    char missing[] = "codec=lz4";
+    TEST_ASSERT(rdbFrameParseConfigLine(missing, &codec, &blk) == RDB_FRAME_PARSE_INVALID_FORMAT);
 
-    char duplicate[] = "codec=lz4 codec=lzf checksum=crc64";
-    TEST_ASSERT(rdbFrameParseConfigTriplet(duplicate, &codec, &blk, &checksum) == RDB_FRAME_PARSE_INVALID_FORMAT);
+    char duplicate[] = "codec=lz4 codec=lzf";
+    TEST_ASSERT(rdbFrameParseConfigLine(duplicate, &codec, &blk) == RDB_FRAME_PARSE_INVALID_FORMAT);
 
-    char unknown[] = "codec=lz4 foo=bar checksum=crc64";
-    TEST_ASSERT(rdbFrameParseConfigTriplet(unknown, &codec, &blk, &checksum) == RDB_FRAME_PARSE_UNKNOWN_FIELD);
+    char unknown[] = "codec=lz4 foo=bar";
+    TEST_ASSERT(rdbFrameParseConfigLine(unknown, &codec, &blk) == RDB_FRAME_PARSE_UNKNOWN_FIELD);
     return 0;
 }
 
@@ -90,15 +70,15 @@ int test_rdb_frame_format_line(int argc, char **argv, int flags) {
     UNUSED(flags);
 
     char buf[64];
-    ssize_t written = rdbFrameFormatConfigLine(buf, sizeof(buf), RDB_FR_CODEC_LZF, 65536, RDB_FR_CHECKSUM_NONE);
+    ssize_t written = rdbFrameFormatConfigLine(buf, sizeof(buf), RDB_FR_CODEC_LZF, 65536);
     TEST_ASSERT(written > 0);
     TEST_ASSERT((size_t)written == strlen(buf));
-    TEST_ASSERT(strcmp(buf, "codec=lzf blk=65536 checksum=none") == 0);
+    TEST_ASSERT(strcmp(buf, "codec=lzf blk=65536") == 0);
 
-    TEST_ASSERT(rdbFrameFormatConfigLine(NULL, sizeof(buf), RDB_FR_CODEC_RAW, 1, RDB_FR_CHECKSUM_CRC64) < 0);
-    TEST_ASSERT(rdbFrameFormatConfigLine(buf, sizeof(buf), -1, 1, RDB_FR_CHECKSUM_NONE) < 0);
-    TEST_ASSERT(rdbFrameFormatConfigLine(buf, 0, RDB_FR_CODEC_RAW, 1, RDB_FR_CHECKSUM_CRC64) < 0);
-    TEST_ASSERT(rdbFrameFormatConfigLine(buf, 4, RDB_FR_CODEC_RAW, 1, RDB_FR_CHECKSUM_CRC64) < 0);
+    TEST_ASSERT(rdbFrameFormatConfigLine(NULL, sizeof(buf), RDB_FR_CODEC_RAW, 1) < 0);
+    TEST_ASSERT(rdbFrameFormatConfigLine(buf, sizeof(buf), -1, 1) < 0);
+    TEST_ASSERT(rdbFrameFormatConfigLine(buf, 0, RDB_FR_CODEC_RAW, 1) < 0);
+    TEST_ASSERT(rdbFrameFormatConfigLine(buf, 4, RDB_FR_CODEC_RAW, 1) < 0);
     return 0;
 }
 
@@ -140,15 +120,13 @@ int test_rdb_frame_parse_triplet_whitespace(int argc, char **argv, int flags) {
     UNUSED(argv);
     UNUSED(flags);
 
-    char line[] = " checksum=none  blk=65536 codec=lzf ";
+    char line[] = "  blk=65536 codec=lzf ";
     const char *codec = NULL;
     const char *blk = NULL;
-    const char *checksum = NULL;
-    TEST_ASSERT(rdbFrameParseConfigTriplet(line, &codec, &blk, &checksum) == RDB_FRAME_PARSE_OK);
-    TEST_ASSERT(codec && blk && checksum);
+    TEST_ASSERT(rdbFrameParseConfigLine(line, &codec, &blk) == RDB_FRAME_PARSE_OK);
+    TEST_ASSERT(codec && blk);
     TEST_ASSERT(strcmp(codec, "lzf") == 0);
     TEST_ASSERT(strcmp(blk, "65536") == 0);
-    TEST_ASSERT(strcmp(checksum, "none") == 0);
     return 0;
 }
 
@@ -159,18 +137,14 @@ int test_rdb_frame_parse_triplet_empty_values(int argc, char **argv, int flags) 
 
     const char *codec = NULL;
     const char *blk = NULL;
-    const char *checksum = NULL;
 
-    char empty_codec[] = "codec= blk=1 checksum=crc64";
-    TEST_ASSERT(rdbFrameParseConfigTriplet(empty_codec, &codec, &blk, &checksum) == RDB_FRAME_PARSE_INVALID_FORMAT);
+    char empty_codec[] = "codec= blk=1";
+    TEST_ASSERT(rdbFrameParseConfigLine(empty_codec, &codec, &blk) == RDB_FRAME_PARSE_INVALID_FORMAT);
 
-    codec = blk = checksum = NULL;
-    char empty_blk[] = "codec=raw blk= checksum=crc64";
-    TEST_ASSERT(rdbFrameParseConfigTriplet(empty_blk, &codec, &blk, &checksum) == RDB_FRAME_PARSE_INVALID_FORMAT);
+    codec = blk = NULL;
+    char empty_blk[] = "codec=raw blk=";
+    TEST_ASSERT(rdbFrameParseConfigLine(empty_blk, &codec, &blk) == RDB_FRAME_PARSE_INVALID_FORMAT);
 
-    codec = blk = checksum = NULL;
-    char empty_checksum[] = "codec=lz4 blk=65536 checksum=";
-    TEST_ASSERT(rdbFrameParseConfigTriplet(empty_checksum, &codec, &blk, &checksum) == RDB_FRAME_PARSE_INVALID_FORMAT);
     return 0;
 }
 
@@ -181,20 +155,15 @@ int test_rdb_frame_parse_triplet_null_args(int argc, char **argv, int flags) {
 
     const char *codec = NULL;
     const char *blk = NULL;
-    const char *checksum = NULL;
 
-    TEST_ASSERT(rdbFrameParseConfigTriplet(NULL, &codec, &blk, &checksum) == RDB_FRAME_PARSE_INVALID_FORMAT);
+    TEST_ASSERT(rdbFrameParseConfigLine(NULL, &codec, &blk) == RDB_FRAME_PARSE_INVALID_FORMAT);
 
-    char base_codec[] = "codec=raw blk=65536 checksum=crc64";
-    TEST_ASSERT(rdbFrameParseConfigTriplet(base_codec, NULL, &blk, &checksum) == RDB_FRAME_PARSE_INVALID_FORMAT);
+    char base_codec[] = "codec=raw blk=65536";
+    TEST_ASSERT(rdbFrameParseConfigLine(base_codec, NULL, &blk) == RDB_FRAME_PARSE_INVALID_FORMAT);
 
-    codec = blk = checksum = NULL;
-    char base_blk[] = "codec=raw blk=65536 checksum=crc64";
-    TEST_ASSERT(rdbFrameParseConfigTriplet(base_blk, &codec, NULL, &checksum) == RDB_FRAME_PARSE_INVALID_FORMAT);
-
-    codec = blk = checksum = NULL;
-    char base_checksum[] = "codec=raw blk=65536 checksum=crc64";
-    TEST_ASSERT(rdbFrameParseConfigTriplet(base_checksum, &codec, &blk, NULL) == RDB_FRAME_PARSE_INVALID_FORMAT);
+    codec = blk = NULL;
+    char base_blk[] = "codec=raw blk=65536";
+    TEST_ASSERT(rdbFrameParseConfigLine(base_blk, &codec, NULL) == RDB_FRAME_PARSE_INVALID_FORMAT);
     return 0;
 }
 
@@ -208,18 +177,6 @@ int test_rdb_frame_codec_defaults(int argc, char **argv, int flags) {
     TEST_ASSERT(rdbFrameCodecFromRdbCodecOrDefault(RDBC_LZF, RDB_FR_CODEC_RAW) == RDB_FR_CODEC_LZF);
     TEST_ASSERT(rdbFrameCodecFromRdbCodecOrDefault(-1, RDB_FR_CODEC_LZF) == RDB_FR_CODEC_LZF);
     TEST_ASSERT(rdbFrameCodecFromRdbCodecOrDefault(-1, -1) == RDB_FR_CODEC_RAW);
-    return 0;
-}
-
-int test_rdb_frame_checksum_defaults(int argc, char **argv, int flags) {
-    UNUSED(argc);
-    UNUSED(argv);
-    UNUSED(flags);
-
-    TEST_ASSERT(rdbFrameChecksumOrDefault(RDB_FR_CHECKSUM_CRC64, RDB_FR_CHECKSUM_NONE) == RDB_FR_CHECKSUM_CRC64);
-    TEST_ASSERT(rdbFrameChecksumOrDefault(RDB_FR_CHECKSUM_NONE, RDB_FR_CHECKSUM_CRC64) == RDB_FR_CHECKSUM_NONE);
-    TEST_ASSERT(rdbFrameChecksumOrDefault(-1, RDB_FR_CHECKSUM_NONE) == RDB_FR_CHECKSUM_NONE);
-    TEST_ASSERT(rdbFrameChecksumOrDefault(-1, -1) == RDB_FR_CHECKSUM_CRC64);
     return 0;
 }
 

@@ -1,8 +1,8 @@
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "../crc64.h"
 #include "../endianconv.h"
 #include "../rdb_codec.h"
 #include "../rdb_frame.h"
@@ -18,7 +18,6 @@ int test_rio_compress(int argc, char **argv, int flags) {
     UNUSED(argv);
     UNUSED(flags);
 
-    crc64_init();
     srand(1);
 
     FILE *fp = tmpfile();
@@ -31,7 +30,6 @@ int test_rio_compress(int argc, char **argv, int flags) {
     rdb_frame_opts opts = {0};
     opts.codec = RDB_FR_CODEC_LZ4;
     opts.block_bytes = 64 * 1024;
-    opts.checksum = RDB_FR_CHECKSUM_CRC64;
 
     rio_compress rc;
     TEST_ASSERT(rioInitCompress(&rc, &dst, &opts) == C_OK);
@@ -87,9 +85,6 @@ int test_rio_compress(int argc, char **argv, int flags) {
         memrev32ifbe(&raw_len);
         memrev32ifbe(&cmp_len);
 
-        uint64_t stored_crc = hdr.crc64_le;
-        memrev64ifbe(&stored_crc);
-
         unsigned char *payload = NULL;
         if (cmp_len > 0) {
             payload = zmalloc(cmp_len);
@@ -97,13 +92,9 @@ int test_rio_compress(int argc, char **argv, int flags) {
             TEST_ASSERT(fread(payload, cmp_len, 1, fp) == 1);
         }
 
-        if (opts.checksum == RDB_FR_CHECKSUM_CRC64) {
-            uint64_t crc = crc64(0, hdrbuf, offsetof(RdbFrameBlockHdr, crc64_le));
-            if (cmp_len > 0) crc = crc64(crc, payload, cmp_len);
-            TEST_ASSERT(crc == stored_crc);
-        } else {
-            TEST_ASSERT(stored_crc == 0);
-        }
+        uint64_t stored_crc = hdr.crc64_le;
+        memrev64ifbe(&stored_crc);
+        TEST_ASSERT(stored_crc == 0);
 
         rdb_codec_t block_codec;
         switch (hdr.codec) {

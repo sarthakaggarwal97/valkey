@@ -127,8 +127,6 @@ int rioInitCompress(rio_compress *rc, rio *dst, const rdb_frame_opts *opts) {
     else rc->blk_limit = rc->blk_target * 2;
     if (rc->blk_limit < rc->blk_target) rc->blk_limit = rc->blk_target;
 
-    rc->checksum = opts->checksum;
-
     if (rioCompressInitBuffers(rc) == C_ERR) {
         rdbCodecFree(rc->cctx);
         rc->cctx = NULL;
@@ -191,12 +189,7 @@ int rioCompressFlush(rio_compress *rc, int last) {
     memrev32ifbe(&hdr.raw_len_le);
     memrev32ifbe(&hdr.cmp_len_le);
 
-    uint64_t crc = 0;
-    if (rc->checksum == RDB_FR_CHECKSUM_CRC64) {
-        crc = crc64(0, (unsigned char *)&hdr, offsetof(RdbFrameBlockHdr, crc64_le));
-        if (payload_len > 0) crc = crc64(crc, payload, payload_len);
-    }
-    hdr.crc64_le = crc;
+    hdr.crc64_le = 0;
     memrev64ifbe(&hdr.crc64_le);
 
     if (rioCompressWriteToDst(rc, &hdr, sizeof(hdr)) == C_ERR) return C_ERR;

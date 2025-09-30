@@ -28,12 +28,6 @@
 /* Frame flags. */
 #define RDB_FR_FLAG_LAST 1
 
-/* Frame checksums. */
-#ifndef RDB_FR_CHECKSUM_CRC64
-#define RDB_FR_CHECKSUM_CRC64 0
-#define RDB_FR_CHECKSUM_NONE 1
-#endif
-
 typedef struct __attribute__((packed)) RdbFrameBlockHdr {
     uint8_t magic[4];   /* RBC\1 */
     uint8_t codec;      /* 0=RAW,1=LZ4,2=LZF */
@@ -58,16 +52,12 @@ const char *rdbFrameCodecToString(int codec);
 int rdbFrameCodecFromString(const char *token);
 int rdbFrameCodecFromRdbCodec(int codec);
 int rdbFrameCodecToRdbCodec(int frame_codec);
-const char *rdbFrameChecksumToString(int checksum);
-int rdbFrameChecksumFromString(const char *token);
-ssize_t rdbFrameFormatConfigLine(char *buf, size_t buf_len, int codec, size_t block_bytes, int checksum);
-rdbFrameParseResult rdbFrameParseConfigTriplet(char *buf,
-                                               const char **codec_token,
-                                               const char **blk_token,
-                                               const char **checksum_token);
+ssize_t rdbFrameFormatConfigLine(char *buf, size_t buf_len, int codec, size_t block_bytes);
+rdbFrameParseResult rdbFrameParseConfigLine(char *buf,
+                                           const char **codec_token,
+                                           const char **blk_token);
 
 int rdbFrameCodecFromRdbCodecOrDefault(int codec, int default_frame_codec);
-int rdbFrameChecksumOrDefault(int checksum, int default_checksum);
 size_t rdbFrameBlockSizeOrDefault(size_t requested_block,
                                   size_t default_block,
                                   size_t min_block);
