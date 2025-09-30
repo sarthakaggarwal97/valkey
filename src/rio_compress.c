@@ -189,9 +189,6 @@ int rioCompressFlush(rio_compress *rc, int last) {
     memrev32ifbe(&hdr.raw_len_le);
     memrev32ifbe(&hdr.cmp_len_le);
 
-    hdr.crc64_le = 0;
-    memrev64ifbe(&hdr.crc64_le);
-
     if (rioCompressWriteToDst(rc, &hdr, sizeof(hdr)) == C_ERR) return C_ERR;
     if (payload_len > 0 && rioCompressWriteToDst(rc, payload, payload_len) == C_ERR) return C_ERR;
 

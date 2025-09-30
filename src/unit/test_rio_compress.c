@@ -92,10 +92,6 @@ int test_rio_compress(int argc, char **argv, int flags) {
             TEST_ASSERT(fread(payload, cmp_len, 1, fp) == 1);
         }
 
-        uint64_t stored_crc = hdr.crc64_le;
-        memrev64ifbe(&stored_crc);
-        TEST_ASSERT(stored_crc == 0);
-
         rdb_codec_t block_codec;
         switch (hdr.codec) {
         case RDB_FR_CODEC_RAW:

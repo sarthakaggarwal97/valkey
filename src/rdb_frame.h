@@ -29,12 +29,11 @@
 #define RDB_FR_FLAG_LAST 1
 
 typedef struct __attribute__((packed)) RdbFrameBlockHdr {
-    uint8_t magic[4];   /* RBC\1 */
-    uint8_t codec;      /* 0=RAW,1=LZ4,2=LZF */
-    uint8_t flags;      /* bit0: last-block */
+    uint8_t magic[4];    /* RBC\1 */
+    uint8_t codec;       /* 0=RAW,1=LZ4,2=LZF */
+    uint8_t flags;       /* bit0: last-block */
     uint32_t raw_len_le; /* uncompressed bytes */
     uint32_t cmp_len_le; /* compressed bytes */
-    uint64_t crc64_le;   /* over header (except crc) + payload */
 } RdbFrameBlockHdr;
 
 static inline int rdbFrameHasMagicPrefix(const unsigned char *buf, size_t len) {
