@@ -2278,70 +2278,63 @@ void replicationAttachToNewPrimary(void) {
  * should be called again later.
  * Returns C_OK on success, C_ERR on error, or C_RETRY for primary ping. */
 int tryReadBulkPayloadMetadata(connection *conn, char *buf, char *eofmark, char *lastbytes, int *usemark, off_t *repl_transfer_size) {
-    while (1) {
-        ssize_t nread = connSyncReadLine(conn, buf, 1024, server.repl_syncio_timeout * 1000);
-        if (nread == -1) {
-            serverLog(LL_WARNING, "I/O error reading bulk count from PRIMARY: %s", connGetLastError(conn));
-            return C_ERR;
-        } else {
-            /* nread here is returned by connSyncReadLine(), which calls syncReadLine() and
-             * convert "\r\n" to '\0' so 1 byte is lost. */
-            if (inBioThread())
-                server.bio_stat_net_repl_input_bytes += nread + 1;
-            else
-                server.stat_net_repl_input_bytes += nread + 1;
-        }
+    ssize_t nread;
 
-        /* Check the bulk payload header for errors */
-        if (buf[0] == '-') {
-            serverLog(LL_WARNING, "PRIMARY aborted replication with an error: %s", buf + 1);
-            return C_ERR;
-        } else if (buf[0] == '\0') {
-            /* At this stage just a newline works as a PING in order to take
-             * the connection live. So we refresh our last interaction
-             * timestamp. */
-            server.repl_transfer_lastio = server.unixtime;
-            return C_RETRY;
-        } else if (buf[0] == '+') {
-            if (strncmp(buf, "+RDBFRAMED", 10) != 0) {
-                serverLog(LL_WARNING, "Unexpected metadata preface from PRIMARY: %s", buf);
-                return C_ERR;
-            }
-
-            char *config = buf + 10;
-            while (*config == ' ') config++;
-            const char *codec_token = NULL;
-            const char *blk_token = NULL;
-            rdbFrameParseResult parse_res = rdbFrameParseConfigLine(config, &codec_token, &blk_token);
-            if (parse_res != RDB_FRAME_PARSE_OK) {
-                serverLog(LL_WARNING, "Malformed framed RDB preface from PRIMARY: %s", buf);
-                return C_ERR;
-            }
-
-            continue;
-        } else if (buf[0] != '$') {
-            serverLog(LL_WARNING,
-                      "Bad protocol from PRIMARY, the first byte is not '$' (we received '%s'), are you sure the host "
-                      "and port are right?",
-                      buf);
-            return C_ERR;
-        }
-
-        /* Check if this is an EOF-based transfer ($EOF:<delimiter>) or size-based ($<size>) */
-        if (strncmp(buf + 1, "EOF:", 4) == 0 && strlen(buf + 5) >= RDB_EOF_MARK_SIZE) {
-            /* EOF-based transfer: extract the delimiter */
-            memcpy(eofmark, buf + 5, RDB_EOF_MARK_SIZE);
-            memset(lastbytes, 0, RDB_EOF_MARK_SIZE);
-            *usemark = true;
-            *repl_transfer_size = 0;
-        } else {
-            /* Size-based transfer: parse the size */
-            *usemark = false;
-            *repl_transfer_size = strtol(buf + 1, NULL, 10);
-        }
-
-        return C_OK;
+read_metadata:
+    nread = connSyncReadLine(conn, buf, 1024, server.repl_syncio_timeout * 1000);
+    if (nread == -1) {
+        serverLog(LL_WARNING, "I/O error reading bulk count from PRIMARY: %s", connGetLastError(conn));
+        return C_ERR;
+    } else {
+        /* nread here is returned by connSyncReadLine(), which calls syncReadLine() and
+         * convert "\r\n" to '\0' so 1 byte is lost. */
+        if (inBioThread())
+            server.bio_stat_net_repl_input_bytes += nread + 1;
+        else
+            server.stat_net_repl_input_bytes += nread + 1;
     }
+
+    /* Check the bulk payload header for errors */
+    if (buf[0] == '-') {
+        serverLog(LL_WARNING, "PRIMARY aborted replication with an error: %s", buf + 1);
+        return C_ERR;
+    } else if (buf[0] == '\0') {
+        /* At this stage just a newline works as a PING in order to take
+         * the connection live. So we refresh our last interaction
+         * timestamp. */
+        server.repl_transfer_lastio = server.unixtime;
+        return C_RETRY;
+    } else if (buf[0] == '+') {
+        if (strncmp(buf, "+RDBFRAMED", 10) != 0) {
+            serverLog(LL_WARNING, "Unexpected metadata preface from PRIMARY: %s", buf);
+            return C_ERR;
+        }
+
+        /* The optional framed preface is followed by the regular bulk
+         * metadata line, so read the next line from the primary. */
+        goto read_metadata;
+    } else if (buf[0] != '$') {
+        serverLog(LL_WARNING,
+                  "Bad protocol from PRIMARY, the first byte is not '$' (we received '%s'), are you sure the host "
+                  "and port are right?",
+                  buf);
+        return C_ERR;
+    }
+
+    /* Check if this is an EOF-based transfer ($EOF:<delimiter>) or size-based ($<size>) */
+    if (strncmp(buf + 1, "EOF:", 4) == 0 && strlen(buf + 5) >= RDB_EOF_MARK_SIZE) {
+        /* EOF-based transfer: extract the delimiter */
+        memcpy(eofmark, buf + 5, RDB_EOF_MARK_SIZE);
+        memset(lastbytes, 0, RDB_EOF_MARK_SIZE);
+        *usemark = true;
+        *repl_transfer_size = 0;
+    } else {
+        /* Size-based transfer: parse the size */
+        *usemark = false;
+        *repl_transfer_size = strtol(buf + 1, NULL, 10);
+    }
+
+    return C_OK;
 }
 
 void replicaBeforeLoadPrimaryRDB(connection *conn, int use_diskless_load) {
