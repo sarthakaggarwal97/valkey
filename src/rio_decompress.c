@@ -159,7 +159,11 @@ static size_t rioDecompressRead(rio *r, void *buf, size_t len) {
         }
 
         size_t chunk = avail < remaining ? avail : remaining;
-        memcpy(out, rd->rawbuf + rd->pos, chunk);
+        unsigned char *dest = out;
+        memcpy(dest, rd->rawbuf + rd->pos, chunk);
+        if (r->update_cksum == NULL) {
+            rioGenericUpdateChecksum(r, dest, chunk);
+        }
         rd->pos += chunk;
         out += chunk;
         remaining -= chunk;
