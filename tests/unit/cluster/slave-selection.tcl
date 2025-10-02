@@ -108,7 +108,7 @@ test "Node #10 should eventually replicate node #5" {
     # Valgrind runs are significantly slower and occasionally need more time
     # for the cluster to propagate the new primary. Use a larger timeout to
     # avoid spurious failures in slow environments.
-    wait_for_condition 2000 50 {
+    wait_for_condition 5000 100 {
         ([lindex [R 10 role] 2] == $port5) &&
         ([lindex [R 10 role] 3] eq {connected})
     } else {
