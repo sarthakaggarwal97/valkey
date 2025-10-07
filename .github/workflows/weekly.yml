@@ -1,0 +1,75 @@
+name: Weekly Test Workflow for Released Branches
+on:
+  schedule:
+    - cron: '0 6 * * 0'
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: read
+concurrency:
+  group: weekly-release-tests
+  cancel-in-progress: false
+jobs:
+  trigger-release-branches:
+    if: github.repository == 'valkey-io/valkey'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger weekly workflow for release branches
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const workflowId = 'daily.yml';
+            const workflowRef = (context.ref || '').replace('refs/heads/', '') || 'unstable';
+
+            const branches = await github.paginate(github.rest.repos.listBranches, {
+              owner,
+              repo,
+              per_page: 100,
+            });
+
+            const MIN_MAJOR = 7;
+            const MIN_MINOR = 2;
+
+            const releaseBranches = branches
+              .map(branch => branch.name)
+              .filter(name => /^\d+\.\d+$/.test(name))
+              .filter(name => {
+                const [major, minor] = name.split('.').map(Number);
+                return (
+                  Number.isInteger(major) &&
+                  Number.isInteger(minor) &&
+                  (major > MIN_MAJOR || (major === MIN_MAJOR && minor >= MIN_MINOR))
+                );
+              })
+              .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+            if (releaseBranches.length === 0) {
+              core.info('No release branches found matching "X.Y" pattern and >= 7.2.');
+              return;
+            }
+
+            core.info(`Found release branches: ${releaseBranches.join(', ')}`);
+            core.info(`Dispatching '${workflowId}' from ref '${workflowRef}'...`);
+
+            let ok = 0, fail = 0;
+            for (const branch of releaseBranches) {
+              try {
+                await github.rest.actions.createWorkflowDispatch({
+                  owner,
+                  repo,
+                  workflow_id: workflowId,
+                  ref: workflowRef,
+                  inputs: {
+                    use_git_ref: branch,
+                  },
+                });
+                core.info(`Dispatched for ${branch}`);
+                ok++;
+              } catch (e) {
+                core.warning(`Failed for ${branch}: ${e.message}`);
+                fail++;
+              }
+            }
+            core.info(`Dispatch summary: ${ok} succeeded, ${fail} failed.`);
