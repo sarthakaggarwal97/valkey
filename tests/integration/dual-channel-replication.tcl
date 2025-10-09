@@ -537,8 +537,8 @@ start_server {tags {"dual-channel-replication external:skip"}} {
             $primary config set repl-timeout 100
             $replica config set repl-timeout 100
         } else {
-            $primary config set repl-timeout 10            
-            $replica config set repl-timeout 10
+            $primary config set repl-timeout 30
+            $replica config set repl-timeout 30
         }
 
         # Avoids timeout by keeping the RDB child alive longer while the replica is inactive
