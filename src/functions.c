@@ -184,16 +184,38 @@ void functionsLibCtxClear(functionsLibCtx *lib_ctx) {
         stats->n_lib = 0;
     }
     dictReleaseIterator(iter);
-    curr_functions_lib_ctx->cache_memory = 0;
+    lib_ctx->cache_memory = 0;
+}
+
+/* Reset each registered engine. When 'async' is non-zero, collect per-engine
+ * lazy reset callbacks into 'engine_callbacks' so that the old engine state
+ * (e.g. the previous Lua VM) can be released by a background thread. */
+static void resetEnginesOrCollectCallbacks(list *engine_callbacks) {
+    int async = engine_callbacks != NULL;
+    dictIterator *iter = dictGetIterator(engines);
+    dictEntry *entry = NULL;
+    while ((entry = dictNext(iter))) {
+        engineInfo *ei = dictGetVal(entry);
+        engine *e = ei->engine;
+        if (!e->reset) continue;
+        engineLazyResetCallback *cb = e->reset(e->engine_ctx, async);
+        if (async && cb) {
+            listAddNodeTail(engine_callbacks, cb);
+        }
+    }
+    dictReleaseIterator(iter);
 }
 
 void functionsLibCtxClearCurrent(int async) {
     if (async) {
         functionsLibCtx *old_l_ctx = curr_functions_lib_ctx;
         curr_functions_lib_ctx = functionsLibCtxCreate();
-        freeFunctionsAsync(old_l_ctx);
+        list *engine_callbacks = listCreate();
+        resetEnginesOrCollectCallbacks(engine_callbacks);
+        freeFunctionsAsync(old_l_ctx, engine_callbacks);
     } else {
         functionsLibCtxClear(curr_functions_lib_ctx);
+        resetEnginesOrCollectCallbacks(NULL);
     }
 }
 
@@ -204,6 +226,22 @@ void functionsLibCtxFree(functionsLibCtx *functions_lib_ctx) {
     dictRelease(functions_lib_ctx->libraries);
     dictRelease(functions_lib_ctx->engines_stats);
     zfree(functions_lib_ctx);
+}
+
+/* Run and free engine reset callbacks collected during an async flush. */
+void runEngineResetCallbacks(list *engine_callbacks) {
+    if (!engine_callbacks) return;
+    listIter *iter = listGetIterator(engine_callbacks, 0);
+    listNode *node = NULL;
+    while ((node = listNext(iter)) != NULL) {
+        engineLazyResetCallback *cb = listNodeValue(node);
+        if (cb != NULL) {
+            cb->callback(cb->context);
+            zfree(cb);
+        }
+    }
+    listReleaseIterator(iter);
+    listRelease(engine_callbacks);
 }
 
 /* Swap the current functions ctx with the given one.

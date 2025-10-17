@@ -49,6 +49,14 @@
 
 typedef struct functionLibInfo functionLibInfo;
 
+/* Callback for resetting an engine's runtime state asynchronously.
+ * When returned by engine->reset, holds the state (e.g. the old Lua VM)
+ * to be released by a background lazyfree thread. */
+typedef struct engineLazyResetCallback {
+    void *context;
+    void (*callback)(void *context);
+} engineLazyResetCallback;
+
 typedef struct engine {
     /* engine specific context */
     void *engine_ctx;
@@ -83,6 +91,12 @@ typedef struct engine {
 
     /* free the given function */
     void (*free_function)(void *engine_ctx, void *compiled_function);
+
+    /* Reset the engine's runtime state (e.g. recreate the Lua VM).
+     * When 'async' is non-zero, returns a callback whose caller is
+     * responsible for invoking and freeing it on a background thread;
+     * otherwise the reset runs inline and NULL is returned. */
+    engineLazyResetCallback *(*reset)(void *engine_ctx, int async);
 } engine;
 
 /* Hold information about an engine.
@@ -127,6 +141,7 @@ void functionsLibCtxClearCurrent(int async);
 void functionsLibCtxFree(functionsLibCtx *lib_ctx);
 void functionsLibCtxClear(functionsLibCtx *lib_ctx);
 void functionsLibCtxSwapWithCurrent(functionsLibCtx *lib_ctx);
+void runEngineResetCallbacks(list *engine_callbacks);
 
 int functionLibCreateFunction(sds name, void *function, functionLibInfo *li, sds desc, uint64_t f_flags, sds *err);
 
