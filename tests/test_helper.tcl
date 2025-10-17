@@ -94,6 +94,9 @@ set ::solo_tests_count 0
 set ::debug_defrag 0
 set ::completed_tests 0
 set ::total_loops 1
+set ::loop_failed_current 0
+set ::loop_passes 0
+set ::loop_failures 0
 
 # Expand a unit specification (test name, file, or directory) into a list
 # of canonical unit names relative to the tests directory.
@@ -375,6 +378,9 @@ proc test_server_main {} {
     array set ::clients_start_time {}
     set ::clients_time_history {}
     set ::failed_tests {}
+    set ::loop_failed_current 0
+    set ::loop_passes 0
+    set ::loop_failures 0
 
     # Enter the event loop to handle clients I/O
     after 100 test_server_cron
@@ -388,6 +394,7 @@ proc test_server_cron {} {
     if {$elapsed > $::timeout} {
         set err "\[[colorstr red TIMEOUT]\]: clients state report follows."
         puts $err
+        set ::loop_failed_current 1
         foreach fd $::active_clients {
             if {[info exist ::active_clients_task($fd)]} {
                 set task $::active_clients_task($fd)
@@ -474,6 +481,7 @@ proc read_from_test_client fd {
         set err "\[[colorstr red $status]\]: $data"
         puts $err
         lappend ::failed_tests $err
+        set ::loop_failed_current 1
         set ::active_clients_task($fd) "(ERR) $data"
         if {$::exit_on_failure} {
             puts "(Fast fail: test will exit now)"
@@ -569,6 +577,12 @@ proc signal_idle_client fd {
         lappend ::active_clients $fd
         incr ::next_test
         if {$::loop > 1 && $::next_test == [llength $::all_tests]} {
+            if {$::loop_failed_current} {
+                incr ::loop_failures
+            } else {
+                incr ::loop_passes
+            }
+            set ::loop_failed_current 0
             set ::next_test 0
             incr ::loop -1
         }
@@ -594,6 +608,12 @@ proc signal_idle_client fd {
 # The the_end function gets called when all the test units were already
 # executed, so the test finished.
 proc the_end {} {
+    if {$::loop_failed_current} {
+        incr ::loop_failures
+    } else {
+        incr ::loop_passes
+    }
+    set ::loop_failed_current 0
     # TODO: print the status, exit with the right exit code.
     puts "\n                   The End\n"
     puts "Execution time of different units:"
@@ -605,10 +625,12 @@ proc the_end {} {
         foreach failed $::failed_tests {
             puts "*** $failed"
         }
+        puts "\nTest loops summary: $::loop_passes passed, $::loop_failures failed"
         if {!$::dont_clean} cleanup
         exit 1
     } else {
         puts "\n[colorstr bold-white {\o/}] [colorstr bold-green {All tests passed without errors!}]\n"
+        puts "Test loops summary: $::loop_passes passed, $::loop_failures failed"
         if {!$::dont_clean} cleanup
         exit 0
     }
