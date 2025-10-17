@@ -179,13 +179,71 @@ void functionsLibCtxClear(functionsLibCtx *lib_ctx) {
     lib_ctx->cache_memory = 0;
 }
 
+/* Collect an engine's reset callback (async) or perform the reset now (sync).
+ *
+ * For async flush we need to recreate the engine's lua VM on the main thread
+ * immediately (so subsequent FUNCTION LOAD calls don't race against the old
+ * VM being torn down from the lazyfree thread, see #1826). The old VM handle
+ * is returned by engine->reset and stored in 'old_envs' so that the
+ * background thread can dispose it later together with the freed lib ctx. */
+typedef struct engineResetCallback {
+    engine *engine;     /* Engine whose old env this entry owns. */
+    void *old_env;      /* Opaque handle for the old env (e.g. old lua_State). */
+} engineResetCallback;
+
+static void resetEngineEnvs(int async, list *old_envs) {
+    dictIterator *iter = dictGetIterator(engines);
+    dictEntry *entry = NULL;
+    while ((entry = dictNext(iter))) {
+        engineInfo *ei = dictGetVal(entry);
+        engine *engine = ei->engine;
+        if (!engine->reset) continue;
+        void *old_env = engine->reset(engine->engine_ctx, async);
+        if (async && old_env) {
+            engineResetCallback *cb = zmalloc(sizeof(*cb));
+            cb->engine = engine;
+            cb->old_env = old_env;
+            listAddNodeTail(old_envs, cb);
+        }
+    }
+    dictReleaseIterator(iter);
+}
+
+/* Dispose a list of engineResetCallback entries (called from the lazyfree
+ * thread). Releases the list as well. */
+static void disposeEngineResetCallbacks(list *old_envs) {
+    if (!old_envs) return;
+    listIter *iter = listGetIterator(old_envs, 0);
+    listNode *node = NULL;
+    while ((node = listNext(iter)) != NULL) {
+        engineResetCallback *cb = listNodeValue(node);
+        if (cb) {
+            if (cb->engine->engine_async_reset_dispose && cb->old_env) {
+                cb->engine->engine_async_reset_dispose(cb->old_env);
+            }
+            zfree(cb);
+        }
+    }
+    listReleaseIterator(iter);
+    listRelease(old_envs);
+}
+
 void functionsLibCtxClearCurrent(int async) {
     if (async) {
+        /* Swap the current lib ctx with a fresh one so that subsequent
+         * FUNCTION LOAD calls operate on the new (fresh) lua VM while the
+         * old one is still being torn down in the lazyfree thread. */
         functionsLibCtx *old_l_ctx = curr_functions_lib_ctx;
+        list *old_envs = listCreate();
+        resetEngineEnvs(1, old_envs);
         curr_functions_lib_ctx = functionsLibCtxCreate();
-        freeFunctionsAsync(old_l_ctx);
+        freeFunctionsAsync(old_l_ctx, old_envs);
     } else {
         functionsLibCtxClear(curr_functions_lib_ctx);
+        /* Re-create the engines' VMs synchronously so we actually reclaim
+         * the memory used by the previously compiled functions. Just
+         * lua_unref-ing the function refs does not trigger GC. */
+        resetEngineEnvs(0, NULL);
     }
 }
 
@@ -196,6 +254,12 @@ void functionsLibCtxFree(functionsLibCtx *functions_lib_ctx) {
     dictRelease(functions_lib_ctx->libraries);
     dictRelease(functions_lib_ctx->engines_stats);
     zfree(functions_lib_ctx);
+}
+
+/* Dispose the opaque engine reset callbacks collected during an async flush.
+ * Called from the lazyfree thread after the functions ctx has been freed. */
+void functionsEngineResetCallbacksDispose(list *old_envs) {
+    disposeEngineResetCallbacks(old_envs);
 }
 
 /* Swap the current functions ctx with the given one.

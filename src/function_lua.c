@@ -418,38 +418,37 @@ static int luaRegisterFunction(lua_State *lua) {
     return 0;
 }
 
-/* Initialize Lua engine, should be called once on start. */
-int luaEngineInitEngine(void) {
-    luaEngineCtx *lua_engine_ctx = zmalloc(sizeof(*lua_engine_ctx));
-    lua_engine_ctx->lua = lua_open();
+/* Open and configure a Lua VM for the functions engine. */
+static lua_State *luaEngineCreateLuaState(luaEngineCtx *lua_engine_ctx) {
+    lua_State *lua = lua_open();
 
-    luaRegisterServerAPI(lua_engine_ctx->lua);
+    luaRegisterServerAPI(lua);
 
     /* Register the library commands table and fields and store it to registry */
-    lua_newtable(lua_engine_ctx->lua); /* load library globals */
-    lua_newtable(lua_engine_ctx->lua); /* load library `redis` table */
+    lua_newtable(lua); /* load library globals */
+    lua_newtable(lua); /* load library `redis` table */
 
-    lua_pushstring(lua_engine_ctx->lua, "register_function");
-    lua_pushcfunction(lua_engine_ctx->lua, luaRegisterFunction);
-    lua_settable(lua_engine_ctx->lua, -3);
+    lua_pushstring(lua, "register_function");
+    lua_pushcfunction(lua, luaRegisterFunction);
+    lua_settable(lua, -3);
 
-    luaRegisterLogFunction(lua_engine_ctx->lua);
-    luaRegisterVersion(lua_engine_ctx->lua);
+    luaRegisterLogFunction(lua);
+    luaRegisterVersion(lua);
 
-    luaSetErrorMetatable(lua_engine_ctx->lua);
-    lua_setfield(lua_engine_ctx->lua, -2, SERVER_API_NAME);
+    luaSetErrorMetatable(lua);
+    lua_setfield(lua, -2, SERVER_API_NAME);
 
     /* Get the server object and also set it to the Redis API
      * compatibility namespace. */
-    lua_getfield(lua_engine_ctx->lua, -1, SERVER_API_NAME);
-    lua_setfield(lua_engine_ctx->lua, -2, REDIS_API_NAME);
+    lua_getfield(lua, -1, SERVER_API_NAME);
+    lua_setfield(lua, -2, REDIS_API_NAME);
 
-    luaSetErrorMetatable(lua_engine_ctx->lua);
-    luaSetTableProtectionRecursively(lua_engine_ctx->lua); /* protect load library globals */
-    lua_setfield(lua_engine_ctx->lua, LUA_REGISTRYINDEX, LIBRARY_API_NAME);
+    luaSetErrorMetatable(lua);
+    luaSetTableProtectionRecursively(lua); /* protect load library globals */
+    lua_setfield(lua, LUA_REGISTRYINDEX, LIBRARY_API_NAME);
 
     /* Save error handler to registry */
-    lua_pushstring(lua_engine_ctx->lua, REGISTRY_ERROR_HANDLER_NAME);
+    lua_pushstring(lua, REGISTRY_ERROR_HANDLER_NAME);
     char *errh_func = "local dbg = debug\n"
                       "debug = nil\n"
                       "local error_handler = function (err)\n"
@@ -467,34 +466,85 @@ int luaEngineInitEngine(void) {
                       "  return err\n"
                       "end\n"
                       "return error_handler";
-    luaL_loadbuffer(lua_engine_ctx->lua, errh_func, strlen(errh_func), "@err_handler_def");
-    lua_pcall(lua_engine_ctx->lua, 0, 1, 0);
-    lua_settable(lua_engine_ctx->lua, LUA_REGISTRYINDEX);
+    luaL_loadbuffer(lua, errh_func, strlen(errh_func), "@err_handler_def");
+    lua_pcall(lua, 0, 1, 0);
+    lua_settable(lua, LUA_REGISTRYINDEX);
 
-    lua_pushvalue(lua_engine_ctx->lua, LUA_GLOBALSINDEX);
-    luaSetErrorMetatable(lua_engine_ctx->lua);
-    luaSetTableProtectionRecursively(lua_engine_ctx->lua); /* protect globals */
-    lua_pop(lua_engine_ctx->lua, 1);
+    lua_pushvalue(lua, LUA_GLOBALSINDEX);
+    luaSetErrorMetatable(lua);
+    luaSetTableProtectionRecursively(lua); /* protect globals */
+    lua_pop(lua, 1);
 
     /* Save default globals to registry */
-    lua_pushvalue(lua_engine_ctx->lua, LUA_GLOBALSINDEX);
-    lua_setfield(lua_engine_ctx->lua, LUA_REGISTRYINDEX, GLOBALS_API_NAME);
+    lua_pushvalue(lua, LUA_GLOBALSINDEX);
+    lua_setfield(lua, LUA_REGISTRYINDEX, GLOBALS_API_NAME);
 
     /* save the engine_ctx on the registry so we can get it from the Lua interpreter */
-    luaSaveOnRegistry(lua_engine_ctx->lua, REGISTRY_ENGINE_CTX_NAME, lua_engine_ctx);
+    luaSaveOnRegistry(lua, REGISTRY_ENGINE_CTX_NAME, lua_engine_ctx);
 
     /* Create new empty table to be the new globals, we will be able to control the real globals
      * using metatable */
-    lua_newtable(lua_engine_ctx->lua); /* new globals */
-    lua_newtable(lua_engine_ctx->lua); /* new globals metatable */
-    lua_pushvalue(lua_engine_ctx->lua, LUA_GLOBALSINDEX);
-    lua_setfield(lua_engine_ctx->lua, -2, "__index");
-    lua_enablereadonlytable(lua_engine_ctx->lua, -1, 1); /* protect the metatable */
-    lua_setmetatable(lua_engine_ctx->lua, -2);
-    lua_enablereadonlytable(lua_engine_ctx->lua, -1, 1); /* protect the new global table */
-    lua_replace(lua_engine_ctx->lua, LUA_GLOBALSINDEX);  /* set new global table as the new globals */
+    lua_newtable(lua); /* new globals */
+    lua_newtable(lua); /* new globals metatable */
+    lua_pushvalue(lua, LUA_GLOBALSINDEX);
+    lua_setfield(lua, -2, "__index");
+    lua_enablereadonlytable(lua, -1, 1); /* protect the metatable */
+    lua_setmetatable(lua, -2);
+    lua_enablereadonlytable(lua, -1, 1); /* protect the new global table */
+    lua_replace(lua, LUA_GLOBALSINDEX);  /* set new global table as the new globals */
     /* Set metatables of basic types (string, number, nil etc.) readonly. */
-    luaSetTableProtectionForBasicTypes(lua_engine_ctx->lua);
+    luaSetTableProtectionForBasicTypes(lua);
+
+    return lua;
+}
+
+/* Close a lua_State previously produced by luaEngineCreateLuaState and release
+ * its memory back to libc when applicable. */
+static void luaEngineCloseLuaState(lua_State *lua) {
+    lua_gc(lua, LUA_GCCOLLECT, 0);
+    lua_close(lua);
+
+#if !defined(USE_LIBC)
+    /* The lua interpreter may hold a lot of memory internally, and lua is
+     * using libc. libc may take a bit longer to return the memory to the OS,
+     * so after lua_close, we call malloc_trim try to purge it earlier.
+     *
+     * We do that only when the server itself does not use libc. When Lua and the server
+     * use different allocators, one won't use the fragmentation holes of the
+     * other, and released memory can take a long time until it is returned to
+     * the OS. */
+    zlibc_trim();
+#endif
+}
+
+/* Re-create the lua VM used by the functions engine. Returns the old
+ * lua_State so that the caller (sync path) or the lazyfree thread (async path)
+ * can dispose it. */
+static void *luaEngineReset(void *engine_ctx, int async) {
+    luaEngineCtx *lua_engine_ctx = engine_ctx;
+    lua_State *old_lua = lua_engine_ctx->lua;
+    lua_engine_ctx->lua = luaEngineCreateLuaState(lua_engine_ctx);
+
+    if (async) {
+        /* Caller will invoke engine_async_reset_dispose later. */
+        return old_lua;
+    }
+
+    luaEngineCloseLuaState(old_lua);
+    return NULL;
+}
+
+/* Dispose the opaque pointer (old lua_State) returned by luaEngineReset when
+ * called with async=1. Invoked by the lazyfree thread. */
+static void luaEngineResetDispose(void *old_env) {
+    lua_State *old_lua = old_env;
+    luaEngineCloseLuaState(old_lua);
+}
+
+/* Initialize Lua engine, should be called once on start. */
+int luaEngineInitEngine(void) {
+    luaEngineCtx *lua_engine_ctx = zmalloc(sizeof(*lua_engine_ctx));
+    lua_engine_ctx->lua = luaEngineCreateLuaState(lua_engine_ctx);
 
     engine *lua_engine = zmalloc(sizeof(*lua_engine));
     *lua_engine = (engine){
@@ -505,6 +555,8 @@ int luaEngineInitEngine(void) {
         .get_function_memory_overhead = luaEngineFunctionMemoryOverhead,
         .get_engine_memory_overhead = luaEngineMemoryOverhead,
         .free_function = luaEngineFreeFunction,
+        .reset = luaEngineReset,
+        .engine_async_reset_dispose = luaEngineResetDispose,
     };
     return functionsRegisterEngine(LUA_ENGINE_NAME, lua_engine);
 }

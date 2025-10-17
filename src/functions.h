@@ -93,6 +93,20 @@ typedef struct engine {
 
     /* free the given function */
     void (*free_function)(void *engine_ctx, void *compiled_function);
+
+    /* Re-create the engine's runtime environment (e.g. the Lua VM) in order
+     * to reclaim memory and isolate subsequent script loads. The engine is
+     * expected to allocate a fresh environment and return the previous
+     * resources for deferred disposal. If 'async' is non-zero the returned
+     * opaque pointer will be handed to the lazyfree thread which must then
+     * call 'engine_async_reset_dispose' on it. If 'async' is zero the engine
+     * is expected to dispose the old environment synchronously and return
+     * NULL. */
+    void *(*reset)(void *engine_ctx, int async);
+
+    /* Dispose the opaque resources previously returned by 'reset' called
+     * with async=1. */
+    void (*engine_async_reset_dispose)(void *old_env);
 } engine;
 
 /* Hold information about an engine.
@@ -137,6 +151,7 @@ void functionsLibCtxClearCurrent(int async);
 void functionsLibCtxFree(functionsLibCtx *lib_ctx);
 void functionsLibCtxClear(functionsLibCtx *lib_ctx);
 void functionsLibCtxSwapWithCurrent(functionsLibCtx *lib_ctx);
+void functionsEngineResetCallbacksDispose(list *engine_callbacks);
 
 int functionLibCreateFunction(sds name, void *function, functionLibInfo *li, sds desc, uint64_t f_flags, sds *err);
 
