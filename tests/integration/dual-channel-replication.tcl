@@ -71,6 +71,7 @@ start_server {tags {"dual-channel-replication external:skip"}} {
                 fail "Primary should allow backlog (have=$cur, need>[expr {2 * $backlog_size}]) to grow beyond its limits during dual-channel-replication sync handshake"
             }
             wait_and_resume_process -1
+            $replica debug pause-after-fork 0
 
             verify_replica_online $primary 0 500
             wait_for_condition 50 1000 {
