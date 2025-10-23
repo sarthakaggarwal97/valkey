@@ -1,4 +1,4 @@
-name: Test Flaky Dual Channel Replication
+name: Test Flaky Dual Channel Replication macos
 
 on:
   workflow_dispatch:
