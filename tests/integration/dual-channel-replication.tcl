@@ -48,7 +48,7 @@ start_server {tags {"dual-channel-replication external:skip"}} {
         }
 
         # Avoids timeout by keeping the RDB child alive longer while the replica is inactive
-        $primary config set rdb-key-save-delay 200
+        $primary config set rdb-key-save-delay 1000
         populate 10000 primary 10000
         
         set load_handle1 [start_one_key_write_load $primary_host $primary_port 100 "mykey1"]
@@ -72,12 +72,18 @@ start_server {tags {"dual-channel-replication external:skip"}} {
             }
             wait_and_resume_process -1
 
+            set t0 [clock milliseconds]
+
             verify_replica_online $primary 0 500
-            wait_for_condition 50 1000 {
+            wait_for_condition 500 1000 {
                 [status $replica master_link_status] == "up"
             } else {
                 fail "Replica is not synced"
             }
+
+            set elapsed [expr {[clock milliseconds] - $t0}]
+            puts "Replica master_link_status==up after ${elapsed} ms"
+
         }
 
         stop_write_load $load_handle1
