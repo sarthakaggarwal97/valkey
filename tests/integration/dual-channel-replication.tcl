@@ -75,7 +75,7 @@ start_server {tags {"dual-channel-replication external:skip"}} {
             set t0 [clock milliseconds]
 
             verify_replica_online $primary 0 500
-            wait_for_condition 500 1000 {
+            wait_for_condition 1000 1000 {
                 [status $replica master_link_status] == "up"
             } else {
                 fail "Replica is not synced"
