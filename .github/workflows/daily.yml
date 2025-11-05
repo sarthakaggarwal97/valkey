@@ -956,7 +956,14 @@ jobs:
           dnf -y install gcc make procps-ng which /usr/bin/kill /usr/bin/awk
           make -j SERVER_CFLAGS='-Werror'
       - name: testprep
-        run: dnf -y install tcl tcltls
+        run: |
+          dnf -y install tcl tcltls
+          if [ -f /usr/bin/tclsh9.0 ] && [ ! -f /usr/bin/tclsh8.6 ]; then
+            ln -sf /usr/bin/tclsh9.0 /usr/bin/tclsh8.6
+          fi
+          if [ -f tests/test_helper.tcl ]; then
+            sed -i 's/package require Tcl 8\.5/package require Tcl 8.5-/' tests/test_helper.tcl
+          fi
       - name: test
         if: true && !contains(github.event.inputs.skiptests, 'valkey')
         run: ./runtest ${{ github.event_name != 'pull_request' && '--accurate' || '' }} --verbose --dump-logs ${{github.event.inputs.test_args}}
@@ -1020,6 +1027,12 @@ jobs:
       - name: testprep
         run: |
           dnf -y install tcl tcltls
+          if [ -f /usr/bin/tclsh9.0 ] && [ ! -f /usr/bin/tclsh8.6 ]; then
+            ln -sf /usr/bin/tclsh9.0 /usr/bin/tclsh8.6
+          fi
+          if [ -f tests/test_helper.tcl ]; then
+            sed -i 's/package require Tcl 8\.5/package require Tcl 8.5-/' tests/test_helper.tcl
+          fi
           ./utils/gen-test-certs.sh
       - name: test
         if: true && !contains(github.event.inputs.skiptests, 'valkey')
@@ -1088,6 +1101,12 @@ jobs:
       - name: testprep
         run: |
           dnf -y install tcl tcltls
+          if [ -f /usr/bin/tclsh9.0 ] && [ ! -f /usr/bin/tclsh8.6 ]; then
+            ln -sf /usr/bin/tclsh9.0 /usr/bin/tclsh8.6
+          fi
+          if [ -f tests/test_helper.tcl ]; then
+            sed -i 's/package require Tcl 8\.5/package require Tcl 8.5-/' tests/test_helper.tcl
+          fi
           ./utils/gen-test-certs.sh
       - name: test
         if: true && !contains(github.event.inputs.skiptests, 'valkey')
