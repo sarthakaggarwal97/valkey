@@ -522,47 +522,60 @@ start_server {} {
         r debug replybuffer resizing 0
 
         # Run over all sizes and create some clients using up that size
-        set total_client_mem 0
+        set total_mem 0
+        set bucket_totals {}
         set rrs {}
         for {set i 0} {$i < [llength $sizes]} {incr i} {
             set size [lindex $sizes $i]
 
+            set bucket_total 0
             for {set j 0} {$j < $clients_per_size} {incr j} {
                 set rr [valkey_client]
                 lappend rrs $rr
-                $rr client setname client-$i
+                set cname [format "client-%d-%d" $i $j]
+                $rr client setname $cname
                 $rr write [join [list "*2\r\n\$$size\r\n" [string repeat v $size]] ""]
                 $rr flush
+                wait_for_condition 200 10 {
+                    [client_field $cname tot-mem] >= $size
+                } else {
+                    fail "Failed to fill qbuf for test"
+                }
+                set client_mem [client_field $cname tot-mem]
+                incr bucket_total $client_mem
             }
-            set client_mem [client_field client-$i tot-mem]
+            # Use the average actual client size for ordering purposes.
+            set avg_size [expr {$bucket_total / double($clients_per_size)}]
 
             # Update our size list based on actual used up size (this is usually
             # slightly more than expected because of allocator bins
-            assert {$client_mem >= $size}
-            set sizes [lreplace $sizes $i $i $client_mem]
+            assert {$avg_size >= $size}
+            set sizes [lreplace $sizes $i $i $avg_size]
 
             # Account total client memory usage
-            incr total_mem [expr $clients_per_size * $client_mem]
+            incr total_mem $bucket_total
+            lappend bucket_totals $bucket_total
         }
 
         # Make sure all clients are connected
         set clients [split [string trim [r client list]] "\r\n"]
         for {set i 0} {$i < [llength $sizes]} {incr i} {
-            assert_equal [llength [lsearch -all $clients "*name=client-$i *"]] $clients_per_size
+            assert_equal [llength [lsearch -all $clients "*name=client-$i-* *"]] $clients_per_size
         }
 
         # For each size reduce maxmemory-clients so relevant clients should be evicted
         # do this from largest to smallest
-        foreach size [lreverse $sizes] {
+        set bucket_count [llength $sizes]
+        for {set idx [expr {$bucket_count - 1}]} {$idx >= 0} {incr idx -1} {
+            set size [lindex $sizes $idx]
             set control_mem [client_field control tot-mem]
-            set total_mem [expr $total_mem - $clients_per_size * $size]
+            set total_mem [expr {$total_mem - [lindex $bucket_totals $idx]}]
             r config set maxmemory-clients [expr $total_mem + $control_mem]
             set clients [split [string trim [r client list]] "\r\n"]
             # Verify only relevant clients were evicted
             for {set i 0} {$i < [llength $sizes]} {incr i} {
-                set verify_size [lindex $sizes $i]
-                set count [llength [lsearch -all $clients "*name=client-$i *"]]
-                if {$verify_size < $size} {
+                set count [llength [lsearch -all $clients "*name=client-$i-* *"]]
+                if {$i < $idx} {
                     assert_equal $count $clients_per_size
                 } else {
                     assert_equal $count 0
