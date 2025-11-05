@@ -64,7 +64,7 @@ on:
         type: string
         default: "unstable"
 concurrency:
-  group: daily-${{ github.head_ref || github.event.inputs.use_git_ref || github.ref }}
+  group: daily-${{ github.head_ref || inputs.use_git_ref || github.event.inputs.use_git_ref || github.ref }}
   cancel-in-progress: true
 permissions:
   contents: read
@@ -72,17 +72,17 @@ jobs:
   test-ubuntu-jemalloc:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'ubuntu')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -139,17 +139,17 @@ jobs:
   test-ubuntu-arm:
     runs-on: ubuntu-24.04-arm
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       (!contains(github.event.inputs.skipjobs, 'ubuntu') || !contains(github.event.inputs.skipjobs, 'arm'))
     timeout-minutes: 14400
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -180,7 +180,7 @@ jobs:
   test-ubuntu-jemalloc-fortify:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'fortify')
@@ -188,10 +188,10 @@ jobs:
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -225,17 +225,17 @@ jobs:
   test-ubuntu-libc-malloc:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'malloc')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -263,17 +263,17 @@ jobs:
   test-ubuntu-no-malloc-usable-size:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'malloc')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -301,17 +301,17 @@ jobs:
   test-ubuntu-32bit:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, '32bit')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -346,17 +346,17 @@ jobs:
   test-ubuntu-tls:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'tls')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -391,17 +391,17 @@ jobs:
   test-ubuntu-tls-no-tls:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'tls')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -436,17 +436,17 @@ jobs:
   test-ubuntu-io-threads:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'iothreads')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -469,17 +469,17 @@ jobs:
   test-ubuntu-tls-io-threads:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'tls') && !contains(github.event.inputs.skipjobs, 'iothreads')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -506,17 +506,17 @@ jobs:
   test-ubuntu-reclaim-cache:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'specific')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -581,17 +581,17 @@ jobs:
   test-valgrind-test:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'valgrind') && !contains(github.event.inputs.skiptests, 'valkey')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -612,17 +612,17 @@ jobs:
   test-valgrind-misc:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'valgrind') && !(contains(github.event.inputs.skiptests, 'modules') && contains(github.event.inputs.skiptests, 'unittest'))
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -648,17 +648,17 @@ jobs:
   test-valgrind-no-malloc-usable-size-test:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'valgrind') && !contains(github.event.inputs.skiptests, 'valkey')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -679,17 +679,17 @@ jobs:
   test-valgrind-no-malloc-usable-size-misc:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'valgrind') && !(contains(github.event.inputs.skiptests, 'modules') && contains(github.event.inputs.skiptests, 'unittest'))
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -715,7 +715,7 @@ jobs:
   test-sanitizer-address:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'sanitizer')
@@ -728,10 +728,10 @@ jobs:
       CC: ${{ matrix.compiler }}
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -770,7 +770,7 @@ jobs:
   test-sanitizer-undefined:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'sanitizer')
@@ -783,10 +783,10 @@ jobs:
       CC: ${{ matrix.compiler }}
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -825,7 +825,7 @@ jobs:
   test-sanitizer-force-defrag:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'sanitizer')
@@ -834,10 +834,10 @@ jobs:
       fail-fast: false
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -870,17 +870,17 @@ jobs:
   test-ubuntu-lttng:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'lttng')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -909,7 +909,7 @@ jobs:
         run: ./runtest-cluster ${{github.event.inputs.cluster_test_args}}
   test-rpm-distros-jemalloc:
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'rpm-distros')
@@ -936,10 +936,10 @@ jobs:
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -971,7 +971,7 @@ jobs:
         run: ./runtest-cluster ${{github.event.inputs.cluster_test_args}}
   test-rpm-distros-tls-module:
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'tls')
@@ -998,10 +998,10 @@ jobs:
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -1039,7 +1039,7 @@ jobs:
           ./runtest-cluster --tls-module ${{github.event.inputs.cluster_test_args}}
   test-rpm-distros-tls-module-no-tls:
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'unstable')) &&
       !contains(github.event.inputs.skipjobs, 'tls')
@@ -1066,10 +1066,10 @@ jobs:
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -1108,17 +1108,17 @@ jobs:
   test-macos-latest:
     runs-on: macos-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'macos') && !(contains(github.event.inputs.skiptests, 'valkey') && contains(github.event.inputs.skiptests, 'modules'))
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -1138,17 +1138,17 @@ jobs:
   test-macos-latest-sentinel:
     runs-on: macos-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'macos') && !contains(github.event.inputs.skiptests, 'sentinel')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -1165,17 +1165,17 @@ jobs:
   test-macos-latest-cluster:
     runs-on: macos-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'macos') && !contains(github.event.inputs.skiptests, 'cluster')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -1196,7 +1196,7 @@ jobs:
         os: [macos-13, macos-14]
     runs-on: ${{ matrix.os }}
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'macos')
@@ -1206,10 +1206,10 @@ jobs:
         with:
           xcode-version: latest
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -1223,17 +1223,17 @@ jobs:
   test-freebsd:
     runs-on: macos-13
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'freebsd')
     timeout-minutes: 1440
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
       - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
         with:
           repository: ${{ env.GITHUB_REPOSITORY }}
@@ -1252,17 +1252,17 @@ jobs:
   test-alpine-jemalloc:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'alpine')
     container: alpine:latest
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -1292,17 +1292,17 @@ jobs:
   test-alpine-libc-malloc:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'alpine')
     container: alpine:latest
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -1333,16 +1333,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 1440
     if: |
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && github.repository == 'valkey-io/valkey') ||
         (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'run-extra-tests') || github.event.pull_request.base.ref != 'unstable'))) &&
       !contains(github.event.inputs.skipjobs, 'reply-schema')
     steps:
       - name: prep
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         run: |
-          echo "GITHUB_REPOSITORY=${{github.event.inputs.use_repo}}" >> $GITHUB_ENV
-          echo "GITHUB_HEAD_REF=${{github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${{inputs.use_repo || github.event.inputs.use_repo}}" >> $GITHUB_ENV
+          echo "GITHUB_HEAD_REF=${{inputs.use_git_ref || github.event.inputs.use_git_ref}}" >> $GITHUB_ENV
           echo "skipjobs: ${{github.event.inputs.skipjobs}}"
           echo "skiptests: ${{github.event.inputs.skiptests}}"
           echo "test_args: ${{github.event.inputs.test_args}}"
@@ -1372,7 +1372,7 @@ jobs:
         with:
           path: "./utils/req-res-validator/requirements.txt"
       - name: validator
-        run: ./utils/req-res-log-validator.py --verbose --fail-missing-reply-schemas ${{ (!contains(github.event.inputs.skiptests, 'valkey') && !contains(github.event.inputs.skiptests, 'module') && !contains(github.event.inputs.sentinel, 'valkey') && !contains(github.event.inputs.skiptests, 'cluster')) && github.event.inputs.test_args == '' && github.event.inputs.cluster_test_args == '' && '--fail-commands-not-all-hit' || '' }}
+        run: ./utils/req-res-log-validator.py --verbose --fail-missing-reply-schemas ${{ (!contains(github.event.inputs.skiptests, 'valkey') && !contains(github.event.inputs.skiptests, 'module') && !contains(github.event.inputs.skiptests, 'sentinel') && !contains(github.event.inputs.skiptests, 'cluster')) && (inputs.test_args || github.event.inputs.test_args || '') == '' && (inputs.cluster_test_args || github.event.inputs.cluster_test_args || '') == '' && '--fail-commands-not-all-hit' || '' }}
   notify-about-job-results:
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'schedule' && github.repository == 'valkey-io/valkey'

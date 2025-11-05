@@ -56,4 +56,6 @@ jobs:
     with:
       use_repo: valkey-io/valkey
       use_git_ref: ${{ matrix.release-branch }}
+      skipjobs: ""
+      skiptests: ""
     secrets: inherit
