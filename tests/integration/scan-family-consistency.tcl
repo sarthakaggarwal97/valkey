@@ -36,8 +36,7 @@ test {scan family consistency with configured hash seed} {
                     fail "Active rehashing didn't finish"
                 }
 
-                $primary config set hz 0
-                $replica config set hz 0
+                after 1000
 
                 set cursor {{0} {}}
                 while {1} {
