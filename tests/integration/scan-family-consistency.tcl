@@ -39,8 +39,6 @@ test {scan family consistency with configured hash seed} {
                     fail "Active rehashing didn't finish"
                 }
 
-                after 100
-
                 $primary config set activerehashing no
                 $replica config set activerehashing no
 
