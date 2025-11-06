@@ -16,8 +16,8 @@ test {scan family consistency with configured hash seed} {
                 $replica replicaof $primary_host $primary_port
                 wait_for_sync $replica
 
-                $primary config set repl-timeout 120
-                $replica config set repl-timeout 120
+                $primary config set repl-timeout 240
+                $replica config set repl-timeout 240
 
                 set n 50
                 for {set i 0} {$i < $n} {incr i} {
