@@ -2,7 +2,7 @@ test {scan family consistency with configured hash seed} {
     start_server {tags {"external:skip"}} {
 
         set fixed_seed "aabbccddeeffgghh"
-        set shared_overrides [list appendonly no save "" hash-seed $fixed_seed activedefrag no hz 100]
+        set shared_overrides [list appendonly no save "" hash-seed $fixed_seed activedefrag no hz 1]
 
         start_server [list overrides $shared_overrides] {
             set primary_host [srv 0 host]
@@ -15,6 +15,9 @@ test {scan family consistency with configured hash seed} {
                 $primary flushall
                 $replica replicaof $primary_host $primary_port
                 wait_for_sync $replica
+
+                $primary config set repl-timeout 120
+                $replica config set repl-timeout 120
 
                 set n 50
                 for {set i 0} {$i < $n} {incr i} {
@@ -39,7 +42,7 @@ test {scan family consistency with configured hash seed} {
                 $primary config set hz 0
                 $replica config set hz 0
 
-                after 1000
+                after 100
 
                 set cursor {{0} {}}
                 while {1} {
