@@ -42,7 +42,7 @@ test {scan family consistency with configured hash seed} {
                 $primary config set hz 0
                 $replica config set hz 0
 
-                after 1000
+                after 2000
 
                 set cursor {{0} {}}
                 while {1} {
