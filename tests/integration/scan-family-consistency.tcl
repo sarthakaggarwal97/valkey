@@ -13,8 +13,8 @@ test {scan family consistency with configured hash seed} {
                 set replica [srv 0 client]
 
                 $primary flushall
-                $primary config set repl-timeout 3600
-                $replica config set repl-timeout 3600
+                $primary config set repl-timeout 10000
+                $replica config set repl-timeout 10000
                 $replica replicaof $primary_host $primary_port
                 wait_for_sync $replica
 
