@@ -2,7 +2,7 @@ test {scan family consistency with configured hash seed} {
     start_server {tags {"external:skip"}} {
 
         set fixed_seed "aabbccddeeffgghh"
-        set shared_overrides [list appendonly no save "" hash-seed $fixed_seed activedefrag no hz 1 activerehashing no]
+        set shared_overrides [list appendonly no save "" hash-seed $fixed_seed activedefrag no hz 1]
 
         start_server [list overrides $shared_overrides] {
             set primary_host [srv 0 host]
@@ -26,24 +26,16 @@ test {scan family consistency with configured hash seed} {
                     $primary zadd z $i "m:$i"
                 }
 
-                wait_for_condition 200 50 {
-                    [$replica dbsize] == [$primary dbsize]
+                wait_for_condition 100 50 {
+                    [dict get [$primary memory stats] db.dict.rehashing.count] == 0
                 } else {
-                    fail "replica did not catch up dbsize (primary=[$primary dbsize], replica=[$replica dbsize])"
+                    fail "Active rehashing didn't finish"
                 }
 
-                wait_for_condition 400 25 {
-                    set d [dict create {*}[$primary memory stats]]
-                    expr {[dict exists $d db.dict.rehashing.count] && [dict get $d db.dict.rehashing.count] == 0}
+                wait_for_condition 100 50 {
+                    [dict get [$replica memory stats] db.dict.rehashing.count] == 0
                 } else {
-                    fail "active rehashing did not finish"
-                }
-
-                wait_for_condition 400 25 {
-                    set d [dict create {*}[$replica memory stats]]
-                    expr {[dict exists $d db.dict.rehashing.count] && [dict get $d db.dict.rehashing.count] == 0}
-                } else {
-                    fail "active rehashing did not finish"
+                    fail "Active rehashing didn't finish"
                 }
 
                 set cursor {{0} {}}
