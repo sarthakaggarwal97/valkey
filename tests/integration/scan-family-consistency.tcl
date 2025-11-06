@@ -31,6 +31,21 @@ test {scan family consistency with configured hash seed} {
                 } else {
                     fail "replica did not catch up dbsize (primary=[$primary dbsize], replica=[$replica dbsize])"
                 }
+
+                wait_for_condition 400 25 {
+                    set d [dict create {*}[$primary memory stats]]
+                    expr {[dict exists $d db.dict.rehashing.count] && [dict get $d db.dict.rehashing.count] == 0}
+                } else {
+                    fail "active rehashing did not finish"
+                }
+
+                wait_for_condition 400 25 {
+                    set d [dict create {*}[$replica memory stats]]
+                    expr {[dict exists $d db.dict.rehashing.count] && [dict get $d db.dict.rehashing.count] == 0}
+                } else {
+                    fail "active rehashing did not finish"
+                }
+
                 set cursor {{0} {}}
                 while {1} {
                     set primary_cursor_next [$primary scan [lindex $cursor 0]]
