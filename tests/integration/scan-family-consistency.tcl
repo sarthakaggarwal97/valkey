@@ -39,6 +39,8 @@ test {scan family consistency with configured hash seed} {
                 $primary config set hz 0
                 $replica config set hz 0
 
+                after 1000
+
                 set cursor {{0} {}}
                 while {1} {
                     set primary_cursor_next [$primary scan [lindex $cursor 0]]
