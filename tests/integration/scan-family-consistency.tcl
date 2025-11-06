@@ -2,7 +2,7 @@ test {scan family consistency with configured hash seed} {
     start_server {tags {"external:skip"}} {
 
         set fixed_seed "aabbccddeeffgghh"
-        set shared_overrides [list appendonly no save "" hash-seed $fixed_seed activedefrag no hz 0]
+        set shared_overrides [list appendonly no save "" hash-seed $fixed_seed activedefrag no hz 100]
 
         start_server [list overrides $shared_overrides] {
             set primary_host [srv 0 host]
@@ -39,10 +39,10 @@ test {scan family consistency with configured hash seed} {
                     fail "Active rehashing didn't finish"
                 }
 
-                after 100
+                $primary config set hz 0
+                $replica config set hz 0
 
-                $primary config set activerehashing no
-                $replica config set activerehashing no
+                after 1000
 
                 set cursor {{0} {}}
                 while {1} {
