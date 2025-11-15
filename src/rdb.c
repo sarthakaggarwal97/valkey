@@ -264,8 +264,14 @@ rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb) {
 void rdbChunkBufferFree(rdbChunkBuffer *buf) {
     if (buf == NULL) return;
     
+    /* Free write buffer if present */
     if (buf->data != NULL) {
         zfree(buf->data);
+    }
+    
+    /* Free read buffer if present (handles both read and write buffers) */
+    if (buf->decomp_data != NULL) {
+        zfree(buf->decomp_data);
     }
     
     zfree(buf);
@@ -273,13 +279,8 @@ void rdbChunkBufferFree(rdbChunkBuffer *buf) {
 
 /* Free a chunk buffer used for reading. */
 void rdbChunkBufferFreeForRead(rdbChunkBuffer *buf) {
-    if (buf == NULL) return;
-    
-    if (buf->decomp_data != NULL) {
-        zfree(buf->decomp_data);
-    }
-    
-    zfree(buf);
+    /* Just call the unified free function */
+    rdbChunkBufferFree(buf);
 }
 
 /* Compress and write a chunk to the underlying rio stream.
@@ -2024,29 +2025,39 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     rio chunk_rio;
     rio *actual_rdb = rdb;
     rdbChunkBuffer *chunk_buf = NULL;
+    int use_chunk_compression = 0;
 
-    /* Write the header BEFORE initializing chunk compression */
-    if (server.rdb_checksum) rdb->update_cksum = rioGenericUpdateChecksum;
-    /* Use version 81 if chunk compression is enabled, otherwise use version 80 */
-    int rdb_version = server.rdb_chunk_compression ? 81 : 80;
-    snprintf(magic, sizeof(magic), "VALKEY%03d", rdb_version);
-    if (rdbWriteRaw(rdb, magic, 9) == -1) goto werr;
-
-    /* Now wrap with chunk compression if enabled (after header is written) */
+    /* Try to initialize chunk compression BEFORE writing header */
     if (server.rdb_chunk_compression) {
         rioInitWithChunkCompression(&chunk_rio, rdb, server.rdb_chunk_size);
         
         /* Check if chunk buffer allocation succeeded */
         if (chunk_rio.io.chunk.chunk_buf == NULL) {
             serverLog(LL_WARNING, "Failed to allocate chunk compression buffer (%zu bytes), "
-                      "falling back to uncompressed RDB save", server.rdb_chunk_size);
-            /* Fall back to uncompressed saving - actual_rdb remains pointing to rdb */
-        } else {
-            actual_rdb = &chunk_rio;
-            /* Copy checksum settings to chunk rio */
-            if (server.rdb_checksum) actual_rdb->update_cksum = rioGenericUpdateChecksum;
-            serverLog(LL_NOTICE, "RDB: Chunk compression enabled with chunk size %zu bytes", 
-                      server.rdb_chunk_size);
+                      "aborting RDB save", server.rdb_chunk_size);
+            errno = ENOMEM;
+            goto werr;
+        }
+        
+        use_chunk_compression = 1;
+        serverLog(LL_NOTICE, "RDB: Chunk compression enabled with chunk size %zu bytes", 
+                  server.rdb_chunk_size);
+    }
+
+    /* Write header with correct version based on actual compression mode */
+    if (server.rdb_checksum) rdb->update_cksum = rioGenericUpdateChecksum;
+    int rdb_version = use_chunk_compression ? 81 : 80;
+    snprintf(magic, sizeof(magic), "VALKEY%03d", rdb_version);
+    if (rdbWriteRaw(rdb, magic, 9) == -1) goto werr;
+
+    /* Now switch to chunk rio if compression is enabled */
+    if (use_chunk_compression) {
+        actual_rdb = &chunk_rio;
+        /* Copy checksum settings to chunk rio and seed with header checksum */
+        if (server.rdb_checksum) {
+            actual_rdb->update_cksum = rioGenericUpdateChecksum;
+            /* Seed the chunk rio checksum with the header bytes we already wrote */
+            actual_rdb->cksum = rdb->cksum;
         }
     }
     if (rdbSaveInfoAuxFields(actual_rdb, rdbflags, rsi) == -1) goto werr;
@@ -3759,9 +3770,11 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             return C_ERR;
         }
         actual_rdb = &chunk_rio;
-        /* Copy checksum settings to chunk rio */
+        /* Copy checksum settings to chunk rio and seed with header checksum */
         actual_rdb->update_cksum = rdbLoadProgressCallback;
         actual_rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
+        /* Seed the chunk rio checksum with the header bytes we already read */
+        actual_rdb->cksum = rdb->cksum;
     }
 
     /* Key-specific attributes, set by opcodes before the key type. */

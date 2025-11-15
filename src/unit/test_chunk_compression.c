@@ -19,21 +19,6 @@ extern ssize_t rdbChunkBufferWrite(struct rdbChunkBuffer *buf, void *data, size_
 extern ssize_t rdbChunkBufferRead(struct rdbChunkBuffer *buf, void *data, size_t len);
 extern int rdbChunkBufferFlush(struct rdbChunkBuffer *buf);
 
-/* Initialize minimal server config for logging */
-static void initMinimalServerConfig(void) {
-    memset(&server, 0, sizeof(server));
-    server.verbosity = LL_NOTHING;
-    server.logfile[0] = '\0';
-    server.syslog_enabled = 0;
-    server.log_timestamp_format = LOG_TIMESTAMP_LEGACY;
-    server.log_format = LOG_FORMAT_LEGACY;
-    server.pid = getpid();
-    server.sentinel_mode = 0;
-    server.primary_host = NULL;
-    server.timezone = 0;
-    atomic_init(&server.daylight_active, 0);
-}
-
 /* Test compression of highly compressible data (repeated pattern) */
 int test_compressHighlyCompressibleData(int argc, char **argv, int flags) {
     UNUSED(argc);

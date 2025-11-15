@@ -17,21 +17,6 @@ extern void rdbChunkBufferFree(struct rdbChunkBuffer *buf);
 extern ssize_t rdbChunkBufferWrite(struct rdbChunkBuffer *buf, void *data, size_t len);
 extern int rdbChunkBufferFlush(struct rdbChunkBuffer *buf);
 
-/* Initialize minimal server config for logging */
-static void initMinimalServerConfig(void) {
-    memset(&server, 0, sizeof(server));
-    server.verbosity = LL_NOTHING; /* Disable all logging to avoid any log output */
-    server.logfile[0] = '\0'; /* Log to stdout if needed */
-    server.syslog_enabled = 0;
-    server.log_timestamp_format = LOG_TIMESTAMP_LEGACY;
-    server.log_format = LOG_FORMAT_LEGACY;
-    server.pid = getpid();
-    server.sentinel_mode = 0;
-    server.primary_host = NULL;
-    server.timezone = 0;
-    atomic_init(&server.daylight_active, 0);
-}
-
 /* Test chunk buffer creation and initialization */
 int test_chunkBufferCreate(int argc, char **argv, int flags) {
     UNUSED(argc);
