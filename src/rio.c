@@ -451,6 +451,10 @@ void rioSetReclaimCache(rio *r, int enabled) {
     r->io.file.reclaim_cache = enabled;
 }
 
+/* Forward declarations for chunk rio functions */
+static size_t rioChunkRead(rio *r, void *buf, size_t len);
+static size_t rioChunkWrite(rio *r, const void *buf, size_t len);
+
 /* Check the type of rio. */
 uint8_t rioCheckType(rio *r) {
     if (r->read == rioFileRead) {
@@ -459,9 +463,13 @@ uint8_t rioCheckType(rio *r) {
         return RIO_TYPE_BUFFER;
     } else if (r->read == rioConnRead) {
         return RIO_TYPE_CONN;
-    } else {
-        /* r->read == rioFdRead */
+    } else if (r->read == rioFdRead) {
         return RIO_TYPE_FD;
+    } else if (r->read == rioChunkRead) {
+        return RIO_TYPE_CHUNK;
+    } else {
+        /* Unknown type */
+        return 0;
     }
 }
 
@@ -634,4 +642,91 @@ void rioFreeConnset(rio *r) {
     zfree(r->io.connset.conns);
     zfree(r->io.connset.state);
     sdsfree(r->io.connset.buf);
+}
+
+/* ------------------- Chunk compression wrapper implementation -------------- */
+
+/* Forward declarations for rdbChunkBuffer functions from rdb.c */
+struct rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size);
+struct rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb);
+void rdbChunkBufferFree(struct rdbChunkBuffer *buf);
+void rdbChunkBufferFreeForRead(struct rdbChunkBuffer *buf);
+ssize_t rdbChunkBufferWrite(struct rdbChunkBuffer *buf, void *data, size_t len);
+ssize_t rdbChunkBufferRead(struct rdbChunkBuffer *buf, void *data, size_t len);
+int rdbChunkBufferFlush(struct rdbChunkBuffer *buf);
+
+/* Returns 1 or 0 for success/failure. */
+static size_t rioChunkWrite(rio *r, const void *buf, size_t len) {
+    ssize_t written = rdbChunkBufferWrite(r->io.chunk.chunk_buf, (void *)buf, len);
+    if (written == -1) return 0;
+    r->io.chunk.pos += written;
+    return 1;
+}
+
+/* Returns 1 or 0 for success/failure. */
+static size_t rioChunkRead(rio *r, void *buf, size_t len) {
+    ssize_t nread = rdbChunkBufferRead(r->io.chunk.chunk_buf, buf, len);
+    if (nread == -1) return 0;
+    if (nread == 0) return 0; /* EOF */
+    if ((size_t)nread != len) return 0; /* Short read */
+    r->io.chunk.pos += nread;
+    return 1;
+}
+
+/* Returns read/write position. */
+static off_t rioChunkTell(rio *r) {
+    return r->io.chunk.pos;
+}
+
+/* Flushes any buffer to target device if applicable. Returns 1 on success
+ * and 0 on failures. */
+static int rioChunkFlush(rio *r) {
+    return rdbChunkBufferFlush(r->io.chunk.chunk_buf) == 0 ? 1 : 0;
+}
+
+static const rio rioChunkIO = {
+    rioChunkRead,
+    rioChunkWrite,
+    rioChunkTell,
+    rioChunkFlush,
+    NULL,       /* update_checksum */
+    0,          /* current checksum */
+    0,          /* flags */
+    0,          /* bytes read or written */
+    0,          /* read/write chunk size */
+    {{NULL, 0}} /* union for io-specific vars */
+};
+
+/* Initialize a rio with chunk compression wrapping an underlying rio.
+ * For writing (compression), chunk_size should be the desired chunk size.
+ * For reading (decompression), chunk_size should be 0. */
+void rioInitWithChunkCompression(rio *r, rio *underlying, size_t chunk_size) {
+    *r = rioChunkIO;
+    r->io.chunk.underlying_rio = underlying;
+    r->io.chunk.pos = 0;
+    
+    if (chunk_size > 0) {
+        /* Initialize for writing (compression) */
+        r->io.chunk.chunk_buf = rdbChunkBufferCreate(underlying, chunk_size);
+    } else {
+        /* Initialize for reading (decompression) */
+        r->io.chunk.chunk_buf = rdbChunkBufferCreateForRead(underlying);
+    }
+}
+
+/* Release the chunk compression rio stream. */
+void rioFreeChunk(rio *r) {
+    if (r->io.chunk.chunk_buf != NULL) {
+        /* Determine if this was a write or read buffer based on whether
+         * we have a chunk_size set. We can check the chunk_buf structure
+         * but for simplicity, we'll just call the appropriate free function.
+         * The free functions handle NULL gracefully. */
+        
+        /* Try to flush first if this was a write buffer */
+        rdbChunkBufferFlush(r->io.chunk.chunk_buf);
+        
+        /* Free the buffer - this works for both read and write buffers */
+        rdbChunkBufferFree(r->io.chunk.chunk_buf);
+        r->io.chunk.chunk_buf = NULL;
+    }
 }

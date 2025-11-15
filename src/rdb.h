@@ -48,8 +48,10 @@
  *
  * In an RDB file/stream, we also check the magic string REDIS or VALKEY but in
  * the DUMP/RESTORE format, there is only the RDB version number and no magic
- * string. */
-#define RDB_VERSION 80
+ * string.
+ *
+ * RDB 81 introduces chunk-based compression for improved compression ratios. */
+#define RDB_VERSION 81
 
 /* Reserved range for foreign (unsupported, non-OSS) RDB format. */
 #define RDB_FOREIGN_VERSION_MIN 12
@@ -131,6 +133,7 @@ enum RdbType {
 
 /* Special RDB opcodes (saved/loaded with rdbSaveType/rdbLoadType).
  * These are special RDB types, but they start from 255 and grow down. */
+#define RDB_OPCODE_CHUNK 242           /* Compressed chunk follows. */
 #define RDB_OPCODE_SLOT_IMPORT 243     /* Slot import state. */
 #define RDB_OPCODE_SLOT_INFO 244       /* Foreign slot info, safe to ignore. */
 #define RDB_OPCODE_FUNCTION2 245       /* function library data */

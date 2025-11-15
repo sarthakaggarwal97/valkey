@@ -2939,6 +2939,9 @@ void initServer(void) {
     server.rdb_save_time_start = -1;
     server.rdb_last_load_keys_expired = 0;
     server.rdb_last_load_keys_loaded = 0;
+    server.rdb_last_save_chunks = 0;
+    server.rdb_last_save_compressed_bytes = 0;
+    server.rdb_last_save_uncompressed_bytes = 0;
     server.dirty = 0;
     server.crashed = 0;
     resetServerStats();
@@ -6125,6 +6128,20 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
                 "rdb_last_cow_size:%zu\r\n", server.stat_rdb_cow_bytes,
                 "rdb_last_load_keys_expired:%lld\r\n", server.rdb_last_load_keys_expired,
                 "rdb_last_load_keys_loaded:%lld\r\n", server.rdb_last_load_keys_loaded,
+                "rdb_chunk_compression:%s\r\n", server.rdb_chunk_compression ? "yes" : "no",
+                "rdb_chunk_size:%zu\r\n", server.rdb_chunk_size,
+                "rdb_last_save_chunks:%llu\r\n", (unsigned long long)server.rdb_last_save_chunks,
+                "rdb_last_save_compressed_bytes:%llu\r\n", (unsigned long long)server.rdb_last_save_compressed_bytes,
+                "rdb_last_save_uncompressed_bytes:%llu\r\n", (unsigned long long)server.rdb_last_save_uncompressed_bytes));
+
+        /* Add compression ratio if chunk compression was used and we have data */
+        if (server.rdb_chunk_compression && server.rdb_last_save_compressed_bytes > 0) {
+            double compression_ratio = (double)server.rdb_last_save_uncompressed_bytes / 
+                                      (double)server.rdb_last_save_compressed_bytes;
+            info = sdscatprintf(info, "rdb_last_save_compression_ratio:%.2f\r\n", compression_ratio);
+        }
+
+        info = sdscatprintf(info, FMTARGS(
                 "aof_enabled:%d\r\n", server.aof_state != AOF_OFF,
                 "aof_rewrite_in_progress:%d\r\n", server.child_type == CHILD_TYPE_AOF,
                 "aof_rewrite_scheduled:%d\r\n", server.aof_rewrite_scheduled,
