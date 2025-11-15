@@ -1069,10 +1069,13 @@ ssize_t rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
 
     /* Try LZF compression - under 20 bytes it's unable to compress even
      * aaaaaaaaaaaaaaaaaa so skip it.
-     * IMPORTANT: Skip per-string compression when chunk compression is enabled.
+     * IMPORTANT: Skip per-string compression when chunk compression is active for this rio.
      * This prevents double compression and allows the chunk compressor to find
-     * patterns across multiple strings for better compression ratios. */
-    if (server.rdb_compression && !server.rdb_chunk_compression && len > 20) {
+     * patterns across multiple strings for better compression ratios.
+     * Note: We check if the current rio is using chunk compression, not the global flag,
+     * because DUMP/RESTORE/MIGRATE don't use chunk compression and should still use LZF. */
+    int is_chunk_compressed = (rioCheckType(rdb) == RIO_TYPE_CHUNK);
+    if (server.rdb_compression && !is_chunk_compressed && len > 20) {
         n = rdbSaveLzfStringObject(rdb, s, len);
         if (n == -1) return -1;
         if (n > 0) return n;
