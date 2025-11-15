@@ -51,7 +51,7 @@
  * string.
  *
  * RDB 81 introduces chunk-based compression for RDB files (not DUMP/RESTORE). */
-#define RDB_VERSION 80
+#define RDB_VERSION 81
 
 /* Reserved range for foreign (unsupported, non-OSS) RDB format. */
 #define RDB_FOREIGN_VERSION_MIN 12
