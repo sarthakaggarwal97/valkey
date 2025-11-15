@@ -731,8 +731,8 @@ void functionDumpCommand(client *c) {
     rdbSaveFunctions(&payload);
 
     /* RDB version */
-    buf[0] = RDB_VERSION & 0xff;
-    buf[1] = (RDB_VERSION >> 8) & 0xff;
+    buf[0] = RDB_LEGACY_DUMP_VERSION & 0xff;
+    buf[1] = (RDB_LEGACY_DUMP_VERSION >> 8) & 0xff;
     payload.io.buffer.ptr = sdscatlen(payload.io.buffer.ptr, buf, 2);
 
     /* CRC64 */
