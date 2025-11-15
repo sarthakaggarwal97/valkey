@@ -649,6 +649,7 @@ void rioFreeConnset(rio *r) {
 /* Forward declarations for rdbChunkBuffer functions from rdb.c */
 struct rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size);
 struct rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb);
+int rdbChunkBufferIsWriteBuffer(struct rdbChunkBuffer *buf);
 void rdbChunkBufferFree(struct rdbChunkBuffer *buf);
 void rdbChunkBufferFreeForRead(struct rdbChunkBuffer *buf);
 ssize_t rdbChunkBufferWrite(struct rdbChunkBuffer *buf, void *data, size_t len);
@@ -717,16 +718,13 @@ void rioInitWithChunkCompression(rio *r, rio *underlying, size_t chunk_size) {
 /* Release the chunk compression rio stream. */
 void rioFreeChunk(rio *r) {
     if (r->io.chunk.chunk_buf != NULL) {
-        /* Determine if this was a write or read buffer based on whether
-         * we have a chunk_size set. We can check the chunk_buf structure
-         * but for simplicity, we'll just call the appropriate free function.
-         * The free functions handle NULL gracefully. */
-        
-        /* Try to flush first if this was a write buffer */
-        rdbChunkBufferFlush(r->io.chunk.chunk_buf);
-        
-        /* Free the buffer - this works for both read and write buffers */
-        rdbChunkBufferFree(r->io.chunk.chunk_buf);
+        if (rdbChunkBufferIsWriteBuffer(r->io.chunk.chunk_buf)) {
+            /* Try to flush first if this was a write buffer */
+            rdbChunkBufferFlush(r->io.chunk.chunk_buf);
+            rdbChunkBufferFree(r->io.chunk.chunk_buf);
+        } else {
+            rdbChunkBufferFreeForRead(r->io.chunk.chunk_buf);
+        }
         r->io.chunk.chunk_buf = NULL;
     }
 }

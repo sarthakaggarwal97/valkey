@@ -152,7 +152,7 @@ start_server {tags {"rdb chunk-compression"}} {
 start_server {tags {"rdb chunk-compression config"}} {
     test {Enable chunk compression via CONFIG SET} {
         set config [r config get rdb-chunk-compression]
-        assert_equal [lindex $config 1] "no"
+        assert_equal [lindex $config 1] "yes"
         r config set rdb-chunk-compression yes
         set config [r config get rdb-chunk-compression]
         assert_equal [lindex $config 1] "yes"
@@ -285,11 +285,11 @@ start_server {tags {"rdb chunk-compression config"}} {
         assert {$small_chunks > $large_chunks}
     }
     test {CONFIG GET returns correct default values} {
-        r config set rdb-chunk-compression no
+        r config set rdb-chunk-compression yes
         r config set rdb-chunk-size 65536
         set compression [lindex [r config get rdb-chunk-compression] 1]
         set chunk_size [lindex [r config get rdb-chunk-size] 1]
-        assert_equal $compression "no"
+        assert_equal $compression "yes"
         assert_equal $chunk_size "65536"
     }
     test {Multiple CONFIG SET operations in sequence} {

@@ -259,6 +259,11 @@ rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb) {
     return buf;
 }
 
+int rdbChunkBufferIsWriteBuffer(rdbChunkBuffer *buf) {
+    if (buf == NULL) return 0;
+    return buf->chunk_size != 0;
+}
+
 /* Free a chunk buffer used for writing.
  * This should be called after rdbChunkBufferFlush() to ensure all data is written. */
 void rdbChunkBufferFree(rdbChunkBuffer *buf) {
@@ -2040,7 +2045,7 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
         }
         
         use_chunk_compression = 1;
-        serverLog(LL_NOTICE, "RDB: Chunk compression enabled with chunk size %zu bytes", 
+        serverLog(LL_NOTICE, "RDB: Chunk compression enabled with chunk size %zu bytes",
                   server.rdb_chunk_size);
     }
 
@@ -2053,6 +2058,11 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     /* Now switch to chunk rio if compression is enabled */
     if (use_chunk_compression) {
         actual_rdb = &chunk_rio;
+        /* Seed checksum and counters with the bytes already written (header). */
+        actual_rdb->cksum = rdb->cksum;
+        actual_rdb->processed_bytes = rdb->processed_bytes;
+        actual_rdb->flags = rdb->flags;
+        actual_rdb->max_processing_chunk = rdb->max_processing_chunk;
         /* Copy checksum settings to chunk rio and seed with header checksum */
         if (server.rdb_checksum) {
             actual_rdb->update_cksum = rioGenericUpdateChecksum;
@@ -2079,7 +2089,7 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA) && rdbSaveModulesAux(actual_rdb, VALKEYMODULE_AUX_AFTER_RDB) == -1) goto werr;
 
     /* Flush chunk buffer before writing EOF marker */
-    if (server.rdb_chunk_compression) {
+    if (use_chunk_compression) {
         chunk_buf = actual_rdb->io.chunk.chunk_buf;
         if (chunk_buf && rdbChunkBufferFlush(chunk_buf) == -1) goto werr;
     }
@@ -2094,7 +2104,7 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     if (rioWrite(actual_rdb, &cksum, 8) == 0) goto werr;
 
     /* Final flush and cleanup if chunk compression was used */
-    if (server.rdb_chunk_compression) {
+    if (use_chunk_compression) {
         /* Flush any remaining data in the chunk buffer (EOF and checksum) */
         if (chunk_buf && rdbChunkBufferFlush(chunk_buf) == -1) goto werr;
         
@@ -2132,6 +2142,10 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     return C_OK;
 
 werr:
+    /* Clean up chunk compression resources on error */
+    if (use_chunk_compression) {
+        rioFreeChunk(&chunk_rio);
+    }
     if (error) *error = errno;
     return C_ERR;
 }
@@ -3770,6 +3784,9 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             return C_ERR;
         }
         actual_rdb = &chunk_rio;
+        actual_rdb->cksum = rdb->cksum;
+        actual_rdb->processed_bytes = rdb->processed_bytes;
+        actual_rdb->flags = rdb->flags;
         /* Copy checksum settings to chunk rio and seed with header checksum */
         actual_rdb->update_cksum = rdbLoadProgressCallback;
         actual_rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
