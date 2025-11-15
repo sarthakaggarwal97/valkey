@@ -211,6 +211,12 @@ if {!$isroot} {
 # Fix permissions of the RDB file.
 file attributes $dump_path -permissions 0666
 
+# Create a new RDB file without chunk compression for CRC corruption test
+start_server [list overrides [list "dir" $server_path "rdb-chunk-compression" "no"] keep_persistence true] {
+    r set corrupted_test_key test_value
+    r save
+}
+
 # Corrupt its CRC64 checksum.
 set filesize [file size $dump_path]
 set fd [open $dump_path r+]
@@ -227,6 +233,36 @@ start_server_and_kill_it [list "dir" $server_path] {
                 [exec tail -10 < [dict get $srv stdout]]]
         } else {
             fail "Server started even if RDB was corrupted!"
+        }
+    }
+}
+
+# Test CRC validation with chunk compression enabled
+set server_path_chunk [tmpdir "server.rdb-chunk-crc-test"]
+start_server [list overrides [list "dir" $server_path_chunk "rdb-chunk-compression" "yes"] keep_persistence true] {
+    r set chunk_crc_test_key test_value
+    r save
+}
+
+set dump_path_chunk [file join $server_path_chunk dump.rdb]
+
+# Corrupt the RDB file by modifying some bytes in the middle (not the CRC itself)
+# This will cause a CRC mismatch when the file is loaded
+set fd [open $dump_path_chunk r+]
+fconfigure $fd -translation binary
+seek $fd 50 start
+puts -nonewline $fd "CORRUPT"; # Corrupt some data in the middle
+close $fd
+
+start_server_and_kill_it [list "dir" $server_path_chunk "rdb-chunk-compression" "yes"] {
+    test {Server should not start if chunk-compressed RDB has CRC error} {
+        wait_for_condition 50 100 {
+            [string match {*CRC error*} \
+                [exec tail -10 < [dict get $srv stdout]]] ||
+            [string match {*RDB CRC error*} \
+                [exec tail -10 < [dict get $srv stdout]]]
+        } else {
+            fail "Server started even though chunk-compressed RDB had CRC error!"
         }
     }
 }

@@ -2088,25 +2088,19 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
 
     if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA) && rdbSaveModulesAux(actual_rdb, VALKEYMODULE_AUX_AFTER_RDB) == -1) goto werr;
 
-    /* Flush chunk buffer before writing EOF marker */
+    /* EOF opcode */
+    if (rdbSaveType(actual_rdb, RDB_OPCODE_EOF) == -1) goto werr;
+
+    /* CRC64 checksum. It will be zero if checksum computation is disabled, the
+     * loading code skips the check in this case. */
+    cksum = actual_rdb->cksum;
+    memrev64ifbe(&cksum);
+    if (rioWrite(actual_rdb, &cksum, 8) == 0) goto werr;
+
+    /* Flush chunk buffer after writing EOF marker and checksum */
     if (use_chunk_compression) {
         chunk_buf = actual_rdb->io.chunk.chunk_buf;
         if (chunk_buf && rdbChunkBufferFlush(chunk_buf) == -1) goto werr;
-    }
-
-    /* EOF opcode - write directly to underlying rio, not through chunk compression */
-    if (rdbSaveType(rdb, RDB_OPCODE_EOF) == -1) goto werr;
-
-    /* CRC64 checksum. It will be zero if checksum computation is disabled, the
-     * loading code skips the check in this case. 
-     * Write directly to underlying rio, not through chunk compression. */
-    cksum = actual_rdb->cksum;
-    memrev64ifbe(&cksum);
-    if (rioWrite(rdb, &cksum, 8) == 0) goto werr;
-
-    /* Cleanup chunk compression if it was used */
-    if (use_chunk_compression) {
-        /* No need to flush again - EOF and checksum were written directly */
         
         /* Collect and log statistics */
         if (chunk_buf) {
