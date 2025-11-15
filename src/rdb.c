@@ -2025,19 +2025,30 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     rio *actual_rdb = rdb;
     rdbChunkBuffer *chunk_buf = NULL;
 
-    /* If chunk compression is enabled, wrap the rio with chunk compression */
-    if (server.rdb_chunk_compression) {
-        rioInitWithChunkCompression(&chunk_rio, rdb, server.rdb_chunk_size);
-        actual_rdb = &chunk_rio;
-        serverLog(LL_NOTICE, "RDB: Chunk compression enabled with chunk size %zu bytes", 
-                  server.rdb_chunk_size);
-    }
-
-    if (server.rdb_checksum) actual_rdb->update_cksum = rioGenericUpdateChecksum;
+    /* Write the header BEFORE initializing chunk compression */
+    if (server.rdb_checksum) rdb->update_cksum = rioGenericUpdateChecksum;
     /* Use version 81 if chunk compression is enabled, otherwise use version 80 */
     int rdb_version = server.rdb_chunk_compression ? 81 : 80;
     snprintf(magic, sizeof(magic), "VALKEY%03d", rdb_version);
-    if (rdbWriteRaw(actual_rdb, magic, 9) == -1) goto werr;
+    if (rdbWriteRaw(rdb, magic, 9) == -1) goto werr;
+
+    /* Now wrap with chunk compression if enabled (after header is written) */
+    if (server.rdb_chunk_compression) {
+        rioInitWithChunkCompression(&chunk_rio, rdb, server.rdb_chunk_size);
+        
+        /* Check if chunk buffer allocation succeeded */
+        if (chunk_rio.io.chunk.chunk_buf == NULL) {
+            serverLog(LL_WARNING, "Failed to allocate chunk compression buffer (%zu bytes), "
+                      "falling back to uncompressed RDB save", server.rdb_chunk_size);
+            /* Fall back to uncompressed saving - actual_rdb remains pointing to rdb */
+        } else {
+            actual_rdb = &chunk_rio;
+            /* Copy checksum settings to chunk rio */
+            if (server.rdb_checksum) actual_rdb->update_cksum = rioGenericUpdateChecksum;
+            serverLog(LL_NOTICE, "RDB: Chunk compression enabled with chunk size %zu bytes", 
+                      server.rdb_chunk_size);
+        }
+    }
     if (rdbSaveInfoAuxFields(actual_rdb, rdbflags, rsi) == -1) goto werr;
     if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA) && rdbSaveModulesAux(actual_rdb, VALKEYMODULE_AUX_BEFORE_RDB) == -1) goto werr;
 
