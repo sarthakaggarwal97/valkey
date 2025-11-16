@@ -3665,6 +3665,14 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
     }
 }
 
+/* Checksum-only callback for chunk decompression.
+ * When using chunk decompression, we need to calculate checksums on decompressed data,
+ * but track progress based on compressed bytes (from the underlying rio).
+ * This callback only updates the checksum without affecting progress tracking. */
+static void rdbLoadChecksumCallback(rio *r, const void *buf, size_t len) {
+    if (server.rdb_checksum) rioGenericUpdateChecksum(r, buf, len);
+}
+
 /* Save the given functions_ctx to the rdb.
  * The err output parameter is optional and will be set with relevant error
  * message on failure, it is the caller responsibility to free the error
@@ -3784,14 +3792,17 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         actual_rdb->cksum = rdb->cksum;
         actual_rdb->processed_bytes = rdb->processed_bytes;
         actual_rdb->flags = rdb->flags;
-        /* Copy checksum settings to chunk rio and seed with header checksum */
-        actual_rdb->update_cksum = rdbLoadProgressCallback;
+        /* For chunk decompression, we need to:
+         * 1. Calculate checksums on decompressed data (for CRC verification)
+         * 2. Track progress based on compressed bytes (to match file size)
+         * So we use a checksum-only callback on the chunk rio, and keep the full
+         * progress callback on the underlying rio. */
+        actual_rdb->update_cksum = rdbLoadChecksumCallback;
         actual_rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
         /* Seed the chunk rio checksum with the header bytes we already read */
         actual_rdb->cksum = rdb->cksum;
-        /* Clear the callback on the underlying rio to avoid double counting progress.
-         * The chunk rio will handle progress reporting on decompressed bytes. */
-        rdb->update_cksum = NULL;
+        /* The underlying rio (rdb) keeps its rdbLoadProgressCallback to track
+         * progress based on compressed bytes read from disk. */
     }
 
     /* Key-specific attributes, set by opcodes before the key type. */
