@@ -638,13 +638,34 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
     }
     rdbstate.rdbver = rdbver;
 
+    /* Version 81 uses chunk compression, version 80 uses legacy compression */
+    rio chunk_rio;
+    rio *r = &rdb;
+    int use_chunk_decompression = (rdbver == 81);
+    
+    if (use_chunk_decompression) {
+        rdbCheckInfo("RDB version 81 detected, initializing chunk decompression");
+        rioInitWithChunkCompression(&chunk_rio, &rdb, 0); /* 0 = reading mode */
+        if (chunk_rio.io.chunk.chunk_buf == NULL) {
+            rdbCheckError("Failed to initialize chunk decompression buffer");
+            goto err;
+        }
+        r = &chunk_rio;
+        r->cksum = rdb.cksum;
+        r->update_cksum = rdbLoadProgressCallback;
+        /* Seed the chunk rio checksum with the header bytes we already read */
+        r->cksum = rdb.cksum;
+        /* Update rdbstate.rio for error reporting */
+        rdbstate.rio = r;
+    }
+
     expiretime = -1;
     while (1) {
         robj *key, *val;
 
         /* Read type. */
         rdbstate.doing = RDB_CHECK_DOING_READ_TYPE;
-        if ((type = rdbLoadType(&rdb)) == -1) goto eoferr;
+        if ((type = rdbLoadType(r)) == -1) goto eoferr;
 
         /* Handle special types. */
         if (type == RDB_OPCODE_EXPIRETIME) {
@@ -652,25 +673,25 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
             /* EXPIRETIME: load an expire associated with the next key
              * to load. Note that after loading an expire we need to
              * load the actual type, and continue. */
-            expiretime = rdbLoadTime(&rdb);
+            expiretime = rdbLoadTime(r);
             expiretime *= 1000;
-            if (rioGetReadError(&rdb)) goto eoferr;
+            if (rioGetReadError(r)) goto eoferr;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_EXPIRETIME_MS) {
             /* EXPIRETIME_MS: milliseconds precision expire times introduced
              * with RDB v3. Like EXPIRETIME but no with more precision. */
             rdbstate.doing = RDB_CHECK_DOING_READ_EXPIRE;
-            expiretime = rdbLoadMillisecondTime(&rdb, rdbver);
-            if (rioGetReadError(&rdb)) goto eoferr;
+            expiretime = rdbLoadMillisecondTime(r, rdbver);
+            if (rioGetReadError(r)) goto eoferr;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_FREQ) {
             /* FREQ: LFU frequency. */
             uint8_t byte;
-            if (rioRead(&rdb, &byte, 1) == 0) goto eoferr;
+            if (rioRead(r, &byte, 1) == 0) goto eoferr;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_IDLE) {
             /* IDLE: LRU idle time. */
-            if (rdbLoadLen(&rdb, NULL) == RDB_LENERR) goto eoferr;
+            if (rdbLoadLen(r, NULL) == RDB_LENERR) goto eoferr;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_EOF) {
             /* EOF: End of file, exit the main loop. */
@@ -678,7 +699,7 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
         } else if (type == RDB_OPCODE_SELECTDB) {
             /* SELECTDB: Select the specified database. */
             rdbstate.doing = RDB_CHECK_DOING_READ_LEN;
-            if ((dbid = rdbLoadLen(&rdb, NULL)) == RDB_LENERR) goto eoferr;
+            if ((dbid = rdbLoadLen(r, NULL)) == RDB_LENERR) goto eoferr;
             rdbCheckInfo("Selecting DB ID %llu", (unsigned long long)dbid);
             selected_dbid = dbid;
             if (selected_dbid > rdbstate.databases) {
@@ -691,24 +712,24 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
              * selected data base, in order to avoid useless rehashing. */
             uint64_t db_size, expires_size;
             rdbstate.doing = RDB_CHECK_DOING_READ_LEN;
-            if ((db_size = rdbLoadLen(&rdb, NULL)) == RDB_LENERR) goto eoferr;
-            if ((expires_size = rdbLoadLen(&rdb, NULL)) == RDB_LENERR) goto eoferr;
+            if ((db_size = rdbLoadLen(r, NULL)) == RDB_LENERR) goto eoferr;
+            if ((expires_size = rdbLoadLen(r, NULL)) == RDB_LENERR) goto eoferr;
             continue; /* Read type again. */
         } else if (type == RDB_OPCODE_SLOT_INFO) {
             /* Hint used in foreign RDB versions. */
-            if (rdbLoadLen(&rdb, NULL) == RDB_LENERR) goto eoferr;
-            if (rdbLoadLen(&rdb, NULL) == RDB_LENERR) goto eoferr;
-            if (rdbLoadLen(&rdb, NULL) == RDB_LENERR) goto eoferr;
+            if (rdbLoadLen(r, NULL) == RDB_LENERR) goto eoferr;
+            if (rdbLoadLen(r, NULL) == RDB_LENERR) goto eoferr;
+            if (rdbLoadLen(r, NULL) == RDB_LENERR) goto eoferr;
             continue; /* Read type again. */
         } else if (type == RDB_OPCODE_SLOT_IMPORT) {
             robj *job_name;
-            if ((job_name = rdbLoadStringObject(&rdb)) == NULL) goto eoferr;
+            if ((job_name = rdbLoadStringObject(r)) == NULL) goto eoferr;
             decrRefCount(job_name);
             uint64_t num_slot_ranges;
-            if ((num_slot_ranges = rdbLoadLen(&rdb, NULL)) == RDB_LENERR) goto eoferr;
+            if ((num_slot_ranges = rdbLoadLen(r, NULL)) == RDB_LENERR) goto eoferr;
             for (uint64_t i = 0; i < num_slot_ranges; i++) {
-                if (rdbLoadLen(&rdb, NULL) == RDB_LENERR) goto eoferr;
-                if (rdbLoadLen(&rdb, NULL) == RDB_LENERR) goto eoferr;
+                if (rdbLoadLen(r, NULL) == RDB_LENERR) goto eoferr;
+                if (rdbLoadLen(r, NULL) == RDB_LENERR) goto eoferr;
             }
             continue; /* Read type again. */
         } else if (type == RDB_OPCODE_AUX) {
@@ -719,8 +740,8 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
              * An AUX field is composed of two strings: key and value. */
             robj *auxkey, *auxval;
             rdbstate.doing = RDB_CHECK_DOING_READ_AUX;
-            if ((auxkey = rdbLoadStringObject(&rdb)) == NULL) goto eoferr;
-            if ((auxval = rdbLoadStringObject(&rdb)) == NULL) {
+            if ((auxkey = rdbLoadStringObject(r)) == NULL) goto eoferr;
+            if ((auxval = rdbLoadStringObject(r)) == NULL) {
                 decrRefCount(auxkey);
                 goto eoferr;
             }
@@ -736,9 +757,9 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
             /* AUX: Auxiliary data for modules. */
             uint64_t moduleid, when_opcode, when;
             rdbstate.doing = RDB_CHECK_DOING_READ_MODULE_AUX;
-            if ((moduleid = rdbLoadLen(&rdb, NULL)) == RDB_LENERR) goto eoferr;
-            if ((when_opcode = rdbLoadLen(&rdb, NULL)) == RDB_LENERR) goto eoferr;
-            if ((when = rdbLoadLen(&rdb, NULL)) == RDB_LENERR) goto eoferr;
+            if ((moduleid = rdbLoadLen(r, NULL)) == RDB_LENERR) goto eoferr;
+            if ((when_opcode = rdbLoadLen(r, NULL)) == RDB_LENERR) goto eoferr;
+            if ((when = rdbLoadLen(r, NULL)) == RDB_LENERR) goto eoferr;
             if (when_opcode != RDB_MODULE_OPCODE_UINT) {
                 rdbCheckError("bad when_opcode");
                 goto err;
@@ -748,7 +769,7 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
             moduleTypeNameByID(name, moduleid);
             rdbCheckInfo("MODULE AUX for: %s", name);
 
-            robj *o = rdbLoadCheckModuleValue(&rdb, name);
+            robj *o = rdbLoadCheckModuleValue(r, name);
             decrRefCount(o);
             continue; /* Read type again. */
         } else if (type == RDB_OPCODE_FUNCTION_PRE_GA) {
@@ -757,7 +778,7 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
         } else if (type == RDB_OPCODE_FUNCTION2) {
             sds err = NULL;
             rdbstate.doing = RDB_CHECK_DOING_READ_FUNCTIONS;
-            if (rdbFunctionLoad(&rdb, rdbver, NULL, 0, &err) != C_OK) {
+            if (rdbFunctionLoad(r, rdbver, NULL, 0, &err) != C_OK) {
                 rdbCheckError("Failed loading library, %s", err);
                 sdsfree(err);
                 goto err;
@@ -782,12 +803,12 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
 
         /* Read key */
         rdbstate.doing = RDB_CHECK_DOING_READ_KEY;
-        if ((key = rdbLoadStringObject(&rdb)) == NULL) goto eoferr;
+        if ((key = rdbLoadStringObject(r)) == NULL) goto eoferr;
         rdbstate.key = key;
         rdbstate.keys++;
         /* Read value */
         rdbstate.doing = RDB_CHECK_DOING_READ_OBJECT_VALUE;
-        if ((val = rdbLoadObject(type, &rdb, key->ptr, selected_dbid, NULL)) == NULL) goto eoferr;
+        if ((val = rdbLoadObject(type, r, key->ptr, selected_dbid, NULL)) == NULL) goto eoferr;
         if (rdbCheckStats) {
             int max_stats_num = (rdbstate.databases + 1) * OBJ_TYPE_MAX;
             if (max_stats_num > rdbstate.stats_num) {
@@ -808,10 +829,10 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
     }
     /* Verify the checksum if RDB version is >= 5 */
     if (rdbver >= 5 && server.rdb_checksum) {
-        uint64_t cksum, expected = rdb.cksum;
+        uint64_t cksum, expected = r->cksum;
 
         rdbstate.doing = RDB_CHECK_DOING_CHECK_SUM;
-        if (rioRead(&rdb, &cksum, 8) == 0) goto eoferr;
+        if (rioRead(r, &cksum, 8) == 0) goto eoferr;
         memrev64ifbe(&cksum);
         if (cksum == 0) {
             rdbCheckInfo("RDB file was saved with checksum disabled: no check performed.");
@@ -821,6 +842,11 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
         } else {
             rdbCheckInfo("Checksum OK");
         }
+    }
+
+    /* Clean up chunk decompression if it was used */
+    if (use_chunk_decompression) {
+        rioFreeChunk(&chunk_rio);
     }
 
     if (closefile) fclose(fp);
@@ -834,6 +860,10 @@ eoferr: /* unexpected end of file is handled here with a fatal exit */
         rdbCheckError("Unexpected EOF reading RDB file");
     }
 err:
+    /* Clean up chunk decompression if it was used */
+    if (use_chunk_decompression) {
+        rioFreeChunk(&chunk_rio);
+    }
     if (closefile) fclose(fp);
     stopLoading(0);
     return 1;
