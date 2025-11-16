@@ -602,6 +602,9 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
     char buf[1024];
     long long expiretime;
     static rio rdb; /* Pointed by global struct riostate. */
+    rio chunk_rio;
+    rio *r = &rdb;
+    int use_chunk_decompression = 0;
     struct stat sb;
 
     now = mstime();
@@ -639,9 +642,7 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
     rdbstate.rdbver = rdbver;
 
     /* Version 81 uses chunk compression, version 80 uses legacy compression */
-    rio chunk_rio;
-    rio *r = &rdb;
-    int use_chunk_decompression = (rdbver == 81);
+    use_chunk_decompression = (rdbver == 81);
     
     if (use_chunk_decompression) {
         rdbCheckInfo("RDB version 81 detected, initializing chunk decompression");
