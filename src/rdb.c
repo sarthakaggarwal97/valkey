@@ -3789,6 +3789,9 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         actual_rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
         /* Seed the chunk rio checksum with the header bytes we already read */
         actual_rdb->cksum = rdb->cksum;
+        /* Clear the callback on the underlying rio to avoid double counting progress.
+         * The chunk rio will handle progress reporting on decompressed bytes. */
+        rdb->update_cksum = NULL;
     }
 
     /* Key-specific attributes, set by opcodes before the key type. */

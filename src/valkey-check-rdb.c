@@ -658,6 +658,9 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
         r->cksum = rdb.cksum;
         /* Update rdbstate.rio for error reporting */
         rdbstate.rio = r;
+        /* Clear the callback on the underlying rio to avoid double counting progress.
+         * The chunk rio will handle progress reporting on decompressed bytes. */
+        rdb.update_cksum = NULL;
     }
 
     expiretime = -1;
