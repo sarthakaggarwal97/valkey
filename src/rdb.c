@@ -3673,6 +3673,23 @@ static void rdbLoadChecksumCallback(rio *r, const void *buf, size_t len) {
     if (server.rdb_checksum) rioGenericUpdateChecksum(r, buf, len);
 }
 
+/* Progress-only callback for the underlying rio when chunk decompression is used.
+ * This tracks progress on compressed bytes without updating the checksum
+ * (checksum is calculated on decompressed data by the chunk rio). */
+static void rdbLoadProgressOnlyCallback(rio *r, const void *buf, size_t len) {
+    if (server.loading_process_events_interval_bytes &&
+        (r->processed_bytes + len) / server.loading_process_events_interval_bytes >
+            r->processed_bytes / server.loading_process_events_interval_bytes) {
+        if (server.primary_host && server.repl_state == REPL_STATE_TRANSFER) replicationSendNewlineToPrimary();
+        loadingAbsProgress(r->processed_bytes);
+        processEventsWhileBlocked();
+        processModuleLoadingProgressEvent(0);
+    }
+    if (server.repl_state == REPL_STATE_TRANSFER && rioCheckType(r) == RIO_TYPE_CONN) {
+        server.stat_net_repl_input_bytes += len;
+    }
+}
+
 /* Save the given functions_ctx to the rdb.
  * The err output parameter is optional and will be set with relevant error
  * message on failure, it is the caller responsibility to free the error
@@ -3795,14 +3812,15 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         /* For chunk decompression, we need to:
          * 1. Calculate checksums on decompressed data (for CRC verification)
          * 2. Track progress based on compressed bytes (to match file size)
-         * So we use a checksum-only callback on the chunk rio, and keep the full
-         * progress callback on the underlying rio. */
+         * So we use a checksum-only callback on the chunk rio, and a progress-only
+         * callback on the underlying rio. */
         actual_rdb->update_cksum = rdbLoadChecksumCallback;
         actual_rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
         /* Seed the chunk rio checksum with the header bytes we already read */
         actual_rdb->cksum = rdb->cksum;
-        /* The underlying rio (rdb) keeps its rdbLoadProgressCallback to track
-         * progress based on compressed bytes read from disk. */
+        /* Replace the underlying rio's callback with progress-only (no checksum)
+         * to avoid double checksum calculation. */
+        rdb->update_cksum = rdbLoadProgressOnlyCallback;
     }
 
     /* Key-specific attributes, set by opcodes before the key type. */
@@ -4122,7 +4140,11 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             } else if (error == RDB_LOAD_ERR_UNKNOWN_TYPE) {
                 sdsfree(key);
                 serverLog(LL_WARNING, "Unknown type or opcode when loading DB. Unrecoverable error, aborting now.");
-                goto eoferr;
+                /* Clean up chunk decompression before returning */
+                if (use_chunk_decompression) {
+                    rioFreeChunk(&chunk_rio);
+                }
+                return C_ERR;
             } else {
                 sdsfree(key);
                 goto eoferr;

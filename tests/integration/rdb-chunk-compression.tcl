@@ -152,7 +152,7 @@ start_server {tags {"rdb chunk-compression"}} {
 start_server {tags {"rdb chunk-compression config external:skip"}} {
     test {Enable chunk compression via CONFIG SET} {
         set config [r config get rdb-chunk-compression]
-        assert_equal [lindex $config 1] "yes"
+        assert_equal [lindex $config 1] "no"
         r config set rdb-chunk-compression yes
         set config [r config get rdb-chunk-compression]
         assert_equal [lindex $config 1] "yes"
