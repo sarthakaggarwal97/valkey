@@ -2134,6 +2134,12 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
         
         /* Free the chunk buffer */
         rioFreeChunk(&chunk_rio);
+    } else {
+        /* Clear chunk compression statistics when not using chunk compression
+         * so INFO reflects the last successful save */
+        server.rdb_last_save_chunks = 0;
+        server.rdb_last_save_compressed_bytes = 0;
+        server.rdb_last_save_uncompressed_bytes = 0;
     }
 
     return C_OK;
