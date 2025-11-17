@@ -149,7 +149,7 @@ start_server {tags {"rdb chunk-compression"}} {
         assert_equal [r get bgsave_key_49] "value_49"
     }
 }
-start_server {tags {"rdb chunk-compression config"}} {
+start_server {tags {"rdb chunk-compression config external:skip"}} {
     test {Enable chunk compression via CONFIG SET} {
         set config [r config get rdb-chunk-compression]
         assert_equal [lindex $config 1] "yes"
