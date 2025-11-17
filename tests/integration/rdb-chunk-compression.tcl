@@ -617,7 +617,7 @@ start_server {tags {"rdb chunk-compression benchmark slow"}} {
         assert_equal [r dbsize] 5000
     }
 }
-tags {"rdb chunk-compression"} {
+tags {"rdb chunk-compression" external:skip} {
 set server_path [tmpdir "server.rdb-chunk-test"]
 start_server [list overrides [list "dir" $server_path "rdb-chunk-compression" "yes"] keep_persistence true] {
     test {RDB save with chunk compression} {
@@ -630,4 +630,4 @@ start_server [list overrides [list "dir" $server_path "rdb-chunk-compression" "y
         assert_equal [r get test_key] "test_value"
     }
 }
-} ;
+}
