@@ -3677,6 +3677,7 @@ static void rdbLoadChecksumCallback(rio *r, const void *buf, size_t len) {
  * This tracks progress on compressed bytes without updating the checksum
  * (checksum is calculated on decompressed data by the chunk rio). */
 static void rdbLoadProgressOnlyCallback(rio *r, const void *buf, size_t len) {
+    UNUSED(buf);
     if (server.loading_process_events_interval_bytes &&
         (r->processed_bytes + len) / server.loading_process_events_interval_bytes >
             r->processed_bytes / server.loading_process_events_interval_bytes) {
