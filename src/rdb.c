@@ -177,11 +177,14 @@ typedef struct rdbChunkBuffer {
     uint64_t bytes_uncompressed; /* Statistics: uncompressed bytes */
     unsigned char *compress_tmp; /* Reusable compression buffer */
     size_t compress_capacity;    /* Capacity of compression buffer */
+    unsigned char *compressed_buf; /* Reusable buffer for reading compressed data */
+    size_t compressed_capacity;    /* Capacity of compressed buffer */
     
     /* For reading (decompression) */
     unsigned char *decomp_data;  /* Decompressed chunk data */
     size_t decomp_size;          /* Size of decompressed data */
     size_t decomp_pos;           /* Current read position in decompressed data */
+    size_t decomp_capacity;      /* Capacity of decompressed buffer */
     int eof_reached;             /* Flag indicating end of stream */
 } rdbChunkBuffer;
 
@@ -221,6 +224,8 @@ rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size) {
     buf->bytes_compressed = 0;
     buf->bytes_uncompressed = 0;
     buf->compress_capacity = chunk_size + (chunk_size / 32) + 1;
+    buf->compressed_buf = NULL;
+    buf->compressed_capacity = 0;
 
     buf->compress_tmp = zmalloc(buf->compress_capacity);
     if (buf->compress_tmp == NULL) {
@@ -233,6 +238,7 @@ rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size) {
     buf->decomp_data = NULL;
     buf->decomp_size = 0;
     buf->decomp_pos = 0;
+    buf->decomp_capacity = 0;
     buf->eof_reached = 0;
     
     return buf;
@@ -261,11 +267,14 @@ rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb) {
     buf->bytes_uncompressed = 0;
     buf->compress_tmp = NULL;
     buf->compress_capacity = 0;
+    buf->compressed_buf = NULL;
+    buf->compressed_capacity = 0;
     
     /* Initialize read-specific fields */
     buf->decomp_data = NULL;
     buf->decomp_size = 0;
     buf->decomp_pos = 0;
+    buf->decomp_capacity = 0;
     buf->eof_reached = 0;
     
     return buf;
@@ -288,6 +297,10 @@ void rdbChunkBufferFree(rdbChunkBuffer *buf) {
 
     if (buf->compress_tmp != NULL) {
         zfree(buf->compress_tmp);
+    }
+
+    if (buf->compressed_buf != NULL) {
+        zfree(buf->compressed_buf);
     }
     
     /* Free read buffer if present (handles both read and write buffers) */
@@ -556,18 +569,16 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
         }
     }
     
-    /* Free old decompressed data if any */
-    if (buf->decomp_data != NULL) {
-        zfree(buf->decomp_data);
-        buf->decomp_data = NULL;
-    }
-    
-    /* Allocate buffer for decompressed data */
-    buf->decomp_data = zmalloc(uncompressed_size);
-    if (buf->decomp_data == NULL) {
-        rdbReportReadError("Failed to allocate %llu bytes for decompressed chunk",
-                          (unsigned long long)uncompressed_size);
-        return -1;
+    /* Ensure decompressed buffer is available */
+    if (buf->decomp_capacity < uncompressed_size) {
+        unsigned char *new_buf = zrealloc(buf->decomp_data, uncompressed_size);
+        if (new_buf == NULL) {
+            rdbReportReadError("Failed to allocate %llu bytes for decompressed chunk",
+                              (unsigned long long)uncompressed_size);
+            return -1;
+        }
+        buf->decomp_data = new_buf;
+        buf->decomp_capacity = uncompressed_size;
     }
     
     if (compressed_size == 0) {
@@ -580,8 +591,6 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
                 rdbReportReadError("Failed to read uncompressed chunk data (%llu bytes)",
                                   (unsigned long long)uncompressed_size);
             }
-            zfree(buf->decomp_data);
-            buf->decomp_data = NULL;
             return -1;
         }
         buf->decomp_size = uncompressed_size;
@@ -589,18 +598,20 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
         return 0;
     }
     
-    /* Allocate buffer for compressed data */
-    unsigned char *compressed = zmalloc(compressed_size);
-    if (compressed == NULL) {
-        rdbReportReadError("Failed to allocate %llu bytes for compressed chunk",
-                          (unsigned long long)compressed_size);
-        zfree(buf->decomp_data);
-        buf->decomp_data = NULL;
-        return -1;
+    /* Ensure buffer for compressed data */
+    if (buf->compressed_capacity < compressed_size) {
+        unsigned char *new_buf = zrealloc(buf->compressed_buf, compressed_size);
+        if (new_buf == NULL) {
+            rdbReportReadError("Failed to allocate %llu bytes for compressed chunk",
+                              (unsigned long long)compressed_size);
+            return -1;
+        }
+        buf->compressed_buf = new_buf;
+        buf->compressed_capacity = compressed_size;
     }
     
     /* Read compressed data */
-    if (rioRead(buf->rdb, compressed, compressed_size) == 0) {
+    if (rioRead(buf->rdb, buf->compressed_buf, compressed_size) == 0) {
         if (rioGetReadError(buf->rdb)) {
             rdbReportReadError("Unexpected EOF while reading compressed chunk data (%llu bytes)",
                               (unsigned long long)compressed_size);
@@ -608,23 +619,17 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
             rdbReportReadError("Failed to read compressed chunk data (%llu bytes)",
                               (unsigned long long)compressed_size);
         }
-        zfree(compressed);
-        zfree(buf->decomp_data);
-        buf->decomp_data = NULL;
         return -1;
     }
     
     /* Decompress the data */
-    size_t decompressed_size = lzf_decompress(compressed, compressed_size, 
+    size_t decompressed_size = lzf_decompress(buf->compressed_buf, compressed_size,
                                               buf->decomp_data, uncompressed_size);
-    zfree(compressed);
-    
+
     if (decompressed_size == 0) {
         rdbReportCorruptRDB("Failed to decompress chunk (compressed: %llu bytes, expected uncompressed: %llu bytes). "
                            "Data may be corrupted or using unsupported compression format.",
                            (unsigned long long)compressed_size, (unsigned long long)uncompressed_size);
-        zfree(buf->decomp_data);
-        buf->decomp_data = NULL;
         return -1;
     }
     
@@ -632,11 +637,9 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
         rdbReportCorruptRDB("Decompressed size mismatch: expected %llu bytes, got %zu bytes. "
                            "Chunk data is corrupted.",
                            (unsigned long long)uncompressed_size, decompressed_size);
-        zfree(buf->decomp_data);
-        buf->decomp_data = NULL;
         return -1;
     }
-    
+
     buf->decomp_size = decompressed_size;
     buf->decomp_pos = 0;
     return 0;
