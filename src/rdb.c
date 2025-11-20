@@ -188,6 +188,9 @@ typedef struct rdbChunkBuffer {
     int eof_reached;             /* Flag indicating end of stream */
 } rdbChunkBuffer;
 
+void rdbChunkBufferFree(rdbChunkBuffer *buf);
+void rdbChunkBufferFreeForRead(rdbChunkBuffer *buf);
+
 /* Utility to ensure a reusable buffer has at least the requested capacity. */
 static int rdbEnsureBuffer(unsigned char **buffer, size_t *capacity, size_t needed) {
     if (*capacity >= needed) {
