@@ -5,6 +5,7 @@
 
 #include "../sds.h"
 #include "../sdsalloc.h"
+#include "../zmalloc.h"
 
 static sds sdsTestTemplateCallback(const_sds varname, void *arg) {
     UNUSED(arg);
@@ -54,13 +55,15 @@ int test_sds(int argc, char **argv, int flags) {
                                                                                                            4) == 0);
 
     sdsfree(x);
-    char etalon[1024 * 1024];
-    for (size_t i = 0; i < sizeof(etalon); i++) {
+    size_t etalon_size = 1024 * 1024;
+    char *etalon = zmalloc(etalon_size);
+    for (size_t i = 0; i < etalon_size; i++) {
         etalon[i] = '0';
     }
-    x = sdscatprintf(sdsempty(), "%0*d", (int)sizeof(etalon), 0);
+    x = sdscatprintf(sdsempty(), "%0*d", (int)etalon_size, 0);
     TEST_ASSERT_MESSAGE("sdscatprintf() can print 1MB",
-                        sdslen(x) == sizeof(etalon) && memcmp(x, etalon, sizeof(etalon)) == 0);
+                        sdslen(x) == etalon_size && memcmp(x, etalon, etalon_size) == 0);
+    zfree(etalon);
 
     sdsfree(x);
     x = sdsnew("--");
