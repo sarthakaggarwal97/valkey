@@ -188,60 +188,56 @@ typedef struct rdbChunkBuffer {
     int eof_reached;             /* Flag indicating end of stream */
 } rdbChunkBuffer;
 
+/* Utility to ensure a reusable buffer has at least the requested capacity. */
+static int rdbEnsureBuffer(unsigned char **buffer, size_t *capacity, size_t needed) {
+    if (*capacity >= needed) {
+        return C_OK;
+    }
+
+    unsigned char *new_buf = zrealloc(*buffer, needed);
+    if (new_buf == NULL) {
+        return C_ERR;
+    }
+
+    *buffer = new_buf;
+    *capacity = needed;
+    return C_OK;
+}
+
 /* Create a chunk buffer for writing (compression).
  * Returns NULL on memory allocation failure. */
 rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size) {
     /* Validate input parameters */
-    if (rdb == NULL) {
+    if (rdb == NULL || chunk_size < 4096 || chunk_size > 1024 * 1024) {
         return NULL;
     }
-    
-    /* Validate chunk size is within acceptable bounds (4KB to 1MB) */
-    if (chunk_size < 4096) {
-        return NULL;
-    }
-    
-    if (chunk_size > 1024 * 1024) {
-        return NULL;
-    }
-    
+
     rdbChunkBuffer *buf = zmalloc(sizeof(rdbChunkBuffer));
     if (buf == NULL) {
         return NULL;
     }
-    
+
+    memset(buf, 0, sizeof(*buf));
+
     buf->data = zmalloc(chunk_size);
     if (buf->data == NULL) {
-        zfree(buf);
-        return NULL;
+        goto error;
     }
-    
-    buf->size = 0;
+
+    buf->compress_capacity = chunk_size + (chunk_size / 32) + 1;
+    buf->compress_tmp = zmalloc(buf->compress_capacity);
+    if (buf->compress_tmp == NULL) {
+        goto error;
+    }
+
     buf->capacity = chunk_size;
     buf->chunk_size = chunk_size;
     buf->rdb = rdb;
-    buf->chunks_written = 0;
-    buf->bytes_compressed = 0;
-    buf->bytes_uncompressed = 0;
-    buf->compress_capacity = chunk_size + (chunk_size / 32) + 1;
-    buf->compressed_buf = NULL;
-    buf->compressed_capacity = 0;
-
-    buf->compress_tmp = zmalloc(buf->compress_capacity);
-    if (buf->compress_tmp == NULL) {
-        zfree(buf->data);
-        zfree(buf);
-        return NULL;
-    }
-    
-    /* Initialize read-specific fields to NULL/0 */
-    buf->decomp_data = NULL;
-    buf->decomp_size = 0;
-    buf->decomp_pos = 0;
-    buf->decomp_capacity = 0;
-    buf->eof_reached = 0;
-    
     return buf;
+
+error:
+    rdbChunkBufferFree(buf);
+    return NULL;
 }
 
 /* Create a chunk buffer for reading (decompression).
@@ -317,28 +313,19 @@ void rdbChunkBufferFreeForRead(rdbChunkBuffer *buf) {
     rdbChunkBufferFree(buf);
 }
 
+/* Write a chunk header for compressed or uncompressed data. */
+static int rdbWriteChunkHeader(rdbChunkBuffer *buf, uint64_t compressed_size, uint64_t uncompressed_size) {
+    if (rdbSaveType(buf->rdb, RDB_OPCODE_CHUNK) == -1) return -1;
+    if (rdbSaveLen(buf->rdb, compressed_size) == -1) return -1;
+    if (rdbSaveLen(buf->rdb, uncompressed_size) == -1) return -1;
+    return 0;
+}
+
 /* Write an uncompressed chunk to the underlying rio stream.
  * Returns 0 on success, -1 on error. */
 static int rdbWriteUncompressedChunk(rdbChunkBuffer *buf, unsigned char *data, size_t data_size) {
-    /* Write chunk opcode */
-    if (rdbSaveType(buf->rdb, RDB_OPCODE_CHUNK) == -1) {
-        return -1;
-    }
-
-    /* Write compressed size as 0 to indicate uncompressed */
-    if (rdbSaveLen(buf->rdb, 0) == -1) {
-        return -1;
-    }
-
-    /* Write uncompressed size */
-    if (rdbSaveLen(buf->rdb, data_size) == -1) {
-        return -1;
-    }
-
-    /* Write uncompressed data */
-    if (rdbWriteRaw(buf->rdb, data, data_size) == -1) {
-        return -1;
-    }
+    if (rdbWriteChunkHeader(buf, 0, data_size) == -1) return -1;
+    if (rdbWriteRaw(buf->rdb, data, data_size) == -1) return -1;
 
     buf->chunks_written++;
     buf->bytes_compressed += data_size;
@@ -369,15 +356,9 @@ static int rdbCompressChunkData(rdbChunkBuffer *buf, unsigned char *data, size_t
      * LZF worst case is original size + 1 byte per 32 bytes. */
     size_t max_compressed_size = data_size + (data_size / 32) + 1;
     /* Ensure compression buffer is available and large enough. */
-    if (buf->compress_tmp == NULL || buf->compress_capacity < max_compressed_size) {
-        unsigned char *new_buf = zrealloc(buf->compress_tmp, max_compressed_size);
-        if (new_buf == NULL) {
-            /* Memory allocation failed, write uncompressed */
-            return rdbWriteUncompressedChunk(buf, data, data_size);
-        }
-        
-        buf->compress_tmp = new_buf;
-        buf->compress_capacity = max_compressed_size;
+    if (rdbEnsureBuffer(&buf->compress_tmp, &buf->compress_capacity, max_compressed_size) == C_ERR) {
+        /* Memory allocation failed, write uncompressed */
+        return rdbWriteUncompressedChunk(buf, data, data_size);
     }
     
     /* Compress the chunk */
@@ -388,25 +369,8 @@ static int rdbCompressChunkData(rdbChunkBuffer *buf, unsigned char *data, size_t
         return rdbWriteUncompressedChunk(buf, data, data_size);
     }
     
-    /* Write chunk opcode */
-    if (rdbSaveType(buf->rdb, RDB_OPCODE_CHUNK) == -1) {
-        return -1;
-    }
-    
-    /* Write compressed size */
-    if (rdbSaveLen(buf->rdb, compressed_size) == -1) {
-        return -1;
-    }
-    
-    /* Write uncompressed size */
-    if (rdbSaveLen(buf->rdb, data_size) == -1) {
-        return -1;
-    }
-    
-    /* Write compressed data */
-    if (rdbWriteRaw(buf->rdb, buf->compress_tmp, compressed_size) == -1) {
-        return -1;
-    }
+    if (rdbWriteChunkHeader(buf, compressed_size, data_size) == -1) return -1;
+    if (rdbWriteRaw(buf->rdb, buf->compress_tmp, compressed_size) == -1) return -1;
     
     /* Update statistics */
     buf->chunks_written++;
@@ -525,13 +489,9 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
         buf->eof_reached = 1;
         return -1;
     }
-    
+
     if (type_byte != RDB_OPCODE_CHUNK) {
-        /* Not a chunk opcode. This means we've reached the end of chunked data.
-         * We need to "unread" this byte, but rio doesn't support that.
-         * The best we can do is mark EOF and let the caller handle it.
-         * This byte will be lost, but it should only happen at the end of the
-         * chunked section (before EOF opcode or other non-chunk data). */
+        rdbReportCorruptRDB("Expected RDB_OPCODE_CHUNK (%d) but found byte %u", RDB_OPCODE_CHUNK, type_byte);
         buf->eof_reached = 1;
         return -1;
     }
@@ -582,15 +542,10 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
     }
     
     /* Ensure decompressed buffer is available */
-    if (buf->decomp_capacity < uncompressed_size) {
-        unsigned char *new_buf = zrealloc(buf->decomp_data, uncompressed_size);
-        if (new_buf == NULL) {
-            rdbReportReadError("Failed to allocate %llu bytes for decompressed chunk",
-                              (unsigned long long)uncompressed_size);
-            return -1;
-        }
-        buf->decomp_data = new_buf;
-        buf->decomp_capacity = uncompressed_size;
+    if (rdbEnsureBuffer(&buf->decomp_data, &buf->decomp_capacity, uncompressed_size) == C_ERR) {
+        rdbReportReadError("Failed to allocate %llu bytes for decompressed chunk",
+                          (unsigned long long)uncompressed_size);
+        return -1;
     }
     
     if (compressed_size == 0) {
@@ -611,15 +566,10 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
     }
     
     /* Ensure buffer for compressed data */
-    if (buf->compressed_capacity < compressed_size) {
-        unsigned char *new_buf = zrealloc(buf->compressed_buf, compressed_size);
-        if (new_buf == NULL) {
-            rdbReportReadError("Failed to allocate %llu bytes for compressed chunk",
-                              (unsigned long long)compressed_size);
-            return -1;
-        }
-        buf->compressed_buf = new_buf;
-        buf->compressed_capacity = compressed_size;
+    if (rdbEnsureBuffer(&buf->compressed_buf, &buf->compressed_capacity, compressed_size) == C_ERR) {
+        rdbReportReadError("Failed to allocate %llu bytes for compressed chunk",
+                          (unsigned long long)compressed_size);
+        return -1;
     }
     
     /* Read compressed data */
