@@ -167,6 +167,10 @@ int rdbRegisterAuxField(char *auxfield, rdbAuxFieldEncoder encoder, rdbAuxFieldD
 
 /* Chunk buffer structure for accumulating data before compression.
  * This is used to implement chunk-based compression for RDB files. */
+#define RDB_MIN_CHUNK_SIZE 4096
+#define RDB_MAX_CHUNK_SIZE (1024 * 1024)
+#define RDB_MAX_CHUNK_UNCOMPRESSED (10 * 1024 * 1024)
+
 typedef struct rdbChunkBuffer {
     unsigned char *data;         /* Buffer for accumulating data */
     size_t size;                 /* Current size of data in buffer */
@@ -212,7 +216,7 @@ static int rdbEnsureBuffer(unsigned char **buffer, size_t *capacity, size_t need
  * Returns NULL on memory allocation failure. */
 rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size) {
     /* Validate input parameters */
-    if (rdb == NULL || chunk_size < 4096 || chunk_size > 1024 * 1024) {
+    if (rdb == NULL || chunk_size < RDB_MIN_CHUNK_SIZE || chunk_size > RDB_MAX_CHUNK_SIZE) {
         return NULL;
     }
 
@@ -521,7 +525,7 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
         return -1;
     }
 
-    if (uncompressed_size > 10 * 1024 * 1024) {
+    if (uncompressed_size > RDB_MAX_CHUNK_UNCOMPRESSED) {
         rdbReportCorruptRDB("Chunk uncompressed size too large: %llu bytes (max 10MB)",
                            (unsigned long long)uncompressed_size);
         return -1;
@@ -538,7 +542,7 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
         }
 
         /* Sanity check: compressed size should be reasonable */
-        if (compressed_size > 10 * 1024 * 1024) {
+        if (compressed_size > RDB_MAX_CHUNK_UNCOMPRESSED) {
             rdbReportCorruptRDB("Chunk compressed size too large: %llu bytes",
                                (unsigned long long)compressed_size);
             return -1;
