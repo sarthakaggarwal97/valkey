@@ -658,6 +658,8 @@ int rdbChunkBufferFlush(struct rdbChunkBuffer *buf);
 
 /* Returns 1 or 0 for success/failure. */
 static size_t rioChunkWrite(rio *r, const void *buf, size_t len) {
+    if (r->io.chunk.chunk_buf == NULL) return 0;
+
     ssize_t written = rdbChunkBufferWrite(r->io.chunk.chunk_buf, (void *)buf, len);
     if (written == -1) return 0;
     r->io.chunk.pos += written;
@@ -666,6 +668,8 @@ static size_t rioChunkWrite(rio *r, const void *buf, size_t len) {
 
 /* Returns 1 or 0 for success/failure. */
 static size_t rioChunkRead(rio *r, void *buf, size_t len) {
+    if (r->io.chunk.chunk_buf == NULL) return 0;
+
     ssize_t nread = rdbChunkBufferRead(r->io.chunk.chunk_buf, buf, len);
     if (nread == -1) return 0;
     if (nread == 0) return 0; /* EOF */
