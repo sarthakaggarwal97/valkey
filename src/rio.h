@@ -37,6 +37,9 @@
 #include "sds.h"
 #include "connection.h"
 
+/* Forward declaration for chunk compression buffer */
+struct rdbChunkBuffer;
+
 #define RIO_FLAG_READ_ERROR (1 << 0)
 #define RIO_FLAG_WRITE_ERROR (1 << 1)
 #define RIO_FLAG_CLOSE_ASAP (1 << 2) /* Rio was closed asynchronously during the current rio operation. */
@@ -46,6 +49,7 @@
 #define RIO_TYPE_BUFFER (1 << 1)
 #define RIO_TYPE_CONN (1 << 2)
 #define RIO_TYPE_FD (1 << 3)
+#define RIO_TYPE_CHUNK (1 << 4)
 
 struct _rio {
     /* Backend functions.
@@ -107,6 +111,12 @@ struct _rio {
             off_t pos;
             sds buf;
         } connset;
+        /* Chunk compression wrapper. */
+        struct {
+            struct rdbChunkBuffer *chunk_buf; /* Chunk buffer for compression/decompression */
+            struct _rio *underlying_rio;      /* Underlying rio stream */
+            off_t pos;                        /* Current position */
+        } chunk;
     } io;
 };
 
@@ -187,9 +197,11 @@ void rioInitWithFile(rio *r, FILE *fp);
 void rioInitWithBuffer(rio *r, sds s);
 void rioInitWithConn(rio *r, connection *conn, size_t read_limit);
 void rioInitWithFd(rio *r, int fd);
+void rioInitWithChunkCompression(rio *r, rio *underlying, size_t chunk_size);
 
 void rioFreeFd(rio *r);
 void rioFreeConn(rio *r, sds *out_remainingBufferedData);
+void rioFreeChunk(rio *r);
 
 size_t rioWriteBulkCount(rio *r, char prefix, long count);
 size_t rioWriteBulkString(rio *r, const char *buf, size_t len);

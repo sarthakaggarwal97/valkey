@@ -163,6 +163,533 @@ int rdbRegisterAuxField(char *auxfield, rdbAuxFieldEncoder encoder, rdbAuxFieldD
     return dictAdd(rdbAuxFields, sdsnew(auxfield), (void *)codec) == DICT_OK ? C_OK : C_ERR;
 }
 
+/* ======================== Chunk Buffer Implementation ====================== */
+
+/* Chunk buffer structure for accumulating data before compression.
+ * This is used to implement chunk-based compression for RDB files. */
+typedef struct rdbChunkBuffer {
+    unsigned char *data;         /* Buffer for accumulating data */
+    size_t size;                 /* Current size of data in buffer */
+    size_t capacity;             /* Total capacity of buffer */
+    size_t chunk_size;           /* Configured chunk size */
+    rio *rdb;                    /* Underlying rio stream */
+    uint64_t chunks_written;     /* Statistics: number of chunks */
+    uint64_t bytes_compressed;   /* Statistics: compressed bytes */
+    uint64_t bytes_uncompressed; /* Statistics: uncompressed bytes */
+    unsigned char *compress_tmp; /* Reusable compression buffer */
+    size_t compress_capacity;    /* Capacity of compression buffer */
+    unsigned char *compressed_buf; /* Reusable buffer for reading compressed data */
+    size_t compressed_capacity;    /* Capacity of compressed buffer */
+
+    /* For reading (decompression) */
+    unsigned char *decomp_data;  /* Decompressed chunk data */
+    size_t decomp_size;          /* Size of decompressed data */
+    size_t decomp_pos;           /* Current read position in decompressed data */
+    size_t decomp_capacity;      /* Capacity of decompressed buffer */
+    int eof_reached;             /* Flag indicating end of stream */
+} rdbChunkBuffer;
+
+void rdbChunkBufferFree(rdbChunkBuffer *buf);
+void rdbChunkBufferFreeForRead(rdbChunkBuffer *buf);
+
+/* Utility to ensure a reusable buffer has at least the requested capacity. */
+static int rdbEnsureBuffer(unsigned char **buffer, size_t *capacity, size_t needed) {
+    if (*capacity >= needed) {
+        return C_OK;
+    }
+
+    unsigned char *new_buf = zrealloc(*buffer, needed);
+    if (new_buf == NULL) {
+        return C_ERR;
+    }
+
+    *buffer = new_buf;
+    *capacity = needed;
+    return C_OK;
+}
+
+/* Create a chunk buffer for writing (compression).
+ * Returns NULL on memory allocation failure. */
+rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size) {
+    /* Validate input parameters */
+    if (rdb == NULL || chunk_size < 4096 || chunk_size > 1024 * 1024) {
+        return NULL;
+    }
+
+    rdbChunkBuffer *buf = zmalloc(sizeof(rdbChunkBuffer));
+    if (buf == NULL) {
+        return NULL;
+    }
+
+    memset(buf, 0, sizeof(*buf));
+
+    buf->data = zmalloc(chunk_size);
+    if (buf->data == NULL) {
+        goto error;
+    }
+
+    buf->compress_capacity = chunk_size + (chunk_size / 32) + 1;
+    buf->compress_tmp = zmalloc(buf->compress_capacity);
+    if (buf->compress_tmp == NULL) {
+        goto error;
+    }
+
+    buf->capacity = chunk_size;
+    buf->chunk_size = chunk_size;
+    buf->rdb = rdb;
+    return buf;
+
+error:
+    rdbChunkBufferFree(buf);
+    return NULL;
+}
+
+/* Create a chunk buffer for reading (decompression).
+ * Returns NULL on memory allocation failure. */
+rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb) {
+    /* Validate input parameters */
+    if (rdb == NULL) {
+        return NULL;
+    }
+
+    rdbChunkBuffer *buf = zmalloc(sizeof(rdbChunkBuffer));
+    if (buf == NULL) {
+        return NULL;
+    }
+
+    buf->rdb = rdb;
+    buf->data = NULL;
+    buf->size = 0;
+    buf->capacity = 0;
+    buf->chunk_size = 0;
+    buf->chunks_written = 0;
+    buf->bytes_compressed = 0;
+    buf->bytes_uncompressed = 0;
+    buf->compress_tmp = NULL;
+    buf->compress_capacity = 0;
+    buf->compressed_buf = NULL;
+    buf->compressed_capacity = 0;
+
+    /* Initialize read-specific fields */
+    buf->decomp_data = NULL;
+    buf->decomp_size = 0;
+    buf->decomp_pos = 0;
+    buf->decomp_capacity = 0;
+    buf->eof_reached = 0;
+
+    return buf;
+}
+
+int rdbChunkBufferIsWriteBuffer(rdbChunkBuffer *buf) {
+    if (buf == NULL) return 0;
+    return buf->chunk_size != 0;
+}
+
+/* Free a chunk buffer used for writing.
+ * This should be called after rdbChunkBufferFlush() to ensure all data is written. */
+void rdbChunkBufferFree(rdbChunkBuffer *buf) {
+    if (buf == NULL) return;
+
+    /* Free write buffer if present */
+    if (buf->data != NULL) {
+        zfree(buf->data);
+    }
+
+    if (buf->compress_tmp != NULL) {
+        zfree(buf->compress_tmp);
+    }
+
+    if (buf->compressed_buf != NULL) {
+        zfree(buf->compressed_buf);
+    }
+
+    /* Free read buffer if present (handles both read and write buffers) */
+    if (buf->decomp_data != NULL) {
+        zfree(buf->decomp_data);
+    }
+
+    zfree(buf);
+}
+
+/* Free a chunk buffer used for reading. */
+void rdbChunkBufferFreeForRead(rdbChunkBuffer *buf) {
+    /* Just call the unified free function */
+    rdbChunkBufferFree(buf);
+}
+
+/* Write a chunk header for compressed or uncompressed data. */
+static int rdbWriteChunkHeader(rdbChunkBuffer *buf, uint64_t compressed_size, uint64_t uncompressed_size) {
+    if (rdbSaveType(buf->rdb, RDB_OPCODE_CHUNK) == -1) return -1;
+    if (rdbSaveLen(buf->rdb, compressed_size) == -1) return -1;
+    if (rdbSaveLen(buf->rdb, uncompressed_size) == -1) return -1;
+    return 0;
+}
+
+/* Write an uncompressed chunk to the underlying rio stream.
+ * Returns 0 on success, -1 on error. */
+static int rdbWriteUncompressedChunk(rdbChunkBuffer *buf, unsigned char *data, size_t data_size) {
+    if (rdbWriteChunkHeader(buf, 0, data_size) == -1) return -1;
+    if (rdbWriteRaw(buf->rdb, data, data_size) == -1) return -1;
+
+    buf->chunks_written++;
+    buf->bytes_compressed += data_size;
+    buf->bytes_uncompressed += data_size;
+    return 0;
+}
+
+/* Compress and write a chunk to the underlying rio stream.
+ * Returns 0 on success, -1 on error. */
+static int rdbCompressChunkData(rdbChunkBuffer *buf, unsigned char *data, size_t data_size) {
+    if (buf == NULL || data == NULL) {
+        return -1;
+    }
+
+    if (data_size == 0) return 0; /* Nothing to compress */
+
+    /* Validate buffer state */
+    if (buf->rdb == NULL) {
+        return -1;
+    }
+
+    /* Validate chunk size is reasonable */
+    if (data_size > buf->capacity) {
+        return -1;
+    }
+
+    /* Allocate buffer for compressed data.
+     * LZF worst case is original size + 1 byte per 32 bytes. */
+    size_t max_compressed_size = data_size + (data_size / 32) + 1;
+    /* Ensure compression buffer is available and large enough. */
+    if (rdbEnsureBuffer(&buf->compress_tmp, &buf->compress_capacity, max_compressed_size) == C_ERR) {
+        /* Memory allocation failed, write uncompressed */
+        return rdbWriteUncompressedChunk(buf, data, data_size);
+    }
+
+    /* Compress the chunk */
+    size_t compressed_size = lzf_compress(data, data_size, buf->compress_tmp, max_compressed_size);
+
+    if (compressed_size == 0) {
+        /* Compression failed or data is incompressible, write uncompressed */
+        return rdbWriteUncompressedChunk(buf, data, data_size);
+    }
+
+    if (rdbWriteChunkHeader(buf, compressed_size, data_size) == -1) return -1;
+    if (rdbWriteRaw(buf->rdb, buf->compress_tmp, compressed_size) == -1) return -1;
+
+    /* Update statistics */
+    buf->chunks_written++;
+    buf->bytes_compressed += compressed_size;
+    buf->bytes_uncompressed += data_size;
+
+    return 0;
+}
+
+/* Write data to the chunk buffer. When the buffer is full, it will be
+ * compressed and written to the underlying rio stream.
+ * Returns the number of bytes written on success, -1 on error. */
+ssize_t rdbChunkBufferWrite(rdbChunkBuffer *buf, void *data, size_t len) {
+    if (buf == NULL) {
+        return -1;
+    }
+
+    if (data == NULL && len > 0) {
+        return -1;
+    }
+
+    if (len == 0) return 0; /* Nothing to write */
+
+    /* Validate buffer state */
+    if (buf->data == NULL || buf->rdb == NULL) {
+        return -1;
+    }
+
+    size_t total_written = 0;
+    unsigned char *ptr = (unsigned char *)data;
+
+    while (len > 0) {
+        /* If the internal buffer is empty and we have at least one full chunk
+         * to write, compress directly from the caller's buffer to avoid an
+         * extra memcpy into the staging buffer. */
+        if (buf->size == 0 && len >= buf->capacity) {
+            size_t direct_size = buf->capacity;
+            if (rdbCompressChunkData(buf, ptr, direct_size) == -1) {
+                return -1;
+            }
+            ptr += direct_size;
+            len -= direct_size;
+            total_written += direct_size;
+            continue;
+        }
+
+        /* Calculate how much space is available in the buffer */
+        size_t available = buf->capacity - buf->size;
+
+        if (available == 0) {
+            /* Buffer is full, compress and write it */
+            if (rdbCompressChunkData(buf, buf->data, buf->size) == -1) {
+                return -1;
+            }
+            buf->size = 0;
+            available = buf->capacity;
+        }
+
+        /* Copy as much data as possible to the buffer */
+        size_t to_copy = (len < available) ? len : available;
+        memcpy(buf->data + buf->size, ptr, to_copy);
+        buf->size += to_copy;
+        ptr += to_copy;
+        len -= to_copy;
+        total_written += to_copy;
+    }
+
+    return total_written;
+}
+
+/* Flush any remaining data in the chunk buffer by compressing and writing it.
+ * This should be called before closing the RDB file.
+ * Returns 0 on success, -1 on error. */
+int rdbChunkBufferFlush(rdbChunkBuffer *buf) {
+    if (buf == NULL) {
+        return -1;
+    }
+
+    /* Validate buffer state */
+    if (buf->rdb == NULL) {
+        return -1;
+    }
+
+    /* Compress and write any remaining data */
+    if (buf->size > 0) {
+        if (rdbCompressChunkData(buf, buf->data, buf->size) == -1) {
+            return -1;
+        }
+        buf->size = 0;
+    }
+
+    return 0;
+}
+
+/* Decompress and load the next chunk from the underlying rio stream.
+ * Returns 0 on success, -1 on error. */
+static int rdbDecompressChunk(rdbChunkBuffer *buf) {
+    /* Validate buffer pointer */
+    if (buf == NULL) {
+        rdbReportReadError("rdbDecompressChunk: NULL buffer pointer");
+        return -1;
+    }
+
+    if (buf->rdb == NULL) {
+        rdbReportReadError("rdbDecompressChunk: NULL rio pointer in buffer");
+        return -1;
+    }
+
+    /* Peek at the next byte to see if it's a chunk opcode */
+    unsigned char type_byte;
+    if (rioRead(buf->rdb, &type_byte, 1) == 0) {
+        /* End of stream or error - check if it's a read error */
+        if (rioGetReadError(buf->rdb)) {
+            rdbReportReadError("Unexpected EOF while reading chunk opcode");
+        }
+        buf->eof_reached = 1;
+        return -1;
+    }
+
+    if (type_byte != RDB_OPCODE_CHUNK) {
+        rdbReportCorruptRDB("Expected RDB_OPCODE_CHUNK (%d) but found byte %u", RDB_OPCODE_CHUNK, type_byte);
+        buf->eof_reached = 1;
+        return -1;
+    }
+
+    /* Read compressed size */
+    int isencoded;
+    uint64_t compressed_size = rdbLoadLen(buf->rdb, &isencoded);
+    if (compressed_size == RDB_LENERR) {
+        rdbReportReadError("Failed to read compressed size in chunk");
+        return -1;
+    }
+
+    /* Read uncompressed size */
+    uint64_t uncompressed_size = rdbLoadLen(buf->rdb, &isencoded);
+    if (uncompressed_size == RDB_LENERR) {
+        rdbReportReadError("Failed to read uncompressed size in chunk");
+        return -1;
+    }
+
+    /* Validate uncompressed size is reasonable (max 10MB per chunk) */
+    if (uncompressed_size == 0) {
+        rdbReportCorruptRDB("Chunk uncompressed size is zero");
+        return -1;
+    }
+
+    if (uncompressed_size > 10 * 1024 * 1024) {
+        rdbReportCorruptRDB("Chunk uncompressed size too large: %llu bytes (max 10MB)",
+                           (unsigned long long)uncompressed_size);
+        return -1;
+    }
+
+    /* Validate compressed size if present */
+    if (compressed_size > 0) {
+        /* Compressed size should be less than or equal to uncompressed size + overhead */
+        size_t max_compressed = uncompressed_size + (uncompressed_size / 32) + 1;
+        if (compressed_size > max_compressed) {
+            rdbReportCorruptRDB("Chunk compressed size %llu exceeds maximum expected %zu",
+                               (unsigned long long)compressed_size, max_compressed);
+            return -1;
+        }
+
+        /* Sanity check: compressed size should be reasonable */
+        if (compressed_size > 10 * 1024 * 1024) {
+            rdbReportCorruptRDB("Chunk compressed size too large: %llu bytes",
+                               (unsigned long long)compressed_size);
+            return -1;
+        }
+    }
+
+    /* Ensure decompressed buffer is available */
+    if (rdbEnsureBuffer(&buf->decomp_data, &buf->decomp_capacity, uncompressed_size) == C_ERR) {
+        rdbReportReadError("Failed to allocate %llu bytes for decompressed chunk",
+                          (unsigned long long)uncompressed_size);
+        return -1;
+    }
+
+    if (compressed_size == 0) {
+        /* Data is uncompressed, read directly */
+        if (rioRead(buf->rdb, buf->decomp_data, uncompressed_size) == 0) {
+            if (rioGetReadError(buf->rdb)) {
+                rdbReportReadError("Unexpected EOF while reading uncompressed chunk data (%llu bytes)",
+                                  (unsigned long long)uncompressed_size);
+            } else {
+                rdbReportReadError("Failed to read uncompressed chunk data (%llu bytes)",
+                                  (unsigned long long)uncompressed_size);
+            }
+            return -1;
+        }
+        buf->decomp_size = uncompressed_size;
+        buf->decomp_pos = 0;
+        return 0;
+    }
+
+    /* Ensure buffer for compressed data */
+    if (rdbEnsureBuffer(&buf->compressed_buf, &buf->compressed_capacity, compressed_size) == C_ERR) {
+        rdbReportReadError("Failed to allocate %llu bytes for compressed chunk",
+                          (unsigned long long)compressed_size);
+        return -1;
+    }
+
+    /* Read compressed data */
+    if (rioRead(buf->rdb, buf->compressed_buf, compressed_size) == 0) {
+        if (rioGetReadError(buf->rdb)) {
+            rdbReportReadError("Unexpected EOF while reading compressed chunk data (%llu bytes)",
+                              (unsigned long long)compressed_size);
+        } else {
+            rdbReportReadError("Failed to read compressed chunk data (%llu bytes)",
+                              (unsigned long long)compressed_size);
+        }
+        return -1;
+    }
+
+    /* Decompress the data */
+    size_t decompressed_size = lzf_decompress(buf->compressed_buf, compressed_size,
+                                              buf->decomp_data, uncompressed_size);
+
+    if (decompressed_size == 0) {
+        rdbReportCorruptRDB("Failed to decompress chunk (compressed: %llu bytes, expected uncompressed: %llu bytes). "
+                           "Data may be corrupted or using unsupported compression format.",
+                           (unsigned long long)compressed_size, (unsigned long long)uncompressed_size);
+        return -1;
+    }
+
+    if (decompressed_size != uncompressed_size) {
+        rdbReportCorruptRDB("Decompressed size mismatch: expected %llu bytes, got %zu bytes. "
+                           "Chunk data is corrupted.",
+                           (unsigned long long)uncompressed_size, decompressed_size);
+        return -1;
+    }
+
+    buf->decomp_size = decompressed_size;
+    buf->decomp_pos = 0;
+    return 0;
+}
+
+/* Read data from the chunk buffer. When the buffer is exhausted, the next
+ * chunk will be loaded and decompressed automatically.
+ * Returns the number of bytes read on success, 0 on EOF, -1 on error. */
+ssize_t rdbChunkBufferRead(rdbChunkBuffer *buf, void *data, size_t len) {
+    if (buf == NULL) {
+        rdbReportReadError("rdbChunkBufferRead: NULL buffer pointer");
+        return -1;
+    }
+
+    if (data == NULL && len > 0) {
+        rdbReportReadError("rdbChunkBufferRead: NULL data pointer with non-zero length %zu", len);
+        return -1;
+    }
+
+    if (len == 0) return 0; /* Nothing to read */
+
+    /* Validate buffer state */
+    if (buf->rdb == NULL) {
+        rdbReportReadError("rdbChunkBufferRead: NULL rio pointer in buffer");
+        return -1;
+    }
+
+    size_t total_read = 0;
+    unsigned char *ptr = (unsigned char *)data;
+
+    while (len > 0) {
+        /* Check if we need to load a new chunk */
+        if (buf->decomp_data == NULL || buf->decomp_pos >= buf->decomp_size) {
+            if (buf->eof_reached) {
+                /* No more data available */
+                break;
+            }
+
+            /* Load and decompress the next chunk */
+            if (rdbDecompressChunk(buf) == -1) {
+                /* Error or EOF */
+                if (total_read > 0) {
+                    /* Return what we've read so far */
+                    return total_read;
+                }
+                /* Check if it's EOF or an actual error */
+                if (buf->eof_reached) {
+                    return 0; /* EOF */
+                } else {
+                    rdbReportReadError("Failed to decompress chunk after reading %zu bytes", total_read);
+                    return -1; /* Error */
+                }
+            }
+        }
+
+        /* Validate decompressed buffer state */
+        if (buf->decomp_data == NULL) {
+            rdbReportReadError("rdbChunkBufferRead: Decompressed data is NULL after successful decompression");
+            return -1;
+        }
+
+        if (buf->decomp_pos > buf->decomp_size) {
+            rdbReportReadError("rdbChunkBufferRead: Invalid buffer position %zu > size %zu",
+                              buf->decomp_pos, buf->decomp_size);
+            return -1;
+        }
+
+        /* Calculate how much data is available in the current chunk */
+        size_t available = buf->decomp_size - buf->decomp_pos;
+
+        /* Copy as much data as possible from the buffer */
+        size_t to_copy = (len < available) ? len : available;
+        memcpy(ptr, buf->decomp_data + buf->decomp_pos, to_copy);
+        buf->decomp_pos += to_copy;
+        ptr += to_copy;
+        len -= to_copy;
+        total_read += to_copy;
+    }
+
+    return total_read;
+}
+
+/* ======================== End Chunk Buffer Implementation ================== */
+
 ssize_t rdbWriteRaw(rio *rdb, void *p, size_t len) {
     if (rdb && rioWrite(rdb, p, len) == 0) return -1;
     return len;
@@ -506,8 +1033,14 @@ ssize_t rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
     }
 
     /* Try LZF compression - under 20 bytes it's unable to compress even
-     * aaaaaaaaaaaaaaaaaa so skip it */
-    if (server.rdb_compression && len > 20) {
+     * aaaaaaaaaaaaaaaaaa so skip it.
+     * IMPORTANT: Skip per-string compression when chunk compression is active for this rio.
+     * This prevents double compression and allows the chunk compressor to find
+     * patterns across multiple strings for better compression ratios.
+     * Note: We check if the current rio is using chunk compression, not the global flag,
+     * because DUMP/RESTORE/MIGRATE don't use chunk compression and should still use LZF. */
+    int is_chunk_compressed = (rdb && rioCheckType(rdb) == RIO_TYPE_CHUNK);
+    if (server.rdb_compression && !is_chunk_compressed && len > 20) {
         n = rdbSaveLzfStringObject(rdb, s, len);
         if (n == -1) return -1;
         if (n > 0) return n;
@@ -1258,6 +1791,7 @@ int rdbSaveInfoAuxFields(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
         if (rdbSaveAuxFieldStrInt(rdb, "repl-offset", server.primary_repl_offset) == -1) return -1;
     }
     if (rdbSaveAuxFieldStrInt(rdb, "aof-base", aof_base) == -1) return -1;
+    if (rdbSaveAuxFieldStrInt(rdb, "rdb-chunk-compression", server.rdb_chunk_compression) == -1) return -1;
 
     /* Handle additional dynamic aux fields */
     if (rdbAuxFields != NULL) {
@@ -1462,39 +1996,125 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     uint64_t cksum;
     long key_counter = 0;
     int j;
+    rio chunk_rio;
+    rio *actual_rdb = rdb;
+    rdbChunkBuffer *chunk_buf = NULL;
+    int use_chunk_compression = 0;
 
+    /* Try to initialize chunk compression BEFORE writing header */
+    if (server.rdb_chunk_compression) {
+        rioInitWithChunkCompression(&chunk_rio, rdb, server.rdb_chunk_size);
+
+        /* Check if chunk buffer allocation succeeded */
+        if (chunk_rio.io.chunk.chunk_buf == NULL) {
+            serverLog(LL_WARNING, "Failed to allocate chunk compression buffer (%zu bytes), "
+                      "aborting RDB save", server.rdb_chunk_size);
+            errno = ENOMEM;
+            goto werr;
+        }
+
+        use_chunk_compression = 1;
+        serverLog(LL_NOTICE, "RDB: Chunk compression enabled with chunk size %zu bytes",
+                  server.rdb_chunk_size);
+    }
+
+    /* Write header with correct version based on actual compression mode */
     if (server.rdb_checksum) rdb->update_cksum = rioGenericUpdateChecksum;
-    snprintf(magic, sizeof(magic), "VALKEY%03d", RDB_VERSION);
+    int rdb_version = use_chunk_compression ? 81 : 80;
+    snprintf(magic, sizeof(magic), "VALKEY%03d", rdb_version);
     if (rdbWriteRaw(rdb, magic, 9) == -1) goto werr;
-    if (rdbSaveInfoAuxFields(rdb, rdbflags, rsi) == -1) goto werr;
-    if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA) && rdbSaveModulesAux(rdb, VALKEYMODULE_AUX_BEFORE_RDB) == -1) goto werr;
+
+    /* Now switch to chunk rio if compression is enabled */
+    if (use_chunk_compression) {
+        actual_rdb = &chunk_rio;
+        /* Seed checksum and counters with the bytes already written (header). */
+        actual_rdb->cksum = rdb->cksum;
+        actual_rdb->processed_bytes = rdb->processed_bytes;
+        actual_rdb->flags = rdb->flags;
+        actual_rdb->max_processing_chunk = rdb->max_processing_chunk;
+        /* Copy checksum settings to chunk rio and seed with header checksum */
+        if (server.rdb_checksum) {
+            actual_rdb->update_cksum = rioGenericUpdateChecksum;
+            /* Seed the chunk rio checksum with the header bytes we already wrote */
+            actual_rdb->cksum = rdb->cksum;
+        }
+    }
+    if (rdbSaveInfoAuxFields(actual_rdb, rdbflags, rsi) == -1) goto werr;
+    if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA) && rdbSaveModulesAux(actual_rdb, VALKEYMODULE_AUX_BEFORE_RDB) == -1) goto werr;
 
     /* save functions */
-    if (!(req & REPLICA_REQ_RDB_EXCLUDE_FUNCTIONS) && rdbSaveFunctions(rdb) == -1) goto werr;
+    if (!(req & REPLICA_REQ_RDB_EXCLUDE_FUNCTIONS) && rdbSaveFunctions(actual_rdb) == -1) goto werr;
 
     /* save all databases, skip this if we're in functions-only mode */
     if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA)) {
         /* RDB slot import info is encoded in a required opcode since exposing
          * importing slots is a consistency problem. */
-        if (clusterRDBSaveSlotImports(rdb) == C_ERR) goto werr;
+        if (clusterRDBSaveSlotImports(actual_rdb) == C_ERR) goto werr;
         for (j = 0; j < server.dbnum; j++) {
-            if (rdbSaveDb(rdb, j, rdbflags, &key_counter) == -1) goto werr;
+            if (rdbSaveDb(actual_rdb, j, rdbflags, &key_counter) == -1) goto werr;
         }
     }
 
-    if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA) && rdbSaveModulesAux(rdb, VALKEYMODULE_AUX_AFTER_RDB) == -1) goto werr;
+    if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA) && rdbSaveModulesAux(actual_rdb, VALKEYMODULE_AUX_AFTER_RDB) == -1) goto werr;
 
     /* EOF opcode */
-    if (rdbSaveType(rdb, RDB_OPCODE_EOF) == -1) goto werr;
+    if (rdbSaveType(actual_rdb, RDB_OPCODE_EOF) == -1) goto werr;
 
     /* CRC64 checksum. It will be zero if checksum computation is disabled, the
      * loading code skips the check in this case. */
-    cksum = rdb->cksum;
+    cksum = actual_rdb->cksum;
     memrev64ifbe(&cksum);
-    if (rioWrite(rdb, &cksum, 8) == 0) goto werr;
+    if (rioWrite(actual_rdb, &cksum, 8) == 0) goto werr;
+
+    /* Flush chunk buffer after writing EOF marker and checksum */
+    if (use_chunk_compression) {
+        chunk_buf = actual_rdb->io.chunk.chunk_buf;
+        if (chunk_buf && rdbChunkBufferFlush(chunk_buf) == -1) goto werr;
+
+        /* Collect and log statistics */
+        if (chunk_buf) {
+            uint64_t chunks = chunk_buf->chunks_written;
+            uint64_t compressed = chunk_buf->bytes_compressed;
+            uint64_t uncompressed = chunk_buf->bytes_uncompressed;
+            double ratio = uncompressed > 0 ? (double)uncompressed / (double)compressed : 1.0;
+
+            serverLog(LL_NOTICE,
+                      "RDB: Chunk compression complete - %llu chunks, %llu bytes compressed, "
+                      "%llu bytes uncompressed, ratio: %.2fx",
+                      (unsigned long long)chunks,
+                      (unsigned long long)compressed,
+                      (unsigned long long)uncompressed,
+                      ratio);
+
+            if (ratio < 1.1) {
+                serverLog(LL_WARNING,
+                          "RDB: Low compression ratio (%.2fx) - data may not be compressible",
+                          ratio);
+            }
+
+            /* Store statistics in server for INFO command */
+            server.rdb_last_save_chunks = chunks;
+            server.rdb_last_save_compressed_bytes = compressed;
+            server.rdb_last_save_uncompressed_bytes = uncompressed;
+        }
+
+        /* Free the chunk buffer */
+        rioFreeChunk(&chunk_rio);
+    } else {
+        /* Clear chunk compression statistics when not using chunk compression
+         * so INFO reflects the last successful save */
+        server.rdb_last_save_chunks = 0;
+        server.rdb_last_save_compressed_bytes = 0;
+        server.rdb_last_save_uncompressed_bytes = 0;
+    }
+
     return C_OK;
 
 werr:
+    /* Clean up chunk compression resources on error */
+    if (use_chunk_compression) {
+        rioFreeChunk(&chunk_rio);
+    }
     if (error) *error = errno;
     return C_ERR;
 }
@@ -3018,6 +3638,32 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
     }
 }
 
+/* Checksum-only callback for chunk decompression.
+ * When using chunk decompression, we need to calculate checksums on decompressed data,
+ * but track progress based on compressed bytes (from the underlying rio).
+ * This callback only updates the checksum without affecting progress tracking. */
+static void rdbLoadChecksumCallback(rio *r, const void *buf, size_t len) {
+    if (server.rdb_checksum) rioGenericUpdateChecksum(r, buf, len);
+}
+
+/* Progress-only callback for the underlying rio when chunk decompression is used.
+ * This tracks progress on compressed bytes without updating the checksum
+ * (checksum is calculated on decompressed data by the chunk rio). */
+static void rdbLoadProgressOnlyCallback(rio *r, const void *buf, size_t len) {
+    UNUSED(buf);
+    if (server.loading_process_events_interval_bytes &&
+        (r->processed_bytes + len) / server.loading_process_events_interval_bytes >
+            r->processed_bytes / server.loading_process_events_interval_bytes) {
+        if (server.primary_host && server.repl_state == REPL_STATE_TRANSFER) replicationSendNewlineToPrimary();
+        loadingAbsProgress(r->processed_bytes);
+        processEventsWhileBlocked();
+        processModuleLoadingProgressEvent(0);
+    }
+    if (server.repl_state == REPL_STATE_TRANSFER && rioCheckType(r) == RIO_TYPE_CONN) {
+        server.stat_net_repl_input_bytes += len;
+    }
+}
+
 /* Save the given functions_ctx to the rdb.
  * The err output parameter is optional and will be set with relevant error
  * message on failure, it is the caller responsibility to free the error
@@ -3099,6 +3745,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
     int error;
     long long empty_keys_skipped = 0;
     bool is_valkey_magic = false, is_redis_magic = false;
+    int use_chunk_decompression = 0; /* Initialize early to avoid uninitialized use in error path */
 
     rdb->update_cksum = rdbLoadProgressCallback;
     rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
@@ -3134,6 +3781,36 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
     }
     serverDb *db = rdb_loading_ctx->dbarray[0];
 
+    /* Version 81 uses chunk compression, version 80 uses legacy compression */
+    rio chunk_rio;
+    rio *actual_rdb = rdb;
+    use_chunk_decompression = (rdbver == 81);
+
+    if (use_chunk_decompression) {
+        serverLog(LL_NOTICE, "RDB version 81 detected, initializing chunk decompression");
+        rioInitWithChunkCompression(&chunk_rio, rdb, 0); /* 0 = reading mode */
+        if (chunk_rio.io.chunk.chunk_buf == NULL) {
+            serverLog(LL_WARNING, "Failed to initialize chunk decompression buffer");
+            return C_ERR;
+        }
+        actual_rdb = &chunk_rio;
+        actual_rdb->cksum = rdb->cksum;
+        actual_rdb->processed_bytes = rdb->processed_bytes;
+        actual_rdb->flags = rdb->flags;
+        /* For chunk decompression, we need to:
+         * 1. Calculate checksums on decompressed data (for CRC verification)
+         * 2. Track progress based on compressed bytes (to match file size)
+         * So we use a checksum-only callback on the chunk rio, and a progress-only
+         * callback on the underlying rio. */
+        actual_rdb->update_cksum = rdbLoadChecksumCallback;
+        actual_rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
+        /* Seed the chunk rio checksum with the header bytes we already read */
+        actual_rdb->cksum = rdb->cksum;
+        /* Replace the underlying rio's callback with progress-only (no checksum)
+         * to avoid double checksum calculation. */
+        rdb->update_cksum = rdbLoadProgressOnlyCallback;
+    }
+
     /* Key-specific attributes, set by opcodes before the key type. */
     long long lru_idle = -1, lfu_freq = -1, expiretime = -1, now = mstime();
     long long lru_clock = LRU_CLOCK();
@@ -3143,7 +3820,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         robj *val;
 
         /* Read type. */
-        if ((type = rdbLoadType(rdb)) == -1) goto eoferr;
+        if ((type = rdbLoadType(actual_rdb)) == -1) goto eoferr;
 
         /* Safeguard for unknown foreign opcode interpretations. */
         if (is_redis_magic && type >= RDB_FOREIGN_TYPE_MIN && type <= RDB_FOREIGN_TYPE_MAX) {
@@ -3157,34 +3834,48 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             /* EXPIRETIME: load an expire associated with the next key
              * to load. Note that after loading an expire we need to
              * load the actual type, and continue. */
-            expiretime = rdbLoadTime(rdb);
+            expiretime = rdbLoadTime(actual_rdb);
             expiretime *= 1000;
-            if (rioGetReadError(rdb)) goto eoferr;
+            if (rioGetReadError(actual_rdb)) goto eoferr;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_EXPIRETIME_MS) {
             /* EXPIRETIME_MS: milliseconds precision expire times introduced
              * with RDB v3. Like EXPIRETIME but no with more precision. */
-            expiretime = rdbLoadMillisecondTime(rdb, rdbver);
-            if (rioGetReadError(rdb)) goto eoferr;
+            expiretime = rdbLoadMillisecondTime(actual_rdb, rdbver);
+            if (rioGetReadError(actual_rdb)) goto eoferr;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_FREQ) {
             /* FREQ: LFU frequency. */
             uint8_t byte;
-            if (rioRead(rdb, &byte, 1) == 0) goto eoferr;
+            if (rioRead(actual_rdb, &byte, 1) == 0) goto eoferr;
             lfu_freq = byte;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_IDLE) {
             /* IDLE: LRU idle time. */
             uint64_t qword;
-            if ((qword = rdbLoadLen(rdb, NULL)) == RDB_LENERR) goto eoferr;
+            if ((qword = rdbLoadLen(actual_rdb, NULL)) == RDB_LENERR) goto eoferr;
             lru_idle = qword;
             continue; /* Read next opcode. */
+        } else if (type == RDB_OPCODE_CHUNK) {
+            /* CHUNK: Compressed chunk opcode. This should only appear in version 81 RDB files
+             * and should be handled transparently by the chunk decompression layer.
+             * If we see it here, it means chunk decompression is not active, which is an error. */
+            if (!use_chunk_decompression) {
+                serverLog(LL_WARNING, "RDB_OPCODE_CHUNK found but chunk decompression is not active");
+                rdbReportCorruptRDB("Unexpected RDB_OPCODE_CHUNK in non-version-81 RDB file");
+                goto eoferr;
+            }
+            /* This should not happen if chunk decompression is working correctly,
+             * as chunks should be transparent to the loading code. */
+            serverLog(LL_WARNING, "RDB_OPCODE_CHUNK leaked through chunk decompression layer");
+            rdbReportCorruptRDB("RDB_OPCODE_CHUNK should be handled by chunk decompression layer");
+            goto eoferr;
         } else if (type == RDB_OPCODE_EOF) {
             /* EOF: End of file, exit the main loop. */
             break;
         } else if (type == RDB_OPCODE_SELECTDB) {
             /* SELECTDB: Select the specified database. */
-            if ((dbid = rdbLoadLen(rdb, NULL)) == RDB_LENERR) goto eoferr;
+            if ((dbid = rdbLoadLen(actual_rdb, NULL)) == RDB_LENERR) goto eoferr;
             if (dbid >= (unsigned)server.dbnum) {
                 serverLog(LL_WARNING,
                           "FATAL: Data file was created with a %s server configured to handle "
@@ -3200,17 +3891,17 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         } else if (type == RDB_OPCODE_RESIZEDB) {
             /* RESIZEDB: Hint about the size of the keys in the currently
              * selected data base, in order to avoid useless rehashing. */
-            if ((db_size = rdbLoadLen(rdb, NULL)) == RDB_LENERR) goto eoferr;
-            if ((expires_size = rdbLoadLen(rdb, NULL)) == RDB_LENERR) goto eoferr;
+            if ((db_size = rdbLoadLen(actual_rdb, NULL)) == RDB_LENERR) goto eoferr;
+            if ((expires_size = rdbLoadLen(actual_rdb, NULL)) == RDB_LENERR) goto eoferr;
             should_expand_db = 1;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_SLOT_INFO) {
             /* RDB slot info size annotations used in pre-8.0 and foreign RDB.
              * See the aux field "slot-info". */
             uint64_t slot_id, slot_size, expires_slot_size;
-            if ((slot_id = rdbLoadLen(rdb, NULL)) == RDB_LENERR) goto eoferr;
-            if ((slot_size = rdbLoadLen(rdb, NULL)) == RDB_LENERR) goto eoferr;
-            if ((expires_slot_size = rdbLoadLen(rdb, NULL)) == RDB_LENERR) goto eoferr;
+            if ((slot_id = rdbLoadLen(actual_rdb, NULL)) == RDB_LENERR) goto eoferr;
+            if ((slot_size = rdbLoadLen(actual_rdb, NULL)) == RDB_LENERR) goto eoferr;
+            if ((expires_slot_size = rdbLoadLen(actual_rdb, NULL)) == RDB_LENERR) goto eoferr;
             if (server.cluster_enabled && slot_id < CLUSTER_SLOTS) {
                 if (slot_size) kvstoreHashtableExpand(db->keys, slot_id, slot_size);
                 if (expires_slot_size) kvstoreHashtableExpand(db->expires, slot_id, expires_slot_size);
@@ -3218,7 +3909,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             }
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_SLOT_IMPORT) {
-            if (clusterRDBLoadSlotImport(rdb) == C_ERR) goto eoferr;
+            if (clusterRDBLoadSlotImport(actual_rdb) == C_ERR) goto eoferr;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_AUX) {
             /* AUX: generic string-string fields. Use to add state to RDB
@@ -3227,8 +3918,8 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
              *
              * An AUX field is composed of two strings: key and value. */
             robj *auxkey, *auxval;
-            if ((auxkey = rdbLoadStringObject(rdb)) == NULL) goto eoferr;
-            if ((auxval = rdbLoadStringObject(rdb)) == NULL) {
+            if ((auxkey = rdbLoadStringObject(actual_rdb)) == NULL) goto eoferr;
+            if ((auxval = rdbLoadStringObject(actual_rdb)) == NULL) {
                 decrRefCount(auxkey);
                 goto eoferr;
             }
@@ -3267,6 +3958,10 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             } else if (!strcasecmp(auxkey->ptr, "aof-base")) {
                 long long isbase = strtoll(auxval->ptr, NULL, 10);
                 if (isbase) serverLog(LL_NOTICE, "RDB is base AOF");
+            } else if (!strcasecmp(auxkey->ptr, "rdb-chunk-compression")) {
+                /* This AUX field is informational only. The actual chunk compression
+                 * is determined by the RDB version (81 = chunk compression, 80 = legacy). */
+                serverLog(LL_NOTICE, "RDB chunk compression AUX field: %s", (char *)auxval->ptr);
             } else if (!strcasecmp(auxkey->ptr, "redis-bits")) {
                 /* Just ignored. */
             } else if (!strcasecmp(auxkey->ptr, "slot-info")) {
@@ -3330,10 +4025,10 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             /* Load module data that is not related to the server key space.
              * Such data can be potentially be stored both before and after the
              * RDB keys-values section. */
-            uint64_t moduleid = rdbLoadLen(rdb, NULL);
-            int when_opcode = rdbLoadLen(rdb, NULL);
-            int when = rdbLoadLen(rdb, NULL);
-            if (rioGetReadError(rdb)) goto eoferr;
+            uint64_t moduleid = rdbLoadLen(actual_rdb, NULL);
+            int when_opcode = rdbLoadLen(actual_rdb, NULL);
+            int when = rdbLoadLen(actual_rdb, NULL);
+            if (rioGetReadError(actual_rdb)) goto eoferr;
             if (when_opcode != RDB_MODULE_OPCODE_UINT) {
                 rdbReportReadError("bad when_opcode");
                 goto eoferr;
@@ -3357,7 +4052,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
                 }
 
                 ValkeyModuleIO io;
-                moduleInitIOContext(&io, mt, rdb, NULL, -1);
+                moduleInitIOContext(&io, mt, actual_rdb, NULL, -1);
                 /* Call the rdb_load method of the module providing the 10 bit
                  * encoding version in the lower 10 bits of the module ID. */
                 int rc = mt->aux_load(&io, moduleid & 1023, when);
@@ -3373,7 +4068,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
                               name);
                     goto eoferr;
                 }
-                uint64_t eof = rdbLoadLen(rdb, NULL);
+                uint64_t eof = rdbLoadLen(actual_rdb, NULL);
                 if (eof != RDB_MODULE_OPCODE_EOF) {
                     serverLog(LL_WARNING,
                               "The RDB file contains module AUX data for the module '%s' that is not terminated by the "
@@ -3384,7 +4079,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
                 continue;
             } else {
                 /* RDB check mode. */
-                robj *aux = rdbLoadCheckModuleValue(rdb, name);
+                robj *aux = rdbLoadCheckModuleValue(actual_rdb, name);
                 decrRefCount(aux);
                 continue; /* Read next opcode. */
             }
@@ -3393,7 +4088,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             exit(1);
         } else if (type == RDB_OPCODE_FUNCTION2) {
             sds err = NULL;
-            if (rdbFunctionLoad(rdb, rdbver, rdb_loading_ctx->functions_lib_ctx, rdbflags, &err) != C_OK) {
+            if (rdbFunctionLoad(actual_rdb, rdbver, rdb_loading_ctx->functions_lib_ctx, rdbflags, &err) != C_OK) {
                 serverLog(LL_WARNING, "Failed loading library, %s", err);
                 sdsfree(err);
                 goto eoferr;
@@ -3410,9 +4105,9 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         }
 
         /* Read key */
-        if ((key = rdbGenericLoadStringObject(rdb, RDB_LOAD_SDS, NULL)) == NULL) goto eoferr;
+        if ((key = rdbGenericLoadStringObject(actual_rdb, RDB_LOAD_SDS, NULL)) == NULL) goto eoferr;
         /* Read value */
-        val = rdbLoadObject(type, rdb, key, db->id, &error);
+        val = rdbLoadObject(type, actual_rdb, key, db->id, &error);
 
         /* Check if the key already expired. This function is used when loading
          * an RDB file from disk, either at startup, or when an RDB was
@@ -3433,6 +4128,10 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             } else if (error == RDB_LOAD_ERR_UNKNOWN_TYPE) {
                 sdsfree(key);
                 serverLog(LL_WARNING, "Unknown type or opcode when loading DB. Unrecoverable error, aborting now.");
+                /* Clean up chunk decompression before returning */
+                if (use_chunk_decompression) {
+                    rioFreeChunk(&chunk_rio);
+                }
                 return RDB_FAILED;
             } else {
                 sdsfree(key);
@@ -3502,12 +4201,12 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
     }
     /* Verify the checksum if RDB version is >= 5 */
     if (rdbver >= 5) {
-        uint64_t cksum, expected = rdb->cksum;
+        uint64_t cksum, expected = actual_rdb->cksum;
 
-        if (rioRead(rdb, &cksum, 8) == 0) goto eoferr;
+        if (rioRead(actual_rdb, &cksum, 8) == 0) goto eoferr;
         if (server.rdb_checksum && !server.skip_checksum_validation) {
             memrev64ifbe(&cksum);
-            if (rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) {
+            if (actual_rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) {
                 serverLog(LL_NOTICE, "RDB file was saved with checksum disabled: skipped checksum for this transfer");
             } else if (cksum == 0) {
                 serverLog(LL_NOTICE, "RDB file was saved with checksum disabled: no check performed.");
@@ -3517,9 +4216,17 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
                           "got (%llx). Aborting now.",
                           (unsigned long long)expected, (unsigned long long)cksum);
                 rdbReportCorruptRDB("RDB CRC error");
+                if (use_chunk_decompression) {
+                    rioFreeChunk(&chunk_rio);
+                }
                 return RDB_FAILED;
             }
         }
+    }
+
+    /* Clean up chunk decompression if it was used */
+    if (use_chunk_decompression) {
+        rioFreeChunk(&chunk_rio);
     }
 
     if (empty_keys_skipped) {
@@ -3536,6 +4243,10 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
      * the RDB file from a socket during initial SYNC (diskless replica mode),
      * we'll report the error to the caller, so that we can retry. */
 eoferr:
+    /* Clean up chunk decompression if it was used */
+    if (use_chunk_decompression) {
+        rioFreeChunk(&chunk_rio);
+    }
     serverLog(LL_WARNING, "Short read or OOM loading DB. Unrecoverable error, aborting now.");
     rdbReportReadError("Unexpected EOF reading RDB file");
     return RDB_FAILED;

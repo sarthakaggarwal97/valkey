@@ -211,6 +211,12 @@ if {!$isroot} {
 # Fix permissions of the RDB file.
 file attributes $dump_path -permissions 0666
 
+# Create a new RDB file without chunk compression for CRC corruption test
+start_server [list overrides [list "dir" $server_path "rdb-chunk-compression" "no"] keep_persistence true] {
+    r set corrupted_test_key test_value
+    r save
+}
+
 # Corrupt its CRC64 checksum.
 set filesize [file size $dump_path]
 set fd [open $dump_path r+]

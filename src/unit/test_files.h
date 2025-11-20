@@ -7,6 +7,27 @@ typedef struct unitTest {
 } unitTest;
 
 int test_popcount(int argc, char **argv, int flags);
+int test_chunkBufferCreate(int argc, char **argv, int flags);
+int test_chunkBufferWriteSmall(int argc, char **argv, int flags);
+int test_chunkBufferWriteLarge(int argc, char **argv, int flags);
+int test_chunkBufferFlushPartial(int argc, char **argv, int flags);
+int test_chunkBufferOverflow(int argc, char **argv, int flags);
+int test_chunkBufferWriteZero(int argc, char **argv, int flags);
+int test_chunkBufferNullHandling(int argc, char **argv, int flags);
+int test_chunkBufferMultipleCycles(int argc, char **argv, int flags);
+int test_compressHighlyCompressibleData(int argc, char **argv, int flags);
+int test_compressIncompressibleData(int argc, char **argv, int flags);
+int test_compressionRatioVariousPatterns(int argc, char **argv, int flags);
+int test_decompressValidChunks(int argc, char **argv, int flags);
+int test_decompressMultipleChunks(int argc, char **argv, int flags);
+int test_uncompressedChunkHandling(int argc, char **argv, int flags);
+int test_compressionMixedData(int argc, char **argv, int flags);
+int test_roundTripCompressionVariousSizes(int argc, char **argv, int flags);
+int test_compressionEmptyData(int argc, char **argv, int flags);
+int test_verifyCompressionActuallyOccurs(int argc, char **argv, int flags);
+int test_partialReads(int argc, char **argv, int flags);
+int test_differentDataProducesDifferentOutput(int argc, char **argv, int flags);
+int test_compressionPreservesExactBytes(int argc, char **argv, int flags);
 int test_crc64(int argc, char **argv, int flags);
 int test_crc64combine(int argc, char **argv, int flags);
 int test_dictCreate(int argc, char **argv, int flags);
@@ -256,6 +277,8 @@ int test_zmallocAllocReallocCallocAndFree(int argc, char **argv, int flags);
 int test_zmallocAllocZeroByteAndFree(int argc, char **argv, int flags);
 
 unitTest __test_bitops_c[] = {{"test_popcount", test_popcount}, {NULL, NULL}};
+unitTest __test_chunk_buffer_c[] = {{"test_chunkBufferCreate", test_chunkBufferCreate}, {"test_chunkBufferWriteSmall", test_chunkBufferWriteSmall}, {"test_chunkBufferWriteLarge", test_chunkBufferWriteLarge}, {"test_chunkBufferFlushPartial", test_chunkBufferFlushPartial}, {"test_chunkBufferOverflow", test_chunkBufferOverflow}, {"test_chunkBufferWriteZero", test_chunkBufferWriteZero}, {"test_chunkBufferNullHandling", test_chunkBufferNullHandling}, {"test_chunkBufferMultipleCycles", test_chunkBufferMultipleCycles}, {NULL, NULL}};
+unitTest __test_chunk_compression_c[] = {{"test_compressHighlyCompressibleData", test_compressHighlyCompressibleData}, {"test_compressIncompressibleData", test_compressIncompressibleData}, {"test_compressionRatioVariousPatterns", test_compressionRatioVariousPatterns}, {"test_decompressValidChunks", test_decompressValidChunks}, {"test_decompressMultipleChunks", test_decompressMultipleChunks}, {"test_uncompressedChunkHandling", test_uncompressedChunkHandling}, {"test_compressionMixedData", test_compressionMixedData}, {"test_roundTripCompressionVariousSizes", test_roundTripCompressionVariousSizes}, {"test_compressionEmptyData", test_compressionEmptyData}, {"test_verifyCompressionActuallyOccurs", test_verifyCompressionActuallyOccurs}, {"test_partialReads", test_partialReads}, {"test_differentDataProducesDifferentOutput", test_differentDataProducesDifferentOutput}, {"test_compressionPreservesExactBytes", test_compressionPreservesExactBytes}, {NULL, NULL}};
 unitTest __test_crc64_c[] = {{"test_crc64", test_crc64}, {NULL, NULL}};
 unitTest __test_crc64combine_c[] = {{"test_crc64combine", test_crc64combine}, {NULL, NULL}};
 unitTest __test_dict_c[] = {{"test_dictCreate", test_dictCreate}, {"test_dictAdd16Keys", test_dictAdd16Keys}, {"test_dictDisableResize", test_dictDisableResize}, {"test_dictAddOneKeyTriggerResize", test_dictAddOneKeyTriggerResize}, {"test_dictDeleteKeys", test_dictDeleteKeys}, {"test_dictDeleteOneKeyTriggerResize", test_dictDeleteOneKeyTriggerResize}, {"test_dictEmptyDirAdd128Keys", test_dictEmptyDirAdd128Keys}, {"test_dictDisableResizeReduceTo3", test_dictDisableResizeReduceTo3}, {"test_dictDeleteOneKeyTriggerResizeAgain", test_dictDeleteOneKeyTriggerResizeAgain}, {"test_dictBenchmark", test_dictBenchmark}, {NULL, NULL}};
@@ -285,6 +308,8 @@ struct unitTestSuite {
     unitTest *tests;
 } unitTestSuite[] = {
     {"test_bitops.c", __test_bitops_c},
+    {"test_chunk_buffer.c", __test_chunk_buffer_c},
+    {"test_chunk_compression.c", __test_chunk_compression_c},
     {"test_crc64.c", __test_crc64_c},
     {"test_crc64combine.c", __test_crc64combine_c},
     {"test_dict.c", __test_dict_c},

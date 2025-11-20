@@ -1967,6 +1967,11 @@ struct valkeyServer {
     int saveparamslen;                    /* Number of saving points */
     char *rdb_filename;                   /* Name of RDB file */
     int rdb_compression;                  /* Use compression in RDB? */
+    int rdb_chunk_compression;            /* Use chunk-based compression in RDB? */
+    size_t rdb_chunk_size;                /* Chunk size for chunk-based compression */
+    uint64_t rdb_last_save_chunks;        /* Number of chunks in last save */
+    uint64_t rdb_last_save_compressed_bytes;   /* Compressed bytes in last save */
+    uint64_t rdb_last_save_uncompressed_bytes; /* Uncompressed bytes in last save */
     int rdb_checksum;                     /* Use RDB checksum? */
     int rdb_del_sync_files;               /* Remove RDB files used only for SYNC if
                                              the instance does not use persistence. */
