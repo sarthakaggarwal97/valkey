@@ -2064,18 +2064,11 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     /* EOF opcode */
     if (rdbSaveType(actual_rdb, RDB_OPCODE_EOF) == -1) goto werr;
 
-    /* CRC64 checksum. It will be zero if checksum computation is disabled, the
-     * loading code skips the check in this case. */
-    cksum = actual_rdb->cksum;
-    memrev64ifbe(&cksum);
-    if (rioWrite(actual_rdb, &cksum, 8) == 0) goto werr;
-
-    /* Flush chunk buffer after writing EOF marker and checksum */
+    /* Flush all compressed data before writing the raw checksum footer. */
     if (use_chunk_compression) {
         chunk_buf = actual_rdb->io.chunk.chunk_buf;
         if (chunk_buf && rdbChunkBufferFlush(chunk_buf) == -1) goto werr;
 
-        /* Collect and log statistics */
         if (chunk_buf) {
             uint64_t chunks = chunk_buf->chunks_written;
             uint64_t compressed = chunk_buf->bytes_compressed;
@@ -2101,7 +2094,17 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
             server.rdb_last_save_compressed_bytes = compressed;
             server.rdb_last_save_uncompressed_bytes = uncompressed;
         }
+    }
 
+    /* CRC64 checksum. It will be zero if checksum computation is disabled, the
+     * loading code skips the check in this case. For chunk compression we must
+     * write the footer directly to the underlying rio so it isn't chunked. */
+    rio *checksum_rio = use_chunk_compression ? rdb : actual_rdb;
+    cksum = checksum_rio->cksum;
+    memrev64ifbe(&cksum);
+    if (rioWrite(checksum_rio, &cksum, 8) == 0) goto werr;
+
+    if (use_chunk_compression) {
         /* Free the chunk buffer */
         rioFreeChunk(&chunk_rio);
     } else {
