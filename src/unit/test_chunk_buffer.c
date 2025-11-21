@@ -76,22 +76,24 @@ int test_chunkBufferWriteSmall(int argc, char **argv, int flags) {
     TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
 
     /* Write small data (1KB) */
-    char data[1024];
-    memset(data, 'A', sizeof(data));
-    ssize_t written = rdbChunkBufferWrite(chunk_buf, data, sizeof(data));
-    TEST_ASSERT_MESSAGE("Writing 1KB should succeed", written == sizeof(data));
+    char *data = zmalloc(1024);
+    memset(data, 'A', 1024);
+    ssize_t written = rdbChunkBufferWrite(chunk_buf, data, 1024);
+    TEST_ASSERT_MESSAGE("Writing 1KB should succeed", written == 1024);
 
     /* Write another small chunk (2KB) */
-    char data2[2048];
-    memset(data2, 'B', sizeof(data2));
-    written = rdbChunkBufferWrite(chunk_buf, data2, sizeof(data2));
-    TEST_ASSERT_MESSAGE("Writing 2KB should succeed", written == sizeof(data2));
+    char *data2 = zmalloc(2048);
+    memset(data2, 'B', 2048);
+    written = rdbChunkBufferWrite(chunk_buf, data2, 2048);
+    TEST_ASSERT_MESSAGE("Writing 2KB should succeed", written == 2048);
 
     /* Flush the buffer */
     int result = rdbChunkBufferFlush(chunk_buf);
     TEST_ASSERT_MESSAGE("Flushing buffer should succeed", result == 0);
 
     /* Clean up */
+    zfree(data);
+    zfree(data2);
     rdbChunkBufferFree(chunk_buf);
     sdsfree(r.io.buffer.ptr); /* Free the potentially reallocated buffer */
     return 0;
@@ -149,10 +151,10 @@ int test_chunkBufferFlushPartial(int argc, char **argv, int flags) {
     TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
 
     /* Write partial chunk (3KB) */
-    char data[3072];
-    memset(data, 'P', sizeof(data));
-    ssize_t written = rdbChunkBufferWrite(chunk_buf, data, sizeof(data));
-    TEST_ASSERT_MESSAGE("Writing 3KB should succeed", written == sizeof(data));
+    char *data = zmalloc(3072);
+    memset(data, 'P', 3072);
+    ssize_t written = rdbChunkBufferWrite(chunk_buf, data, 3072);
+    TEST_ASSERT_MESSAGE("Writing 3KB should succeed", written == 3072);
 
     /* Flush the partial chunk */
     int result = rdbChunkBufferFlush(chunk_buf);
@@ -163,6 +165,7 @@ int test_chunkBufferFlushPartial(int argc, char **argv, int flags) {
     TEST_ASSERT_MESSAGE("Flushing empty buffer should succeed", result == 0);
 
     /* Clean up */
+    zfree(data);
     rdbChunkBufferFree(chunk_buf);
     sdsfree(r.io.buffer.ptr); /* Free the potentially reallocated buffer */
     return 0;
@@ -223,7 +226,7 @@ int test_chunkBufferWriteZero(int argc, char **argv, int flags) {
     TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
 
     /* Write zero bytes */
-    char data[100];
+    char *data = zmalloc(100);
     ssize_t written = rdbChunkBufferWrite(chunk_buf, data, 0);
     TEST_ASSERT_MESSAGE("Writing 0 bytes should return 0", written == 0);
 
@@ -232,6 +235,7 @@ int test_chunkBufferWriteZero(int argc, char **argv, int flags) {
     TEST_ASSERT_MESSAGE("Flushing should succeed", result == 0);
 
     /* Clean up */
+    zfree(data);
     rdbChunkBufferFree(chunk_buf);
     sdsfree(r.io.buffer.ptr); /* Free the potentially reallocated buffer */
     return 0;
@@ -244,8 +248,8 @@ int test_chunkBufferNullHandling(int argc, char **argv, int flags) {
     UNUSED(flags);
 
     /* Test writing to NULL buffer */
-    char data[100];
-    ssize_t written = rdbChunkBufferWrite(NULL, data, sizeof(data));
+    char *data = zmalloc(100);
+    ssize_t written = rdbChunkBufferWrite(NULL, data, 100);
     TEST_ASSERT_MESSAGE("Writing to NULL buffer should fail", written == -1);
 
     /* Test flushing NULL buffer */
@@ -256,6 +260,7 @@ int test_chunkBufferNullHandling(int argc, char **argv, int flags) {
     rdbChunkBufferFree(NULL);
     TEST_ASSERT_MESSAGE("Freeing NULL buffer should not crash", 1);
 
+    zfree(data);
     return 0;
 }
 
@@ -277,14 +282,16 @@ int test_chunkBufferMultipleCycles(int argc, char **argv, int flags) {
 
     /* Perform multiple write-flush cycles */
     for (int i = 0; i < 5; i++) {
-        char data[1024];
-        memset(data, 'A' + i, sizeof(data));
-        
-        ssize_t written = rdbChunkBufferWrite(chunk_buf, data, sizeof(data));
-        TEST_ASSERT_MESSAGE("Writing should succeed in cycle", written == sizeof(data));
-        
+        char *data = zmalloc(1024);
+        memset(data, 'A' + i, 1024);
+
+        ssize_t written = rdbChunkBufferWrite(chunk_buf, data, 1024);
+        TEST_ASSERT_MESSAGE("Writing should succeed in cycle", written == 1024);
+
         int result = rdbChunkBufferFlush(chunk_buf);
         TEST_ASSERT_MESSAGE("Flushing should succeed in cycle", result == 0);
+
+        zfree(data);
     }
 
     /* Clean up */
