@@ -3801,18 +3801,10 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         actual_rdb->cksum = rdb->cksum;
         actual_rdb->processed_bytes = rdb->processed_bytes;
         actual_rdb->flags = rdb->flags;
-        /* For chunk decompression, we need to:
-         * 1. Calculate checksums on decompressed data (for CRC verification)
-         * 2. Track progress based on compressed bytes (to match file size)
-         * So we use a checksum-only callback on the chunk rio, and a progress-only
-         * callback on the underlying rio. */
+        /* Calculate checksum on the compressed bytes via the underlying rio, while
+         * optionally keeping a decompressed checksum for diagnostics. */
         actual_rdb->update_cksum = rdbLoadChecksumCallback;
         actual_rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
-        /* Seed the chunk rio checksum with the header bytes we already read */
-        actual_rdb->cksum = rdb->cksum;
-        /* Replace the underlying rio's callback with progress-only (no checksum)
-         * to avoid double checksum calculation. */
-        rdb->update_cksum = rdbLoadProgressOnlyCallback;
     }
 
     /* Key-specific attributes, set by opcodes before the key type. */
@@ -4205,12 +4197,14 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
     }
     /* Verify the checksum if RDB version is >= 5 */
     if (rdbver >= 5) {
-        uint64_t cksum, expected = actual_rdb->cksum;
+        uint64_t cksum;
+        rio *checksum_rio = use_chunk_decompression ? rdb : actual_rdb;
+        uint64_t expected = checksum_rio->cksum;
 
-        if (rioRead(actual_rdb, &cksum, 8) == 0) goto eoferr;
+        if (rioRead(checksum_rio, &cksum, 8) == 0) goto eoferr;
         if (server.rdb_checksum && !server.skip_checksum_validation) {
             memrev64ifbe(&cksum);
-            if (actual_rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) {
+            if (checksum_rio->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) {
                 serverLog(LL_NOTICE, "RDB file was saved with checksum disabled: skipped checksum for this transfer");
             } else if (cksum == 0) {
                 serverLog(LL_NOTICE, "RDB file was saved with checksum disabled: no check performed.");
