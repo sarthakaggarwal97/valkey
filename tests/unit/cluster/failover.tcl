@@ -122,11 +122,11 @@ start_cluster 3 6 {tags {external:skip cluster}} {
 
     test "Make sure the replicas always get the different ranks" {
         if {[s -3 role] == "master"} {
-            verify_log_message -3 "*Start of election*rank #0*" 0
-            verify_log_message -6 "*Start of election*rank #1*" 0
+            wait_for_log_messages -3 [list $rank0Pattern] 0 1000 50
+            wait_for_log_messages -6 [list $rank1Pattern] 0 1000 50
         } else {
-            verify_log_message -3 "*Start of election*rank #1*" 0
-            verify_log_message -6 "*Start of election*rank #0*" 0
+            wait_for_log_messages -3 [list $rank1Pattern] 0 1000 50
+            wait_for_log_messages -6 [list $rank0Pattern] 0 1000 50
         }
     }
 
