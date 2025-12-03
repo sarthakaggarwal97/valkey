@@ -240,13 +240,7 @@ int evalExtractShebangFlags(sds body,
         }
 
         if (out_engine) {
-            size_t engine_len = sdslen(parts[0]);
-            if (engine_len <= 2 || engine_len > 1024) {
-                if (err) *err = sdsnew("Invalid engine in script shebang");
-                sdsfreesplitres(parts, numparts);
-                return C_ERR;
-            }
-            size_t engine_name_len = engine_len - 2;
+            uint32_t engine_name_len = sdslen(parts[0]) - 2;
             *out_engine = zcalloc(engine_name_len + 1);
             valkey_strlcpy(*out_engine, parts[0] + 2, engine_name_len + 1);
         }
