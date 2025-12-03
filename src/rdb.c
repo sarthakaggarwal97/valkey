@@ -3653,6 +3653,24 @@ static void rdbLoadChecksumCallback(rio *r, const void *buf, size_t len) {
     if (server.rdb_checksum) rioGenericUpdateChecksum(r, buf, len);
 }
 
+/* Progress-only callback for the underlying rio when chunk decompression is used.
+ * This tracks progress on compressed bytes without updating the checksum
+ * (checksum is calculated on decompressed data by the chunk rio). */
+static void rdbLoadProgressOnlyCallback(rio *r, const void *buf, size_t len) {
+    UNUSED(buf);
+    if (server.loading_process_events_interval_bytes &&
+        (r->processed_bytes + len) / server.loading_process_events_interval_bytes >
+            r->processed_bytes / server.loading_process_events_interval_bytes) {
+        if (server.primary_host && server.repl_state == REPL_STATE_TRANSFER) replicationSendNewlineToPrimary();
+        loadingAbsProgress(r->processed_bytes);
+        processEventsWhileBlocked();
+        processModuleLoadingProgressEvent(0);
+    }
+    if (server.repl_state == REPL_STATE_TRANSFER && rioCheckType(r) == RIO_TYPE_CONN) {
+        server.stat_net_repl_input_bytes += len;
+    }
+}
+
 /* Save the given functions_ctx to the rdb.
  * The err output parameter is optional and will be set with relevant error
  * message on failure, it is the caller responsibility to free the error
