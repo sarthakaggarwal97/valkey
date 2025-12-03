@@ -3800,6 +3800,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             serverLog(LL_WARNING, "Failed to initialize chunk decompression buffer");
             return C_ERR;
         }
+        rdb->update_cksum = rdbLoadProgressOnlyCallback;
         actual_rdb = &chunk_rio;
         actual_rdb->cksum = rdb->cksum;
         actual_rdb->processed_bytes = rdb->processed_bytes;
