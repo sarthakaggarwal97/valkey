@@ -39,7 +39,7 @@ uint32_t lru_import(uint32_t idle_secs) {
 
 uint32_t lru_getIdleSecs(uint32_t lru) {
     // Underflow is ok/expected
-    uint32_t seconds = (LRUGetClockTime() - lru) & LRULFU_MASK;
+    uint32_t seconds = (LRUGetClockTime() - (lru & LRULFU_MASK)) & LRULFU_MASK;
 #if LRU_CLOCK_RESOLUTION != 1000
     seconds = (uint32_t)((long)seconds * LRU_CLOCK_RESOLUTION / 1000);
 #endif
@@ -90,7 +90,7 @@ static uint16_t LFUGetTimeInMinutes(void) {
 
 
 uint32_t lfu_import(uint8_t freq) {
-    return ((uint32_t)LFUGetTimeInMinutes() << 8) | freq;
+    return (((uint32_t)LFUGetTimeInMinutes() << 8) | freq) & LRULFU_MASK;
 }
 
 
@@ -102,7 +102,7 @@ static uint32_t LFUDecay(uint32_t lfu) {
     uint16_t elapsed = now - prev_time; // Wrap-around expected/valid
     uint16_t num_periods = server.lfu_decay_time ? elapsed / server.lfu_decay_time : 0;
     freq = (num_periods > freq) ? 0 : freq - num_periods;
-    return ((uint32_t)now << 8) | freq;
+    return (((uint32_t)now << 8) | freq) & LRULFU_MASK;
 }
 
 
@@ -124,7 +124,7 @@ uint32_t lfu_touch(uint32_t lfu) {
     lfu = LFUDecay(lfu);
     uint8_t freq = (uint8_t)lfu;
     freq = LFULogIncr(freq);
-    return (lfu & ~(uint32_t)UINT8_MAX) | freq;
+    return ((lfu & ~(uint32_t)UINT8_MAX) | freq) & LRULFU_MASK;
 }
 
 
