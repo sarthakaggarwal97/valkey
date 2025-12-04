@@ -101,6 +101,7 @@ robj *createObjectWithKeyAndExpire(int type, void *ptr, const sds key, long long
         sdswrite(data, key_sds_size, key_sds_type, key, key_sds_len);
     }
 
+    initObjectLRUOrLFU(o);
     return o;
 }
 
@@ -195,6 +196,7 @@ static robj *createEmbeddedStringObjectWithKeyAndExpire(const char *val_ptr,
     size_t remaining_size = bufsize - (data - (char *)(void *)o);
     o->ptr = sdswrite(data, remaining_size, SDS_TYPE_8, val_ptr, val_len);
 
+    initObjectLRUOrLFU(o);
     return o;
 }
 
