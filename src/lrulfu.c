@@ -18,8 +18,12 @@
 // Current time in seconds (24 least significant bits).  Designed to roll over.
 static uint32_t LRUGetClockTime(void) {
 #if LRU_CLOCK_RESOLUTION == 1000
-    time_t unixtime = atomic_load_explicit(&server.unixtime, memory_order_relaxed);
-    return (uint32_t)(unixtime & LRULFU_MASK);
+    /* Use the cached millisecond time instead of the atomic unixtime in order
+     * to avoid any architecture-specific atomic issues on platforms where
+     * time_t is wider than the native word size (e.g. 32-bit builds).
+     * server.mstime is already refreshed in the server cron, matching the old
+     * lruclock behaviour. */
+    return (uint32_t)((server.mstime / 1000) & LRULFU_MASK);
 #else
     return (uint32_t)((server.mstime / LRU_CLOCK_RESOLUTION) & LRULFU_MASK);
 #endif
@@ -84,8 +88,7 @@ uint32_t lru_getIdleSecs(uint32_t lru) {
 
 // Current time in minutes (16 least significant bits).  Designed to roll over.
 static uint16_t LFUGetTimeInMinutes(void) {
-    time_t unixtime = atomic_load_explicit(&server.unixtime, memory_order_relaxed);
-    return (uint16_t)(unixtime / 60);
+    return (uint16_t)(server.mstime / 60000);
 }
 
 
