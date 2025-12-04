@@ -103,11 +103,14 @@ robj *lookupKey(serverDb *db, robj *key, int flags) {
         /* Update the access time for the ageing algorithm.
          * Don't do it if we have a saving child, as this will trigger
          * a copy on write madness. */
-        if ((flags & LOOKUP_NOTOUCH) == 0 &&
+        bool no_touch = flags & LOOKUP_NOTOUCH;
+        if (!no_touch &&
             server.current_client && server.current_client->flag.no_touch &&
-            server.executing_client && server.executing_client->cmd->proc != touchCommand)
+            (!server.executing_client || server.executing_client->cmd->proc != touchCommand)) {
+            no_touch = true;
             flags |= LOOKUP_NOTOUCH;
-        if (!hasActiveChildProcess() && !(flags & LOOKUP_NOTOUCH)) {
+        }
+        if (!hasActiveChildProcess() && !no_touch) {
             /* Shared objects can't be stored in the database. */
             serverAssert(val->refcount != OBJ_SHARED_REFCOUNT);
             val->lru = lrulfu_touch(val->lru);

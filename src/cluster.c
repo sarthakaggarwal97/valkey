@@ -304,7 +304,14 @@ void restoreCommand(client *c) {
             rewriteClientCommandArgument(c, c->argc, shared.absttl);
         }
     }
-    objectSetLRUOrLFU(obj, lfu_freq, lru_idle);
+    if (!objectSetLRUOrLFU(obj, lfu_freq, lru_idle) &&
+        (lfu_freq >= 0 || lru_idle >= 0)) {
+        if (lfu_freq >= 0) {
+            obj->lru = lfu_import((uint8_t)lfu_freq);
+        } else if (lru_idle >= 0) {
+            obj->lru = lru_import(lru_idle);
+        }
+    }
     signalModifiedKey(c, c->db, key);
     notifyKeyspaceEvent(NOTIFY_GENERIC, "restore", key, c->db->id);
     addReply(c, shared.ok);

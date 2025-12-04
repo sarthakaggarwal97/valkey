@@ -101,6 +101,7 @@ robj *createObjectWithKeyAndExpire(int type, void *ptr, const sds key, long long
         sdswrite(data, key_sds_size, key_sds_type, key, key_sds_len);
     }
 
+    initObjectLRUOrLFU(o);
     return o;
 }
 
