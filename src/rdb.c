@@ -3134,6 +3134,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
 
     /* Key-specific attributes, set by opcodes before the key type. */
     long long lru_idle = -1, lfu_freq = -1, expiretime = -1, now = mstime();
+    long long lru_clock_val = lru_clock();
 
     while (1) {
         sds key;
@@ -3478,7 +3479,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             }
 
             /* Set usage information (for eviction). */
-            objectSetLRUOrLFU(val, lfu_freq, lru_idle);
+            objectSetLRUOrLFU(val, lfu_freq, lru_idle, lru_clock_val);
 
             /* call key space notification on key loaded for modules only */
             moduleNotifyKeyspaceEvent(NOTIFY_LOADED, "loaded", &keyobj, db->id);

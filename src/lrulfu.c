@@ -26,14 +26,22 @@ static uint32_t LRUGetClockTime(void) {
 }
 
 
-uint32_t lru_import(uint32_t idle_secs) {
-    uint32_t now = LRUGetClockTime();
+uint32_t lru_import_with_clock(uint32_t idle_secs, uint32_t lru_clock) {
 #if LRU_CLOCK_RESOLUTION != 1000
     idle_secs = (uint32_t)((long)idle_secs * 1000 / LRU_CLOCK_RESOLUTION);
 #endif
     idle_secs = idle_secs & LRULFU_MASK;
     // Underflow is ok/expected
-    return (now - idle_secs) & LRULFU_MASK;
+    return (lru_clock - idle_secs) & LRULFU_MASK;
+}
+
+uint32_t lru_import(uint32_t idle_secs) {
+    return lru_import_with_clock(idle_secs, LRUGetClockTime());
+}
+
+
+uint32_t lru_clock(void) {
+    return LRUGetClockTime();
 }
 
 

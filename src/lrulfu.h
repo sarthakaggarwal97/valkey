@@ -31,6 +31,12 @@
 /* Import a given LRU idleness to the current time.  */
 uint32_t lru_import(uint32_t idle_secs);
 
+/* Import a given LRU idleness relative to the supplied clock. */
+uint32_t lru_import_with_clock(uint32_t idle_secs, uint32_t lru_clock);
+
+/* Get the current LRU clock value. */
+uint32_t lru_clock(void);
+
 /* Get the current idle secs from the given LRU value.  */
 uint32_t lru_getIdleSecs(uint32_t lru);
 

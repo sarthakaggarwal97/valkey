@@ -1599,7 +1599,7 @@ uint32_t objectGetIdleness(robj *o) {
  * The lru_idle and lru_clock args are only relevant if policy
  * is MAXMEMORY_FLAG_LRU.
  * Either or both of them may be <0, in that case, nothing is set. */
-int objectSetLRUOrLFU(robj *val, long long lfu_freq, long long lru_idle_secs) {
+int objectSetLRUOrLFU(robj *val, long long lfu_freq, long long lru_idle_secs, long long lru_clock_val) {
     if (lrulfu_isUsingLFU()) {
         if (lfu_freq >= 0) {
             serverAssert(lfu_freq <= UINT8_MAX);
@@ -1607,7 +1607,8 @@ int objectSetLRUOrLFU(robj *val, long long lfu_freq, long long lru_idle_secs) {
             return 1;
         }
     } else if (lru_idle_secs >= 0) {
-        val->lru = lru_import(lru_idle_secs);
+        uint32_t clock = lru_clock_val >= 0 ? (uint32_t)lru_clock_val : lru_clock();
+        val->lru = lru_import_with_clock(lru_idle_secs, clock);
         return 1;
     }
     return 0;
