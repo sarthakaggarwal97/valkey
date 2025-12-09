@@ -75,7 +75,7 @@ robj *createObjectWithKeyAndExpire(int type, void *ptr, const sds key, long long
     o->encoding = OBJ_ENCODING_RAW;
     o->ptr = ptr;
     o->refcount = 1;
-    o->lru = 0;
+    objectSetLRURaw(o, 0);
     o->hasembkey = has_embkey;
 
     /* If the allocation has enough space for an expire field, add it even if we
@@ -110,7 +110,7 @@ robj *createObject(int type, void *ptr) {
 
 void initObjectLRUOrLFU(robj *o) {
     if (o->refcount == OBJ_SHARED_REFCOUNT) return;
-    o->lru = lrulfu_init();
+    objectSetLRURaw(o, lrulfu_init());
 }
 
 /* Set a special refcount in the object to make it "shared":
@@ -163,7 +163,7 @@ static robj *createEmbeddedStringObjectWithKeyAndExpire(const char *val_ptr,
     o->type = OBJ_STRING;
     o->encoding = OBJ_ENCODING_EMBSTR;
     o->refcount = 1;
-    o->lru = 0;
+    objectSetLRURaw(o, 0);
     o->hasexpire = (expire != -1);
     o->hasembkey = has_embkey;
 
@@ -289,7 +289,7 @@ robj *objectSetExpire(robj *val, long long expire) {
 robj *objectSetKeyAndExpire(robj *val, sds key, long long expire) {
     if (val->type == OBJ_STRING && val->encoding == OBJ_ENCODING_EMBSTR) {
         robj *new = createStringObjectWithKeyAndExpire(val->ptr, sdslen(val->ptr), key, expire);
-        new->lru = val->lru;
+        objectSetLRURaw(new, objectGetLRURaw(val));
         decrRefCount(val);
         return new;
     }
@@ -314,7 +314,7 @@ robj *objectSetKeyAndExpire(robj *val, sds key, long long expire) {
     }
     robj *new = createObjectWithKeyAndExpire(val->type, ptr, key, expire);
     new->encoding = val->encoding;
-    new->lru = val->lru;
+    objectSetLRURaw(new, objectGetLRURaw(val));
     decrRefCount(val);
     return new;
 }
@@ -1578,19 +1578,23 @@ sds getMemoryDoctorReport(void) {
 /* Return the LFU frequency for an object. */
 uint8_t objectGetLFUFrequency(robj *o) {
     uint8_t freq;
-    o->lru = lfu_getFrequency(o->lru, &freq);
+    uint32_t lru = objectGetLRURaw(o);
+    lru = lfu_getFrequency(lru, &freq);
+    objectSetLRURaw(o, lru);
     return freq;
 }
 
 /* Return the LRU idle time for an object. */
 uint32_t objectGetLRUIdleSecs(robj *o) {
-    return lru_getIdleSecs(o->lru);
+    return lru_getIdleSecs(objectGetLRURaw(o));
 }
 
 /* Return an indication of idleness.  Larger numbers are more idle. */
 uint32_t objectGetIdleness(robj *o) {
     uint32_t idleness;
-    o->lru = lrulfu_getIdleness(o->lru, &idleness);
+    uint32_t lru = objectGetLRURaw(o);
+    lru = lrulfu_getIdleness(lru, &idleness);
+    objectSetLRURaw(o, lru);
     return idleness;
 }
 
@@ -1603,11 +1607,11 @@ int objectSetLRUOrLFU(robj *val, long long lfu_freq, long long lru_idle_secs) {
     if (lrulfu_isUsingLFU()) {
         if (lfu_freq >= 0) {
             serverAssert(lfu_freq <= UINT8_MAX);
-            val->lru = lfu_import((uint8_t)lfu_freq);
+            objectSetLRURaw(val, lfu_import((uint8_t)lfu_freq));
             return 1;
         }
     } else if (lru_idle_secs >= 0) {
-        val->lru = lru_import(lru_idle_secs);
+        objectSetLRURaw(val, lru_import(lru_idle_secs));
         return 1;
     }
     return 0;
@@ -1660,7 +1664,7 @@ void objectCommand(client *c) {
                              "switching between policies at runtime LRU and LFU data will take some time to adjust.");
             return;
         }
-        addReplyLongLong(c, lru_getIdleSecs(o->lru));
+        addReplyLongLong(c, lru_getIdleSecs(objectGetLRURaw(o)));
     } else if (!strcasecmp(c->argv[1]->ptr, "freq") && c->argc == 3) {
         if ((o = objectCommandLookupOrReply(c, c->argv[2], shared.null[c->resp])) == NULL) return;
         if (!(server.maxmemory_policy & MAXMEMORY_FLAG_LFU)) {

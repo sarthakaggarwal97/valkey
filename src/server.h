@@ -799,6 +799,14 @@ struct serverObject {
     void *ptr;
 };
 
+static inline uint32_t objectGetLRURaw(const robj *o) {
+    return o->lru & LRULFU_MASK;
+}
+
+static inline void objectSetLRURaw(robj *o, uint32_t value) {
+    o->lru = value & LRULFU_MASK;
+}
+
 /* The string name for an object's type as listed above
  * Native types are checked against the OBJ_STRING, OBJ_LIST, OBJ_* defines,
  * and Module types have their registered name returned. */

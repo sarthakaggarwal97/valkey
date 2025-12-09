@@ -1,8 +1,6 @@
 #include "lrulfu.h"
 #include "server.h"
 
-#define LRULFU_MASK ((1 << LRULFU_BITS) - 1) /* Mask for LRU/LFU value */
-
 /**************** LRU ****************/
 /* LRU uses a 24 bit timestamp of the last access time (in seconds)
  * The LRU value needs to be "touched" within 194 days, or the value will wrap,
@@ -30,13 +28,14 @@ uint32_t lru_import(uint32_t idle_secs) {
 #if LRU_CLOCK_RESOLUTION != 1000
     idle_secs = (uint32_t)((long)idle_secs * 1000 / LRU_CLOCK_RESOLUTION);
 #endif
-    idle_secs = idle_secs & LRULFU_MASK;
+    idle_secs &= LRULFU_MASK;
     // Underflow is ok/expected
     return (now - idle_secs) & LRULFU_MASK;
 }
 
 
 uint32_t lru_getIdleSecs(uint32_t lru) {
+    lru &= LRULFU_MASK;
     // Underflow is ok/expected
     uint32_t seconds = (LRUGetClockTime() - lru) & LRULFU_MASK;
 #if LRU_CLOCK_RESOLUTION != 1000
@@ -88,19 +87,20 @@ static uint16_t LFUGetTimeInMinutes(void) {
 
 
 uint32_t lfu_import(uint8_t freq) {
-    return ((uint32_t)LFUGetTimeInMinutes() << 8) | freq;
+    return (((uint32_t)LFUGetTimeInMinutes() << 8) | freq) & LRULFU_MASK;
 }
 
 
 /* Update an LFU to consider decay, but doesn't add a "touch" */
 static uint32_t LFUDecay(uint32_t lfu) {
+    lfu &= LRULFU_MASK;
     uint16_t now = LFUGetTimeInMinutes();
     uint16_t prev_time = (uint16_t)(lfu >> 8);
     uint8_t freq = (uint8_t)lfu;
     uint16_t elapsed = now - prev_time; // Wrap-around expected/valid
     uint16_t num_periods = server.lfu_decay_time ? elapsed / server.lfu_decay_time : 0;
     freq = (num_periods > freq) ? 0 : freq - num_periods;
-    return ((uint32_t)now << 8) | freq;
+    return (((uint32_t)now << 8) | freq) & LRULFU_MASK;
 }
 
 
@@ -122,14 +122,14 @@ uint32_t lfu_touch(uint32_t lfu) {
     lfu = LFUDecay(lfu);
     uint8_t freq = (uint8_t)lfu;
     freq = LFULogIncr(freq);
-    return (lfu & ~(uint32_t)UINT8_MAX) | freq;
+    return (((lfu & ~(uint32_t)UINT8_MAX) | freq) & LRULFU_MASK);
 }
 
 
 uint32_t lfu_getFrequency(uint32_t lfu, uint8_t *freq) {
     lfu = LFUDecay(lfu);
     *freq = (uint8_t)lfu;
-    return lfu;
+    return lfu & LRULFU_MASK;
 }
 
 
@@ -150,6 +150,7 @@ uint32_t lrulfu_init(void) {
 
 
 uint32_t lrulfu_getIdleness(uint32_t lrulfu, uint32_t *idleness) {
+    lrulfu &= LRULFU_MASK;
     if (lrulfu_isUsingLFU()) {
         uint8_t freq;
         lrulfu = lfu_getFrequency(lrulfu, &freq);
@@ -157,13 +158,14 @@ uint32_t lrulfu_getIdleness(uint32_t lrulfu, uint32_t *idleness) {
     } else {
         *idleness = lru_getIdleSecs(lrulfu);
     }
-    return lrulfu;
+    return lrulfu & LRULFU_MASK;
 }
 
 
 uint32_t lrulfu_touch(uint32_t lrulfu) {
+    lrulfu &= LRULFU_MASK;
     if (lrulfu_isUsingLFU()) {
-        return lfu_touch(lrulfu);
+        return lfu_touch(lrulfu) & LRULFU_MASK;
     } else {
         return lru_import(0);
     }

@@ -25,6 +25,7 @@
  */
 
 #define LRULFU_BITS 24
+#define LRULFU_MASK ((1 << LRULFU_BITS) - 1)
 
 /**************** LRU ****************/
 

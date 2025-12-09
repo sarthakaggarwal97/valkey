@@ -110,7 +110,7 @@ robj *lookupKey(serverDb *db, robj *key, int flags) {
         if (!hasActiveChildProcess() && !(flags & LOOKUP_NOTOUCH)) {
             /* Shared objects can't be stored in the database. */
             serverAssert(val->refcount != OBJ_SHARED_REFCOUNT);
-            val->lru = lrulfu_touch(val->lru);
+            objectSetLRURaw(val, lrulfu_touch(objectGetLRURaw(val)));
         }
 
         if (!(flags & (LOOKUP_NOSTATS | LOOKUP_WRITE))) server.stat_keyspace_hits++;
@@ -358,7 +358,7 @@ static void dbSetValue(serverDb *db, robj *key, robj **valref, int overwrite, vo
         old = val;
     } else {
         /* Replace the old value at its location in the key space. */
-        val->lru = old->lru;
+        objectSetLRURaw(val, objectGetLRURaw(old));
         long long expire = objectGetExpire(old);
         new = objectSetKeyAndExpire(val, key->ptr, expire);
         *oldref = new;

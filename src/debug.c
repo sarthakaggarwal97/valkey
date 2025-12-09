@@ -690,9 +690,12 @@ void debugCommand(client *c) {
         if (!fast) s = sdscatprintf(s, " serializedlength:%zu", rdbSavedObjectLen(val, c->argv[2], c->db->id));
         /* Either lru or lfu field could work correctly which depends on server.maxmemory_policy. */
         if (lrulfu_isUsingLFU()) {
-            s = sdscatprintf(s, " lfu_freq:%u lfu_access_time_minutes:%u", objectGetLFUFrequency(val), val->lru >> 8);
+            uint8_t freq = objectGetLFUFrequency(val);
+            uint32_t raw = objectGetLRURaw(val);
+            s = sdscatprintf(s, " lfu_freq:%u lfu_access_time_minutes:%u", freq, raw >> 8);
         } else {
-            s = sdscatprintf(s, " lru:%d lru_seconds_idle:%u", val->lru, lru_getIdleSecs(val->lru));
+            uint32_t raw = objectGetLRURaw(val);
+            s = sdscatprintf(s, " lru:%u lru_seconds_idle:%u", raw, lru_getIdleSecs(raw));
         }
         s = sdscatprintf(s, "%s", extra);
         addReplyStatusLength(c, s, sdslen(s));
