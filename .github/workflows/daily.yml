@@ -1,5 +1,6 @@
 name: Daily
 
+
 on:
   pull_request:
     types: [opened, reopened, synchronize, labeled]
@@ -1398,6 +1399,25 @@ jobs:
 
   remove-run-extra-tests-label:
     runs-on: ubuntu-latest
+    # Remove the label after the extra tests finish so future pushes do not
+    # retrigger the suite unless explicitly requested again.
+    needs:
+      - test-ubuntu-jemalloc
+      - test-ubuntu-arm
+      - test-ubuntu-jemalloc-fortify
+      - test-ubuntu-libc-malloc
+      - test-ubuntu-no-malloc-usable-size
+      - test-ubuntu-32bit
+      - test-ubuntu-tls
+      - test-ubuntu-tls-no-tls
+      - test-ubuntu-io-threads
+      - test-ubuntu-tls-io-threads
+      - test-ubuntu-reclaim-cache
+      - test-rpm-distros-tls-module
+      - test-rpm-distros-tls-module-no-tls
+      - test-alpine-jemalloc
+      - test-alpine-libc-malloc
+      - reply-schemas-validator
     if: always() && github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run-extra-tests'
     steps:
       - name: Remove run-extra-tests label
