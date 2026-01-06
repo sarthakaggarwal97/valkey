@@ -6139,12 +6139,15 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
 
         /* Add compression algorithm (Requirement 10.1, 10.3) */
         const char *algo_name = "unknown";
+        int is_streaming = 0;
         if (server.rdb_compression_algorithm == RDB_COMPRESSION_LZF) {
             algo_name = "lzf";
         } else if (server.rdb_compression_algorithm == RDB_COMPRESSION_LZ4_STREAM) {
             algo_name = "lz4-stream";
+            is_streaming = 1;
         }
         info = sdscatprintf(info, "rdb_compression_algorithm:%s\r\n", algo_name);
+        info = sdscatprintf(info, "rdb_compression_streaming:%s\r\n", is_streaming ? "yes" : "no");
 
         /* Add compression ratio if chunk compression was used and we have data (Requirement 10.3) */
         if (server.rdb_chunk_compression && server.rdb_last_save_compressed_bytes > 0) {

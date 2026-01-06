@@ -5310,6 +5310,31 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
 static void backgroundSaveDoneHandlerDisk(int exitcode, int bysignal, time_t save_end) {
     if (!bysignal && exitcode == 0) {
         serverLog(LL_NOTICE, "Background saving terminated with success");
+        
+        /* Log compression statistics if chunk compression was used (Requirement 10.1, 10.5) */
+        if (server.rdb_chunk_compression && server.rdb_last_save_chunks > 0) {
+            const char *algo_name = "unknown";
+            if (server.rdb_compression_algorithm == RDB_COMPRESSION_LZF) {
+                algo_name = "lzf";
+            } else if (server.rdb_compression_algorithm == RDB_COMPRESSION_LZ4_STREAM) {
+                algo_name = "lz4-stream";
+            }
+            
+            double compression_ratio = 1.0;
+            if (server.rdb_last_save_compressed_bytes > 0) {
+                compression_ratio = (double)server.rdb_last_save_uncompressed_bytes / 
+                                   (double)server.rdb_last_save_compressed_bytes;
+            }
+            
+            serverLog(LL_NOTICE, "RDB compression: algorithm=%s, chunks=%llu, "
+                     "compressed=%llu bytes, uncompressed=%llu bytes, ratio=%.2fx",
+                     algo_name,
+                     (unsigned long long)server.rdb_last_save_chunks,
+                     (unsigned long long)server.rdb_last_save_compressed_bytes,
+                     (unsigned long long)server.rdb_last_save_uncompressed_bytes,
+                     compression_ratio);
+        }
+        
         server.dirty = server.dirty - server.dirty_before_bgsave;
         server.lastsave = save_end;
         server.lastbgsave_status = C_OK;
@@ -5337,6 +5362,30 @@ static void backgroundSaveDoneHandlerDisk(int exitcode, int bysignal, time_t sav
 static void backgroundSaveDoneHandlerSocket(int exitcode, int bysignal) {
     if (!bysignal && exitcode == 0) {
         serverLog(LL_NOTICE, "Background RDB transfer terminated with success");
+        
+        /* Log compression statistics if chunk compression was used (Requirement 10.1, 10.5) */
+        if (server.rdb_chunk_compression && server.rdb_last_save_chunks > 0) {
+            const char *algo_name = "unknown";
+            if (server.rdb_compression_algorithm == RDB_COMPRESSION_LZF) {
+                algo_name = "lzf";
+            } else if (server.rdb_compression_algorithm == RDB_COMPRESSION_LZ4_STREAM) {
+                algo_name = "lz4-stream";
+            }
+            
+            double compression_ratio = 1.0;
+            if (server.rdb_last_save_compressed_bytes > 0) {
+                compression_ratio = (double)server.rdb_last_save_uncompressed_bytes / 
+                                   (double)server.rdb_last_save_compressed_bytes;
+            }
+            
+            serverLog(LL_NOTICE, "RDB transfer compression: algorithm=%s, chunks=%llu, "
+                     "compressed=%llu bytes, uncompressed=%llu bytes, ratio=%.2fx",
+                     algo_name,
+                     (unsigned long long)server.rdb_last_save_chunks,
+                     (unsigned long long)server.rdb_last_save_compressed_bytes,
+                     (unsigned long long)server.rdb_last_save_uncompressed_bytes,
+                     compression_ratio);
+        }
     } else if (!bysignal && exitcode != 0) {
         serverLog(LL_WARNING, "Background RDB transfer error");
     } else {

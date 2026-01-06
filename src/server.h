@@ -476,12 +476,12 @@ typedef enum {
 #define REPLICA_CAPA_DUAL_CHANNEL (1 << 2)      /* Supports dual channel replication sync */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM (1 << 3) /* Supports skipping RDB checksum for sync requests. */
 #define REPLICA_CAPA_RDB_CMPR_META_V1 (1 << 4)  /* Understands new RDB header format with algorithm byte. */
-#define REPLICA_CAPA_RDB_LZ4 (1 << 5)           /* Supports LZ4 compression. */
+#define REPLICA_CAPA_RDB_LZ4STREAM (1 << 5)     /* Supports LZ4 streaming compression. */
 
 /* Replica capability strings */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR "skip-rdb-checksum" /* Supports skipping RDB checksum for sync requests. */
 #define REPLICA_CAPA_RDB_CMPR_META_V1_STR "rdb-cmpr-meta-v1"   /* Understands new RDB header format with algorithm byte. */
-#define REPLICA_CAPA_RDB_LZ4_STR "rdb-lz4"                     /* Supports LZ4 compression. */
+#define REPLICA_CAPA_RDB_LZ4STREAM_STR "rdb-lz4stream"         /* Supports LZ4 streaming compression. */
 
 /* Replica requirements */
 #define REPLICA_REQ_NONE 0

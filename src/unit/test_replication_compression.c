@@ -28,7 +28,7 @@ static rdbCompressionAlgorithm testSelectAlgorithm(int mincapa, int *use_new_for
     
     /* Check if we can use LZ4-stream */
     if (server.rdb_compression_algorithm == RDB_COMPRESSION_LZ4_STREAM &&
-        (mincapa & REPLICA_CAPA_RDB_LZ4)) {
+        (mincapa & REPLICA_CAPA_RDB_LZ4STREAM)) {
         selected_algo = RDB_COMPRESSION_LZ4_STREAM;
     } else {
         selected_algo = RDB_COMPRESSION_LZF;
@@ -67,7 +67,7 @@ int test_replication_compression_new_replica_no_lz4(int argc, char **argv, int f
     
     initServerForTest();
     
-    /* Test: New replica with rdb-cmpr-meta-v1 but no rdb-lz4dict */
+    /* Test: New replica with rdb-cmpr-meta-v1 but no rdb-lz4stream */
     int use_new_format = -1;
     int mincapa = REPLICA_CAPA_EOF | REPLICA_CAPA_PSYNC2 | REPLICA_CAPA_RDB_CMPR_META_V1;
     
@@ -90,10 +90,10 @@ int test_replication_compression_new_replica_with_lz4(int argc, char **argv, int
     
     initServerForTest();
     
-    /* Test: New replica with both rdb-cmpr-meta-v1 and rdb-lz4dict */
+    /* Test: New replica with both rdb-cmpr-meta-v1 and rdb-lz4stream */
     int use_new_format = -1;
     int mincapa = REPLICA_CAPA_EOF | REPLICA_CAPA_PSYNC2 | 
-                  REPLICA_CAPA_RDB_CMPR_META_V1 | REPLICA_CAPA_RDB_LZ4;
+                  REPLICA_CAPA_RDB_CMPR_META_V1 | REPLICA_CAPA_RDB_LZ4STREAM;
     
     /* Configure master for LZ4-stream */
     server.rdb_compression_algorithm = RDB_COMPRESSION_LZ4_STREAM;
@@ -117,7 +117,7 @@ int test_replication_compression_master_configured_lzf(int argc, char **argv, in
     /* Test: Master configured for LZF, replica supports everything */
     int use_new_format = -1;
     int mincapa = REPLICA_CAPA_EOF | REPLICA_CAPA_PSYNC2 | 
-                  REPLICA_CAPA_RDB_CMPR_META_V1 | REPLICA_CAPA_RDB_LZ4;
+                  REPLICA_CAPA_RDB_CMPR_META_V1 | REPLICA_CAPA_RDB_LZ4STREAM;
     
     /* Configure master for LZF */
     server.rdb_compression_algorithm = RDB_COMPRESSION_LZF;
