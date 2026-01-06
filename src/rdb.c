@@ -1159,23 +1159,60 @@ static int rdbCompressChunkData(rdbChunkBuffer *buf, unsigned char *data, size_t
     
     /* Handle incompressible data or compression failure (Requirement 2.5, 8.1, 8.5)
      * compressed_size <= 0 means compression failed or error
-     * compressed_size >= data_size means data expanded (incompressible) */
+     * compressed_size >= data_size means data expanded (incompressible)
+     * 
+     * IMPORTANT: For LZ4 streaming compression, we MUST NOT fall back to uncompressed
+     * storage because it would break streaming dictionary synchronization.
+     * The encoder updates its dictionary state even when data is incompressible,
+     * so the decoder must also process the data to keep dictionaries in sync.
+     * 
+     * For non-streaming compressors (LZF), falling back to uncompressed is safe.
+     */
+    int is_streaming = (buf->compressor != NULL && 
+                       strcmp(buf->compressor->name, "lz4-stream") == 0);
+    
     if (compressed_size <= 0 || (size_t)compressed_size >= data_size) {
-        /* Compression failed or data is incompressible, write uncompressed
-         * This is normal behavior - not all data compresses well */
-        if (compressed_size < 0) {
-            serverLog(LL_WARNING, "Compression failed with error (returned %zd). "
-                     "Writing chunk uncompressed. This may indicate internal compressor error.",
-                     compressed_size);
-        } else if (compressed_size == 0) {
-            serverLog(LL_DEBUG, "Data is incompressible (compressor returned 0). "
-                     "Writing chunk uncompressed. This is normal for random or already-compressed data.");
-        } else {
-            serverLog(LL_DEBUG, "Compressed size %zd >= uncompressed size %zu. "
-                     "Writing chunk uncompressed. This is normal for incompressible data.",
+        /* Check if this is a streaming compressor */
+        if (is_streaming && compressed_size > 0 && (size_t)compressed_size < data_size * 2) {
+            /* For LZ4 streaming: Write the compressed data even if it's larger than original
+             * This maintains dictionary sync between encoder and decoder.
+             * Only do this if compressed size is reasonable (< 2x original) to avoid
+             * pathological cases. */
+            serverLog(LL_DEBUG, "LZ4 streaming: compressed size %zd >= uncompressed size %zu, "
+                     "but writing compressed to maintain dictionary sync",
                      compressed_size, data_size);
+            /* Continue to write compressed chunk below */
+        } else {
+            /* Compression failed or data is incompressible, write uncompressed
+             * This is normal behavior - not all data compresses well */
+            if (compressed_size < 0) {
+                serverLog(LL_WARNING, "Compression failed with error (returned %zd). "
+                         "Writing chunk uncompressed. This may indicate internal compressor error.",
+                         compressed_size);
+            } else if (compressed_size == 0) {
+                serverLog(LL_DEBUG, "Data is incompressible (compressor returned 0). "
+                         "Writing chunk uncompressed. This is normal for random or already-compressed data.");
+            } else if (is_streaming) {
+                serverLog(LL_DEBUG, "LZ4 streaming: compressed size %zd >= 2x uncompressed size %zu. "
+                         "Writing uncompressed and resetting encoder stream to avoid excessive expansion.",
+                         compressed_size, data_size);
+                /* Reset encoder streaming state to avoid dictionary pollution from incompressible data
+                 * Note: We only reset the encoder here during save. The decoder will be reset
+                 * when it encounters the uncompressed chunk during load (see rdbDecompressChunk). */
+                if (buf->compress_ctx != NULL) {
+                    lz4StreamContext *lz4_ctx = (lz4StreamContext *)buf->compress_ctx;
+                    if (lz4_ctx->compress_stream != NULL) {
+                        LZ4_resetStream_fast(lz4_ctx->compress_stream);
+                    }
+                    lz4_ctx->chunks_processed = 0;
+                }
+            } else {
+                serverLog(LL_DEBUG, "Compressed size %zd >= uncompressed size %zu. "
+                         "Writing chunk uncompressed. This is normal for incompressible data.",
+                         compressed_size, data_size);
+            }
+            return rdbWriteUncompressedChunk(buf, data, data_size);
         }
-        return rdbWriteUncompressedChunk(buf, data, data_size);
     }
 
     /* Write compressed chunk */
@@ -1376,12 +1413,31 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
         buf->decomp_size = uncompressed_size;
         buf->decomp_pos = 0;
         
+        /* For LZ4 streaming: Reset decoder stream when encountering uncompressed chunk
+         * This matches the encoder reset that happened during save when the chunk was
+         * determined to be incompressible. This keeps encoder and decoder in sync. */
+        if (buf->compressor != NULL && buf->compress_ctx != NULL) {
+            if (strcmp(buf->compressor->name, "lz4-stream") == 0) {
+                lz4StreamContext *lz4_ctx = (lz4StreamContext *)buf->compress_ctx;
+                if (lz4_ctx->decompress_stream != NULL) {
+                    /* Reset decoder stream by setting empty dictionary */
+                    LZ4_setStreamDecode(lz4_ctx->decompress_stream, NULL, 0);
+                }
+                lz4_ctx->chunks_processed = 0;
+                serverLog(LL_DEBUG, "Read uncompressed chunk %llu (%llu bytes), reset LZ4 decoder stream",
+                         (unsigned long long)buf->chunks_read + 1,
+                         (unsigned long long)uncompressed_size);
+            }
+        }
+        
         /* Track chunks read for monitoring (Requirement 8.4) */
         buf->chunks_read++;
         
-        serverLog(LL_DEBUG, "Read uncompressed chunk %llu (%llu bytes)",
-                 (unsigned long long)buf->chunks_read,
-                 (unsigned long long)uncompressed_size);
+        if (buf->compressor == NULL || strcmp(buf->compressor->name, "lz4-stream") != 0) {
+            serverLog(LL_DEBUG, "Read uncompressed chunk %llu (%llu bytes)",
+                     (unsigned long long)buf->chunks_read,
+                     (unsigned long long)uncompressed_size);
+        }
         
         return 0;
     }
