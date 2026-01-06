@@ -2833,6 +2833,9 @@ void initServer(void) {
     ThreadsManager_init();
     makeThreadKillable();
 
+    /* Initialize RDB compression algorithms */
+    rdbInitCompressionAlgorithms();
+
     if (server.syslog_enabled) {
         openlog(server.syslog_ident, LOG_PID | LOG_NDELAY | LOG_NOWAIT, server.syslog_facility);
     }
@@ -6134,7 +6137,16 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
                 "rdb_last_save_compressed_bytes:%llu\r\n", (unsigned long long)server.rdb_last_save_compressed_bytes,
                 "rdb_last_save_uncompressed_bytes:%llu\r\n", (unsigned long long)server.rdb_last_save_uncompressed_bytes));
 
-        /* Add compression ratio if chunk compression was used and we have data */
+        /* Add compression algorithm (Requirement 10.1, 10.3) */
+        const char *algo_name = "unknown";
+        if (server.rdb_compression_algorithm == RDB_COMPRESSION_LZF) {
+            algo_name = "lzf";
+        } else if (server.rdb_compression_algorithm == RDB_COMPRESSION_LZ4_STREAM) {
+            algo_name = "lz4-stream";
+        }
+        info = sdscatprintf(info, "rdb_compression_algorithm:%s\r\n", algo_name);
+
+        /* Add compression ratio if chunk compression was used and we have data (Requirement 10.3) */
         if (server.rdb_chunk_compression && server.rdb_last_save_compressed_bytes > 0) {
             double compression_ratio = (double)server.rdb_last_save_uncompressed_bytes / 
                                       (double)server.rdb_last_save_compressed_bytes;
@@ -7417,6 +7429,13 @@ __attribute__((weak)) int main(int argc, char **argv) {
                   argv[0]);
     } else {
         serverLog(LL_NOTICE, "Configuration loaded");
+    }
+
+    /* Validate compression configuration */
+    const char *err = NULL;
+    if (!validateCompressionConfig(&err)) {
+        serverLog(LL_WARNING, "Configuration error: %s", err);
+        exit(1);
     }
 
     initServer();

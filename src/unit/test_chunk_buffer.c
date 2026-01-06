@@ -12,7 +12,9 @@
 /* The server global is already declared in server.h, we just need to initialize it */
 
 /* External functions from rdb.c that we need to test */
-extern struct rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size);
+extern struct rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size, 
+                                                    rdbCompressionAlgorithm algorithm, size_t dict_size);
+extern struct rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb, rdbCompressionAlgorithm algorithm);
 extern void rdbChunkBufferFree(struct rdbChunkBuffer *buf);
 extern ssize_t rdbChunkBufferWrite(struct rdbChunkBuffer *buf, void *data, size_t len);
 extern int rdbChunkBufferFlush(struct rdbChunkBuffer *buf);
@@ -23,36 +25,42 @@ int test_chunkBufferCreate(int argc, char **argv, int flags) {
     UNUSED(argv);
     UNUSED(flags);
 
+    /* Disable logging for unit tests */
+    server.verbosity = LL_NOTHING;
+    
+    /* Initialize compression algorithms */
+    rdbInitCompressionAlgorithms();
+
     /* Create a buffer rio for testing */
     rio r;
     sds buf = sdsempty();
     rioInitWithBuffer(&r, buf);
 
     /* Test valid chunk size (64KB) */
-    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, 65536);
+    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, 65536, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation with valid size should succeed", chunk_buf != NULL);
     if (chunk_buf) rdbChunkBufferFree(chunk_buf);
 
     /* Test minimum chunk size (4KB) */
-    chunk_buf = rdbChunkBufferCreate(&r, 4096);
+    chunk_buf = rdbChunkBufferCreate(&r, 4096, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation with minimum size (4KB) should succeed", chunk_buf != NULL);
     if (chunk_buf) rdbChunkBufferFree(chunk_buf);
 
     /* Test maximum chunk size (1MB) */
-    chunk_buf = rdbChunkBufferCreate(&r, 1024 * 1024);
+    chunk_buf = rdbChunkBufferCreate(&r, 1024 * 1024, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation with maximum size (1MB) should succeed", chunk_buf != NULL);
     if (chunk_buf) rdbChunkBufferFree(chunk_buf);
 
     /* Test chunk size too small (< 4KB) */
-    chunk_buf = rdbChunkBufferCreate(&r, 4095);
+    chunk_buf = rdbChunkBufferCreate(&r, 4095, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation with size < 4KB should fail", chunk_buf == NULL);
 
     /* Test chunk size too large (> 1MB) */
-    chunk_buf = rdbChunkBufferCreate(&r, 1024 * 1024 + 1);
+    chunk_buf = rdbChunkBufferCreate(&r, 1024 * 1024 + 1, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation with size > 1MB should fail", chunk_buf == NULL);
 
     /* Test NULL rio pointer */
-    chunk_buf = rdbChunkBufferCreate(NULL, 65536);
+    chunk_buf = rdbChunkBufferCreate(NULL, 65536, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation with NULL rio should fail", chunk_buf == NULL);
 
     sdsfree(buf);
@@ -65,6 +73,9 @@ int test_chunkBufferWriteSmall(int argc, char **argv, int flags) {
     UNUSED(argv);
     UNUSED(flags);
 
+    /* Initialize compression algorithms */
+    rdbInitCompressionAlgorithms();
+
     /* Create a buffer rio for testing */
     rio r;
     sds buf = sdsempty();
@@ -72,7 +83,7 @@ int test_chunkBufferWriteSmall(int argc, char **argv, int flags) {
 
     /* Create chunk buffer with 8KB size */
     size_t chunk_size = 8192;
-    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size);
+    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
 
     /* Write small data (1KB) */
@@ -103,6 +114,9 @@ int test_chunkBufferWriteLarge(int argc, char **argv, int flags) {
     UNUSED(argv);
     UNUSED(flags);
 
+    /* Initialize compression algorithms */
+    rdbInitCompressionAlgorithms();
+
     /* Create a buffer rio for testing */
     rio r;
     sds buf = sdsempty();
@@ -110,7 +124,7 @@ int test_chunkBufferWriteLarge(int argc, char **argv, int flags) {
 
     /* Create chunk buffer with small size (4KB) for easier testing */
     size_t chunk_size = 4096;
-    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size);
+    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
 
     /* Write data larger than chunk size (12KB = 3 chunks) */
@@ -138,6 +152,9 @@ int test_chunkBufferFlushPartial(int argc, char **argv, int flags) {
     UNUSED(argv);
     UNUSED(flags);
 
+    /* Initialize compression algorithms */
+    rdbInitCompressionAlgorithms();
+
     /* Create a buffer rio for testing */
     rio r;
     sds buf = sdsempty();
@@ -145,7 +162,7 @@ int test_chunkBufferFlushPartial(int argc, char **argv, int flags) {
 
     /* Create chunk buffer */
     size_t chunk_size = 8192;
-    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size);
+    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
 
     /* Write partial chunk (3KB) */
@@ -174,6 +191,9 @@ int test_chunkBufferOverflow(int argc, char **argv, int flags) {
     UNUSED(argv);
     UNUSED(flags);
 
+    /* Initialize compression algorithms */
+    rdbInitCompressionAlgorithms();
+
     /* Create a buffer rio for testing */
     rio r;
     sds buf = sdsempty();
@@ -181,7 +201,7 @@ int test_chunkBufferOverflow(int argc, char **argv, int flags) {
 
     /* Create chunk buffer with minimum size */
     size_t chunk_size = 4096;
-    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size);
+    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
 
     /* Write data exactly at chunk boundary */
@@ -212,6 +232,9 @@ int test_chunkBufferWriteZero(int argc, char **argv, int flags) {
     UNUSED(argv);
     UNUSED(flags);
 
+    /* Initialize compression algorithms */
+    rdbInitCompressionAlgorithms();
+
     /* Create a buffer rio for testing */
     rio r;
     sds buf = sdsempty();
@@ -219,7 +242,7 @@ int test_chunkBufferWriteZero(int argc, char **argv, int flags) {
 
     /* Create chunk buffer */
     size_t chunk_size = 8192;
-    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size);
+    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
 
     /* Write zero bytes */
@@ -265,6 +288,9 @@ int test_chunkBufferMultipleCycles(int argc, char **argv, int flags) {
     UNUSED(argv);
     UNUSED(flags);
 
+    /* Initialize compression algorithms */
+    rdbInitCompressionAlgorithms();
+
     /* Create a buffer rio for testing */
     rio r;
     sds buf = sdsempty();
@@ -272,7 +298,7 @@ int test_chunkBufferMultipleCycles(int argc, char **argv, int flags) {
 
     /* Create chunk buffer */
     size_t chunk_size = 4096;
-    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size);
+    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
 
     /* Perform multiple write-flush cycles */

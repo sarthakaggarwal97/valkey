@@ -43,6 +43,7 @@
 void createSharedObjects(void);
 void rdbLoadProgressCallback(rio *r, const void *buf, size_t len);
 void computeDatasetProfile(int dbid, robj *keyobj, robj *o, long long expiretime);
+extern const rio rioChunkIO; /* Chunk compression rio template from rio.c */
 
 int rdbCheckMode = 0;
 int rdbCheckStats = 0;
@@ -644,14 +645,63 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
 
     /* Version 81 uses chunk compression, version 80 uses legacy compression */
     use_chunk_decompression = (rdbver == 81);
+    rdbCompressionAlgorithm detected_algorithm = RDB_COMPRESSION_LZF; /* Default to LZF */
+    void *compression_ctx = NULL;
     
     if (use_chunk_decompression) {
-        rdbCheckInfo("RDB version 81 detected, initializing chunk decompression");
-        rioInitWithChunkCompression(&chunk_rio, &rdb, 0); /* 0 = reading mode */
-        if (chunk_rio.io.chunk.chunk_buf == NULL) {
-            rdbCheckError("Failed to initialize chunk decompression buffer");
+        rdbCheckInfo("RDB version 81 detected, reading compression algorithm");
+        
+        /* Read algorithm identifier byte */
+        unsigned char algo_byte;
+        if (rioRead(&rdb, &algo_byte, 1) == 0) {
+            rdbCheckError("Failed to read compression algorithm identifier");
+            goto eoferr;
+        }
+        
+        detected_algorithm = (rdbCompressionAlgorithm)algo_byte;
+        rdbCheckInfo("RDB compression algorithm detected: %d", detected_algorithm);
+        
+        /* Get compressor from registry */
+        rdbCompressor *compressor = rdbGetCompressor(detected_algorithm);
+        if (compressor == NULL) {
+            rdbCheckError("Unknown compression algorithm %d in RDB file", detected_algorithm);
             goto err;
         }
+        
+        rdbCheckInfo("Using compression algorithm: %s (ID=%d)", 
+                     compressor->name, detected_algorithm);
+        
+        /* Deserialize compression context (e.g., dictionary) if algorithm supports it */
+        if (compressor->deserialize_context != NULL) {
+            rdbCheckInfo("Deserializing compression context for algorithm %s", compressor->name);
+            compression_ctx = compressor->deserialize_context(&rdb);
+            if (compression_ctx == NULL) {
+                rdbCheckError("Failed to deserialize compression context for algorithm %s", 
+                             compressor->name);
+                goto err;
+            }
+            rdbCheckInfo("Successfully deserialized compression context");
+        }
+        
+        /* Create chunk buffer with detected algorithm */
+        struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreateForRead(&rdb, detected_algorithm);
+        if (chunk_buf == NULL) {
+            rdbCheckError("Failed to create chunk buffer for algorithm %s", compressor->name);
+            if (compression_ctx != NULL && compressor->free_context != NULL) {
+                compressor->free_context(compression_ctx);
+            }
+            goto err;
+        }
+        
+        /* Set the compression context in the chunk buffer */
+        rdbChunkBufferSetCompressionContext(chunk_buf, compression_ctx);
+        
+        /* Initialize chunk rio with the created buffer */
+        chunk_rio = rioChunkIO;
+        chunk_rio.io.chunk.underlying_rio = &rdb;
+        chunk_rio.io.chunk.pos = 0;
+        chunk_rio.io.chunk.chunk_buf = chunk_buf;
+        
         r = &chunk_rio;
         r->cksum = rdb.cksum;
         r->update_cksum = rdbLoadProgressCallback;

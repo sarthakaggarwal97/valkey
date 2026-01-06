@@ -35,6 +35,7 @@
 #include "hashtable.h"
 #include "server.h"
 #include "lzf.h" /* LZF compression library */
+#include "lz4.h" /* LZ4 compression library */
 #include "zipmap.h"
 #include "endianconv.h"
 #include "fpconv_dtoa.h"
@@ -72,6 +73,7 @@
 
 char *rdbFileBeingLoaded = NULL; /* used for rdb checking on read error */
 extern int rdbCheckMode;
+extern const rio rioChunkIO; /* Chunk compression rio template from rio.c */
 void rdbCheckError(const char *fmt, ...);
 void rdbCheckSetError(const char *fmt, ...);
 int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadingCtx *rdb_loading_ctx);
@@ -163,6 +165,668 @@ int rdbRegisterAuxField(char *auxfield, rdbAuxFieldEncoder encoder, rdbAuxFieldD
     return dictAdd(rdbAuxFields, sdsnew(auxfield), (void *)codec) == DICT_OK ? C_OK : C_ERR;
 }
 
+/* ==================== Compression Algorithm Interface ===================== */
+
+/* Global registry of compression algorithms */
+static rdbCompressor *compression_algorithms[256] = {NULL};
+
+/* Register a compression algorithm in the global registry.
+ * This should be called during server initialization for each supported algorithm.
+ * 
+ * Parameters:
+ *   algo - The algorithm identifier (0-255)
+ *   compressor - Pointer to the compressor implementation
+ * 
+ * Note: This function does not take ownership of the compressor pointer.
+ * The compressor must remain valid for the lifetime of the server.
+ */
+void rdbRegisterCompressor(rdbCompressionAlgorithm algo, rdbCompressor *compressor) {
+    if (algo >= 256) {
+        serverLog(LL_WARNING, "Cannot register compression algorithm %d: ID out of range (0-255)", algo);
+        return;
+    }
+    
+    if (compressor == NULL) {
+        serverLog(LL_WARNING, "Cannot register NULL compressor for algorithm %d", algo);
+        return;
+    }
+    
+    if (compression_algorithms[algo] != NULL) {
+        serverLog(LL_WARNING, "Compression algorithm %d already registered, overwriting", algo);
+    }
+    
+    compression_algorithms[algo] = compressor;
+    serverLog(LL_NOTICE, "Registered compression algorithm: %s (ID=%d)", compressor->name, algo);
+}
+
+/* Get a compressor by algorithm identifier.
+ * 
+ * Parameters:
+ *   algo - The algorithm identifier (0-255)
+ * 
+ * Returns:
+ *   Pointer to the compressor implementation, or NULL if not found
+ */
+rdbCompressor *rdbGetCompressor(rdbCompressionAlgorithm algo) {
+    if (algo >= 256) {
+        return NULL;
+    }
+    return compression_algorithms[algo];
+}
+
+/* ==================== LZF Compressor Implementation ======================= */
+
+/* LZF compression wrapper with normalized interface */
+static ssize_t lzfCompress(void *ctx, const unsigned char *input, size_t input_size,
+                          unsigned char *output, size_t output_capacity) {
+    UNUSED(ctx);
+    size_t result = lzf_compress(input, input_size, output, output_capacity);
+    /* lzf_compress returns 0 on failure or if data is incompressible */
+    return (result > 0) ? (ssize_t)result : 0;
+}
+
+/* LZF decompression wrapper with normalized interface
+ * Returns exactly output_capacity on success, -1 on failure */
+static ssize_t lzfDecompress(void *ctx, const unsigned char *input, size_t input_size,
+                            unsigned char *output, size_t output_capacity) {
+    UNUSED(ctx);
+    size_t result = lzf_decompress(input, input_size, output, output_capacity);
+    /* lzf_decompress returns 0 on error, expected size on success
+     * Normalize to return output_capacity on success, -1 on error */
+    return (result == output_capacity) ? (ssize_t)result : -1;
+}
+
+/* Calculate maximum compressed size for LZF */
+static size_t lzfMaxCompressedSize(size_t input_size) {
+    /* LZF worst case: input_size + (input_size / 32) + 1 */
+    return input_size + (input_size / 32) + 1;
+}
+
+/* LZF compressor definition */
+static rdbCompressor lzfCompressor = {
+    .algorithm = RDB_COMPRESSION_LZF,
+    .name = "LZF",
+    .compress = lzfCompress,
+    .decompress = lzfDecompress,
+    .max_compressed_size = lzfMaxCompressedSize,
+    .create_context = NULL,
+    .free_context = NULL,
+    .serialize_context = NULL,
+    .deserialize_context = NULL
+};
+
+/* ==================== LZ4 Compressor Implementation ======================= */
+
+/* Compress with plain LZ4
+ * 
+ * Uses LZ4_compress_default() for simple, fast compression without dictionary.
+ * Each chunk is compressed independently.
+ * 
+ * Error Handling:
+ * - Returns 0 for incompressible data or compression failure
+ * - Validates sizes before calling LZ4 APIs
+ */
+static ssize_t lz4Compress(void *ctx, const unsigned char *input, size_t input_size,
+                          unsigned char *output, size_t output_capacity) {
+    UNUSED(ctx);  /* No context needed for plain LZ4 */
+    
+    /* Validate input_size <= INT_MAX before calling LZ4 APIs */
+    if (input_size > INT_MAX || output_capacity > INT_MAX) {
+        serverLog(LL_WARNING, "Size exceeds INT_MAX (input=%zu, output=%zu), cannot compress",
+                 input_size, output_capacity);
+        return 0;  /* Incompressible */
+    }
+    
+    /* Compress using plain LZ4 */
+    int compressed = LZ4_compress_default((const char *)input, 
+                                         (char *)output,
+                                         (int)input_size, 
+                                         (int)output_capacity);
+    
+    /* Check if compression failed or expanded the data
+     * LZ4 may "successfully" compress but still expand the data
+     * Treat as incompressible if compressed >= input_size */
+    if (compressed <= 0 || (size_t)compressed >= input_size) {
+        if (compressed < 0) {
+            serverLog(LL_DEBUG, "LZ4 compression failed with error code %d", compressed);
+        } else if (compressed == 0) {
+            serverLog(LL_DEBUG, "LZ4 compression returned 0 (incompressible)");
+        } else {
+            serverLog(LL_DEBUG, "LZ4 compressed size %d >= input size %zu (incompressible)", 
+                     compressed, input_size);
+        }
+        return 0;  /* Incompressible */
+    }
+    
+    return (ssize_t)compressed;
+}
+
+/* Decompress with plain LZ4
+ * 
+ * Uses LZ4_decompress_safe() for safe decompression with bounds checking.
+ * 
+ * Error Handling:
+ * - Returns -1 on decompression failure (corruption detected)
+ * - Validates sizes before calling LZ4 APIs
+ * - Verifies decompressed size matches expected size
+ */
+static ssize_t lz4Decompress(void *ctx, const unsigned char *input, size_t input_size,
+                            unsigned char *output, size_t output_capacity) {
+    UNUSED(ctx);  /* No context needed for plain LZ4 */
+    
+    /* Validate sizes <= INT_MAX before calling LZ4 APIs */
+    if (input_size > INT_MAX || output_capacity > INT_MAX) {
+        serverLog(LL_WARNING, "Size exceeds INT_MAX (input=%zu, output=%zu), cannot decompress",
+                 input_size, output_capacity);
+        return -1;
+    }
+    
+    /* Decompress using plain LZ4 with safety checks */
+    int decompressed = LZ4_decompress_safe((const char *)input,
+                                          (char *)output,
+                                          (int)input_size,
+                                          (int)output_capacity);
+    
+    /* Check for decompression failure */
+    if (decompressed < 0) {
+        serverLog(LL_WARNING, "LZ4 decompression failed with error code %d "
+                 "(input_size=%zu, output_capacity=%zu)",
+                 decompressed, input_size, output_capacity);
+        return -1;
+    }
+    
+    /* Validate decompressed size matches expected size
+     * Return exactly output_capacity on success, -1 on failure (normalized contract) */
+    if (decompressed != (int)output_capacity) {
+        serverLog(LL_WARNING, "LZ4 decompressed size mismatch: expected %zu, got %d",
+                 output_capacity, decompressed);
+        return -1;
+    }
+    
+    return (ssize_t)output_capacity;
+}
+
+/* Calculate max compressed size for LZ4 */
+static size_t lz4MaxCompressedSize(size_t input_size) {
+    /* Validate input_size <= INT_MAX for LZ4 API */
+    if (input_size > INT_MAX) {
+        return 0;  /* Invalid size */
+    }
+    return (size_t)LZ4_compressBound((int)input_size);
+}
+
+/* ======================== LZ4 Streaming Compression ====================== */
+
+/* LZ4 streaming context structure
+ * 
+ * This context maintains state for LZ4 streaming compression/decompression.
+ * Streaming compression allows each chunk to reference the previous 64KB of
+ * uncompressed data via LZ4's sliding window, providing better compression
+ * ratios than independent chunk compression.
+ * 
+ * Key characteristics:
+ * - Dictionary evolves naturally within LZ4_stream_t (no explicit management)
+ * - No dictionary serialization needed (no storage overhead in RDB file)
+ * - Chunks must be decompressed sequentially (streaming dependency)
+ * - Each RDB operation has its own independent context
+ */
+typedef struct lz4StreamContext {
+    LZ4_stream_t *compress_stream;           /* LZ4 compression stream */
+    LZ4_streamDecode_t *decompress_stream;   /* LZ4 decompression stream */
+    uint64_t chunks_processed;               /* Number of chunks processed (for order validation) */
+    int state_corrupted;                     /* Flag indicating streaming state is corrupted */
+} lz4StreamContext;
+
+/* Create LZ4 streaming context
+ * 
+ * Creates a new streaming context for LZ4 compression/decompression.
+ * The dict_size parameter is ignored because the dictionary evolves
+ * naturally within the LZ4 streaming state.
+ * 
+ * Parameters:
+ *   dict_size - Ignored (dictionary evolves naturally in streaming mode)
+ * 
+ * Returns:
+ *   Pointer to allocated context on success, NULL on allocation failure
+ * 
+ * Memory allocation (Requirement 8.3, 8.5):
+ *   - Allocates lz4StreamContext structure
+ *   - Allocates LZ4_stream_t for compression
+ *   - Allocates LZ4_streamDecode_t for decompression
+ *   - On any allocation failure, cleans up and returns NULL
+ * 
+ * Error Handling:
+ *   - Returns NULL on any memory allocation failure
+ *   - Properly cleans up partial allocations before returning NULL
+ *   - Caller must check for NULL and handle appropriately
+ */
+void *lz4StreamCreateContext(size_t dict_size) {
+    /* dict_size parameter is ignored for streaming compression
+     * Dictionary evolves naturally within LZ4_stream_t */
+    (void)dict_size;
+    
+    lz4StreamContext *ctx = zmalloc(sizeof(lz4StreamContext));
+    if (ctx == NULL) {
+        serverLog(LL_WARNING, "Failed to allocate lz4StreamContext structure "
+                 "(memory allocation failure)");
+        return NULL;
+    }
+    
+    /* Initialize both streams to NULL for safe cleanup */
+    ctx->compress_stream = NULL;
+    ctx->decompress_stream = NULL;
+    ctx->chunks_processed = 0;
+    ctx->state_corrupted = 0;
+    
+    /* Create compression stream */
+    ctx->compress_stream = LZ4_createStream();
+    if (ctx->compress_stream == NULL) {
+        serverLog(LL_WARNING, "Failed to create LZ4 compression stream "
+                 "(memory allocation failure in LZ4_createStream)");
+        zfree(ctx);
+        return NULL;
+    }
+    
+    /* Create decompression stream */
+    ctx->decompress_stream = LZ4_createStreamDecode();
+    if (ctx->decompress_stream == NULL) {
+        serverLog(LL_WARNING, "Failed to create LZ4 decompression stream "
+                 "(memory allocation failure in LZ4_createStreamDecode)");
+        LZ4_freeStream(ctx->compress_stream);
+        zfree(ctx);
+        return NULL;
+    }
+    
+    serverLog(LL_DEBUG, "Successfully created LZ4 streaming context");
+    return ctx;
+}
+
+/* Free LZ4 streaming context
+ * 
+ * Frees all resources associated with an LZ4 streaming context.
+ * Handles NULL context gracefully.
+ * 
+ * Parameters:
+ *   ctx - Context to free (can be NULL)
+ * 
+ * Cleanup order (Requirement 8.5):
+ *   1. Free compression stream if allocated
+ *   2. Free decompression stream if allocated
+ *   3. Free context structure
+ * 
+ * Error Handling:
+ *   - Safely handles NULL context (no-op)
+ *   - Safely handles partially initialized contexts
+ *   - Ensures no memory leaks on cleanup
+ *   - Resets all state to prevent leakage between RDB operations
+ */
+void lz4StreamFreeContext(void *ctx) {
+    if (ctx == NULL) {
+        return;
+    }
+    
+    lz4StreamContext *lz4_ctx = (lz4StreamContext *)ctx;
+    
+    /* Log if context is being freed with corrupted state (for debugging) */
+    if (lz4_ctx->state_corrupted) {
+        serverLog(LL_DEBUG, "Freeing LZ4 streaming context with corrupted state "
+                 "(processed %llu chunks before corruption)",
+                 (unsigned long long)lz4_ctx->chunks_processed);
+    }
+    
+    /* Free compression stream */
+    if (lz4_ctx->compress_stream != NULL) {
+        LZ4_freeStream(lz4_ctx->compress_stream);
+        lz4_ctx->compress_stream = NULL;
+    }
+    
+    /* Free decompression stream */
+    if (lz4_ctx->decompress_stream != NULL) {
+        LZ4_freeStreamDecode(lz4_ctx->decompress_stream);
+        lz4_ctx->decompress_stream = NULL;
+    }
+    
+    /* Reset state tracking to prevent leakage (Requirement 8.2, 8.4) */
+    lz4_ctx->chunks_processed = 0;
+    lz4_ctx->state_corrupted = 0;
+    
+    /* Free context structure */
+    zfree(lz4_ctx);
+    
+    serverLog(LL_DEBUG, "Successfully freed LZ4 streaming context");
+}
+
+/* Check if LZ4 streaming state is corrupted
+ * 
+ * This function checks if the streaming state has been corrupted by a previous
+ * decompression failure. Once corrupted, all subsequent decompression attempts
+ * will fail because the streaming dictionary is no longer valid.
+ * 
+ * Parameters:
+ *   ctx - LZ4 streaming context
+ * 
+ * Returns:
+ *   1 if state is corrupted, 0 if state is valid
+ * 
+ * Requirements: 8.2, 8.4
+ */
+static int lz4StreamIsStateCorrupted(void *ctx) {
+    if (ctx == NULL) {
+        return 1;  /* NULL context is considered corrupted */
+    }
+    
+    lz4StreamContext *lz4_ctx = (lz4StreamContext *)ctx;
+    return lz4_ctx->state_corrupted;
+}
+
+/* Compress with LZ4 streaming
+ * 
+ * Streaming Compression Strategy:
+ * - Use LZ4_compress_fast_continue() for all chunks
+ * - Each chunk references the previous 64KB of uncompressed data
+ * - Dictionary evolves naturally within LZ4_stream_t (no explicit management)
+ * - No dictionary extraction or serialization needed
+ * 
+ * Why streaming compression:
+ * - Best compression ratios (each chunk benefits from previous chunks)
+ * - Dictionary adapts to data patterns as they appear
+ * - Natural LZ4 streaming behavior (designed for this use case)
+ * - No storage overhead (no dictionary in RDB file)
+ * 
+ * Decompression approach:
+ * - Use LZ4_decompress_safe_continue() for streaming decompression
+ * - Must decompress chunks in order
+ * - Dictionary evolves naturally during decompression
+ * 
+ * Parameters:
+ *   ctx - LZ4 streaming context (must not be NULL)
+ *   input - Input data to compress
+ *   input_size - Size of input data
+ *   output - Output buffer for compressed data
+ *   output_capacity - Capacity of output buffer
+ * 
+ * Returns:
+ *   Compressed size on success (> 0)
+ *   0 if data is incompressible or compression failed
+ * 
+ * Error Handling (Requirements 2.5, 8.1, 8.5):
+ * - Returns 0 if compression fails (caller falls back to uncompressed)
+ * - Returns 0 if compressed size >= input size (incompressible)
+ * - Validates sizes <= INT_MAX before calling LZ4 APIs
+ * - Validates context is not NULL
+ * - Logs warnings for all error conditions
+ * - Does not corrupt streaming state on failure (can continue with next chunk)
+ */
+static ssize_t lz4StreamCompress(void *ctx, const unsigned char *input, size_t input_size,
+                                 unsigned char *output, size_t output_capacity) {
+    lz4StreamContext *lz4_ctx = (lz4StreamContext *)ctx;
+    
+    /* Validate context (Requirement 8.1) */
+    if (lz4_ctx == NULL || lz4_ctx->compress_stream == NULL) {
+        serverLog(LL_WARNING, "LZ4 streaming compression called with NULL context "
+                 "(internal error or context creation failure)");
+        return 0;
+    }
+    
+    /* Check if streaming state is corrupted (Requirement 8.2, 8.4) */
+    if (lz4_ctx->state_corrupted) {
+        serverLog(LL_WARNING, "LZ4 streaming compression called with corrupted state. "
+                 "Previous compression failure may have corrupted the streaming state. "
+                 "Falling back to uncompressed storage.");
+        return 0;
+    }
+    
+    /* Validate sizes <= INT_MAX for LZ4 API (Requirement 8.1) */
+    if (input_size > INT_MAX || output_capacity > INT_MAX) {
+        serverLog(LL_WARNING, "Size exceeds INT_MAX (input=%zu, output=%zu), cannot compress. "
+                 "Falling back to uncompressed storage.",
+                 input_size, output_capacity);
+        return 0;
+    }
+    
+    /* Compress this chunk using streaming compression
+     * LZ4_compress_fast_continue() maintains state across calls
+     * Each chunk references the previous 64KB of data (LZ4's sliding window)
+     * 
+     * Parameters:
+     * - streamPtr: LZ4 stream state (maintains sliding window)
+     * - src: input data
+     * - dst: output buffer
+     * - srcSize: input size
+     * - dstCapacity: output buffer capacity
+     * - acceleration: 1 = default compression level
+     */
+    int compressed = LZ4_compress_fast_continue(lz4_ctx->compress_stream, 
+                                               (const char *)input, 
+                                               (char *)output,
+                                               (int)input_size, 
+                                               (int)output_capacity, 
+                                               1);
+    
+    /* Check if compression failed or expanded the data
+     * LZ4_compress_fast_continue returns:
+     * - 0 if compression failed (buffer too small or internal error)
+     * - compressed size if successful
+     * 
+     * Error Handling (Requirement 8.1):
+     * - Log warning for compression failure
+     * - Return 0 to signal incompressible data
+     * - Caller will fall back to uncompressed storage
+     * - Note: Compression failure does NOT corrupt streaming state
+     */
+    if (compressed <= 0) {
+        serverLog(LL_WARNING, "LZ4 streaming compression failed (returned %d) for chunk %llu. "
+                 "This may indicate insufficient output buffer or internal LZ4 error. "
+                 "Falling back to uncompressed storage for this chunk. "
+                 "Streaming state remains valid for subsequent chunks.",
+                 compressed, (unsigned long long)lz4_ctx->chunks_processed);
+        return 0;  /* Incompressible or error */
+    }
+    
+    /* Check if compression expanded the data (incompressible)
+     * If compressed size >= input size, data is incompressible
+     * 
+     * Error Handling (Requirement 8.1):
+     * - Log debug message (this is normal for incompressible data)
+     * - Return 0 to signal incompressible data
+     * - Caller will fall back to uncompressed storage
+     */
+    if ((size_t)compressed >= input_size) {
+        serverLog(LL_DEBUG, "LZ4 streaming compression expanded data (%d >= %zu) for chunk %llu, treating as incompressible. "
+                 "This is normal for random or already-compressed data.",
+                 compressed, input_size, (unsigned long long)lz4_ctx->chunks_processed);
+        return 0;  /* Incompressible */
+    }
+    
+    /* Track chunks processed for monitoring and debugging (Requirement 8.4) */
+    lz4_ctx->chunks_processed++;
+    
+    return (ssize_t)compressed;
+}
+
+/* Decompress with LZ4 streaming
+ * 
+ * Streaming decompression using LZ4_decompress_safe_continue().
+ * Chunks must be decompressed in order - each chunk updates the internal
+ * dictionary state for the next chunk.
+ * 
+ * IMPORTANT: Caller must verify decompressed size matches expected uncompressed_size
+ * from chunk header to detect corruption.
+ * 
+ * Parameters:
+ *   ctx - LZ4 streaming context (must not be NULL)
+ *   input - Compressed input data
+ *   input_size - Size of compressed data
+ *   output - Output buffer for decompressed data
+ *   output_capacity - Expected size of decompressed data
+ * 
+ * Returns:
+ *   Exactly output_capacity on success
+ *   -1 on decompression failure (corruption or out-of-order chunks)
+ * 
+ * Error Handling (Requirements 2.4, 8.2, 8.4, 8.5):
+ * - Returns -1 on decompression failure (corruption detected)
+ * - Returns -1 if decompressed size != output_capacity (size mismatch)
+ * - Returns -1 if streaming state is already corrupted
+ * - Validates sizes <= INT_MAX before calling LZ4 APIs
+ * - Validates context is not NULL
+ * - Logs detailed error messages for debugging
+ * - Halts load on decompression failure (streaming state may be corrupted)
+ * - Marks state as corrupted to prevent further decompression attempts
+ * 
+ * Sequential Decompression Requirement (Requirement 2.4, 8.2):
+ * - Chunks MUST be decompressed in order
+ * - Skipping chunks will cause subsequent decompression to fail
+ * - Each chunk decompression updates internal state for next chunk
+ * - One corrupted chunk may affect subsequent chunks (streaming dependency)
+ */
+static ssize_t lz4StreamDecompress(void *ctx, const unsigned char *input, size_t input_size,
+                                   unsigned char *output, size_t output_capacity) {
+    lz4StreamContext *lz4_ctx = (lz4StreamContext *)ctx;
+    
+    /* Validate context (Requirement 8.2) */
+    if (lz4_ctx == NULL || lz4_ctx->decompress_stream == NULL) {
+        serverLog(LL_WARNING, "LZ4 streaming decompression called with NULL context. "
+                 "This indicates context creation failure or internal error. "
+                 "Cannot proceed with decompression.");
+        return -1;
+    }
+    
+    /* Check if streaming state is already corrupted (Requirement 8.2, 8.4)
+     * Once state is corrupted, all subsequent decompression attempts must fail
+     * because the streaming dictionary is no longer valid */
+    if (lz4_ctx->state_corrupted) {
+        serverLog(LL_WARNING, "LZ4 streaming decompression called with corrupted state. "
+                 "Previous decompression failure corrupted the streaming state. "
+                 "Cannot decompress chunk %llu. All subsequent chunks will fail. "
+                 "This is expected behavior for streaming compression - "
+                 "one corrupted chunk affects all subsequent chunks.",
+                 (unsigned long long)lz4_ctx->chunks_processed);
+        return -1;
+    }
+    
+    /* Validate sizes <= INT_MAX for LZ4 API (Requirement 8.2) */
+    if (input_size > INT_MAX || output_capacity > INT_MAX) {
+        serverLog(LL_WARNING, "Size exceeds INT_MAX (input=%zu, output=%zu), cannot decompress. "
+                 "This indicates data corruption or invalid chunk header.",
+                 input_size, output_capacity);
+        /* Mark state as corrupted (Requirement 8.2, 8.4) */
+        lz4_ctx->state_corrupted = 1;
+        return -1;
+    }
+    
+    /* Decompress using streaming decompression
+     * LZ4_decompress_safe_continue() maintains state across calls
+     * Each chunk decompression updates the internal dictionary for the next chunk
+     * 
+     * Parameters:
+     * - LZ4_streamDecode: decompression stream state (maintains sliding window)
+     * - source: compressed input data
+     * - dest: output buffer
+     * - compressedSize: size of compressed data
+     * - maxDecompressedSize: maximum size of decompressed data (safety limit)
+     * 
+     * Returns:
+     * - Number of bytes decompressed on success
+     * - Negative value on error (corruption or buffer overflow)
+     * 
+     * Error Handling (Requirement 8.2):
+     * - Negative return indicates corruption or out-of-order chunks
+     * - Must halt load immediately (streaming state may be corrupted)
+     * - Cannot continue after decompression failure
+     */
+    int decompressed = LZ4_decompress_safe_continue(lz4_ctx->decompress_stream,
+                                                    (const char *)input,
+                                                    (char *)output,
+                                                    (int)input_size,
+                                                    (int)output_capacity);
+    
+    /* Check for decompression failure (Requirement 8.2, 8.4) */
+    if (decompressed < 0) {
+        serverLog(LL_WARNING, "LZ4 streaming decompression failed with error code %d for chunk %llu "
+                 "(input_size=%zu, output_capacity=%zu). "
+                 "This may indicate: "
+                 "1) Data corruption in compressed chunk, "
+                 "2) Out-of-order chunk decompression (chunks must be decompressed sequentially), "
+                 "3) Corrupted streaming state from previous chunk, "
+                 "4) Skipped chunk (streaming decompression requires all chunks in order). "
+                 "Marking streaming state as corrupted. "
+                 "Cannot continue loading RDB file.",
+                 decompressed, (unsigned long long)lz4_ctx->chunks_processed,
+                 input_size, output_capacity);
+        
+        /* Mark state as corrupted to prevent further decompression attempts (Requirement 8.2, 8.4)
+         * This ensures we don't try to decompress subsequent chunks with corrupted state */
+        lz4_ctx->state_corrupted = 1;
+        return -1;
+    }
+    
+    /* Validate decompressed size matches expected size (Requirement 8.4)
+     * This is critical for detecting corruption
+     * Return exactly output_capacity on success, -1 on failure (normalized contract) */
+    if (decompressed != (int)output_capacity) {
+        serverLog(LL_WARNING, "LZ4 streaming decompressed size mismatch for chunk %llu: expected %zu, got %d. "
+                 "This indicates data corruption or incorrect chunk header. "
+                 "The chunk header specified %zu bytes but decompression produced %d bytes. "
+                 "Marking streaming state as corrupted. "
+                 "Cannot continue loading RDB file.",
+                 (unsigned long long)lz4_ctx->chunks_processed,
+                 output_capacity, decompressed, output_capacity, decompressed);
+        
+        /* Mark state as corrupted (Requirement 8.2, 8.4) */
+        lz4_ctx->state_corrupted = 1;
+        return -1;
+    }
+    
+    /* Track chunks processed for monitoring and debugging (Requirement 8.4) */
+    lz4_ctx->chunks_processed++;
+    
+    /* Success: return exactly output_capacity as per normalized contract */
+    return (ssize_t)output_capacity;
+}
+
+/* Calculate max compressed size for LZ4 streaming */
+static size_t lz4StreamMaxCompressedSize(size_t input_size) {
+    /* Validate input_size <= INT_MAX for LZ4 API */
+    if (input_size > INT_MAX) {
+        return 0;  /* Invalid size */
+    }
+    return (size_t)LZ4_compressBound((int)input_size);
+}
+
+/* LZ4 streaming compressor definition
+ * 
+ * This compressor uses LZ4 streaming compression/decompression for RDB chunks.
+ * Key characteristics:
+ * - Algorithm identifier: 1 (replaces plain LZ4)
+ * - Streaming compression: Each chunk references previous 64KB via sliding window
+ * - Streaming decompression: Chunks must be decompressed sequentially
+ * - No dictionary storage: Dictionary evolves naturally in streaming state
+ * - No serialization: serialize_context and deserialize_context are NULL
+ * 
+ * Requirements: 1.2, 4.1
+ */
+static rdbCompressor lz4StreamCompressor = {
+    .algorithm = RDB_COMPRESSION_LZ4_STREAM,
+    .name = "LZ4-stream",
+    .compress = lz4StreamCompress,
+    .decompress = lz4StreamDecompress,
+    .max_compressed_size = lz4StreamMaxCompressedSize,
+    .create_context = lz4StreamCreateContext,
+    .free_context = lz4StreamFreeContext,
+    .serialize_context = NULL,      /* No dictionary serialization needed */
+    .deserialize_context = NULL     /* No dictionary deserialization needed */
+};
+
+/* Initialize compression algorithms - called at server startup */
+void rdbInitCompressionAlgorithms(void) {
+    /* Register LZF compressor */
+    rdbRegisterCompressor(RDB_COMPRESSION_LZF, &lzfCompressor);
+    
+    /* Register LZ4 streaming compressor (replaces plain LZ4) */
+    rdbRegisterCompressor(RDB_COMPRESSION_LZ4_STREAM, &lz4StreamCompressor);
+}
+
 /* ======================== Chunk Buffer Implementation ====================== */
 
 /* Chunk buffer structure for accumulating data before compression.
@@ -191,6 +855,12 @@ typedef struct rdbChunkBuffer {
     size_t decomp_pos;           /* Current read position in decompressed data */
     size_t decomp_capacity;      /* Capacity of decompressed buffer */
     int eof_reached;             /* Flag indicating end of stream */
+    uint64_t chunks_read;        /* Number of chunks read (for order validation) */
+    
+    /* Compression algorithm support */
+    rdbCompressor *compressor;   /* Compression algorithm */
+    void *compress_ctx;          /* Compression context (e.g., dictionary) */
+    int header_meta_written;     /* Flag: metadata (e.g., dictionary) has been written */
 } rdbChunkBuffer;
 
 void rdbChunkBufferFree(rdbChunkBuffer *buf);
@@ -213,15 +883,30 @@ static int rdbEnsureBuffer(unsigned char **buffer, size_t *capacity, size_t need
 }
 
 /* Create a chunk buffer for writing (compression).
- * Returns NULL on memory allocation failure. */
-rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size) {
+ * 
+ * Parameters:
+ *   rdb - The underlying rio stream
+ *   chunk_size - Size of chunks to buffer before compression
+ *   algorithm - Compression algorithm to use
+ * 
+ * Returns NULL on memory allocation failure or invalid parameters.
+ * 
+ * Error Handling (Requirement 8.1, 8.3):
+ * - If context creation fails, falls back to LZF compression
+ * - If memory allocation fails, returns NULL (caller should handle)
+ */
+rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size, 
+                                     rdbCompressionAlgorithm algorithm) {
     /* Validate input parameters */
     if (rdb == NULL || chunk_size < RDB_MIN_CHUNK_SIZE || chunk_size > RDB_MAX_CHUNK_SIZE) {
+        serverLog(LL_WARNING, "Invalid parameters for chunk buffer creation: rdb=%p, chunk_size=%zu", 
+                 rdb, chunk_size);
         return NULL;
     }
 
     rdbChunkBuffer *buf = zmalloc(sizeof(rdbChunkBuffer));
     if (buf == NULL) {
+        serverLog(LL_WARNING, "Failed to allocate memory for chunk buffer structure");
         return NULL;
     }
 
@@ -229,28 +914,84 @@ rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size) {
 
     buf->data = zmalloc(chunk_size);
     if (buf->data == NULL) {
+        serverLog(LL_WARNING, "Failed to allocate %zu bytes for chunk buffer data", chunk_size);
         goto error;
     }
 
-    buf->compress_capacity = chunk_size + (chunk_size / 32) + 1;
+    /* Get the compressor for the specified algorithm */
+    buf->compressor = rdbGetCompressor(algorithm);
+    if (buf->compressor == NULL) {
+        serverLog(LL_WARNING, "Unknown compression algorithm %d, falling back to LZF", algorithm);
+        /* Fallback to LZF (Requirement 8.1) */
+        buf->compressor = rdbGetCompressor(RDB_COMPRESSION_LZF);
+        if (buf->compressor == NULL) {
+            serverLog(LL_WARNING, "LZF compressor not registered, cannot create chunk buffer");
+            goto error;
+        }
+        algorithm = RDB_COMPRESSION_LZF;
+    }
+
+    /* Create compression context if the compressor requires it (Requirement 2.1, 8.1, 8.3) */
+    if (buf->compressor->create_context != NULL) {
+        /* For LZ4 streaming, dict_size parameter is ignored (dictionary evolves naturally) */
+        buf->compress_ctx = buf->compressor->create_context(0);
+        if (buf->compress_ctx == NULL) {
+            /* Context creation failed - this could be due to memory allocation failure
+             * Fall back to LZF compression which doesn't require a context (Requirement 8.1, 8.3) */
+            serverLog(LL_WARNING, "Failed to create compression context for algorithm %s "
+                     "(memory allocation failure). Falling back to LZF compression.",
+                     buf->compressor->name);
+            
+            /* Fallback to LZF on context creation failure (Requirement 8.1) */
+            buf->compressor = rdbGetCompressor(RDB_COMPRESSION_LZF);
+            if (buf->compressor == NULL) {
+                serverLog(LL_WARNING, "LZF compressor not registered, cannot create chunk buffer");
+                goto error;
+            }
+            buf->compress_ctx = NULL;  /* LZF doesn't need context */
+            algorithm = RDB_COMPRESSION_LZF;
+            
+            serverLog(LL_NOTICE, "Successfully fell back to LZF compression after context creation failure");
+        }
+    } else {
+        /* No context needed for LZF */
+        buf->compress_ctx = NULL;
+    }
+
+    /* Calculate compression buffer size using the compressor's max_compressed_size */
+    buf->compress_capacity = buf->compressor->max_compressed_size(chunk_size);
+    if (buf->compress_capacity == 0) {
+        serverLog(LL_WARNING, "Compressor %s returned invalid max_compressed_size for chunk_size=%zu "
+                 "(possible integer overflow or invalid input)", 
+                 buf->compressor->name, chunk_size);
+        goto error;
+    }
+    
     buf->compress_tmp = zmalloc(buf->compress_capacity);
     if (buf->compress_tmp == NULL) {
+        /* Memory allocation failed for compression buffer (Requirement 8.3)
+         * This is a critical error - we cannot proceed without a compression buffer */
+        serverLog(LL_WARNING, "Failed to allocate %zu bytes for compression buffer "
+                 "(memory allocation failure). Cannot create chunk buffer.", 
+                 buf->compress_capacity);
         goto error;
     }
 
     buf->capacity = chunk_size;
     buf->chunk_size = chunk_size;
     buf->rdb = rdb;
+    buf->header_meta_written = 0;  /* Metadata not yet written */
+    
+    serverLog(LL_DEBUG, "Created chunk buffer with algorithm %s, chunk_size=%zu",
+             buf->compressor->name, chunk_size);
+    
     return buf;
 
 error:
     rdbChunkBufferFree(buf);
     return NULL;
 }
-
-/* Create a chunk buffer for reading (decompression).
- * Returns NULL on memory allocation failure. */
-rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb) {
+rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb, rdbCompressionAlgorithm algorithm) {
     /* Validate input parameters */
     if (rdb == NULL) {
         return NULL;
@@ -280,8 +1021,29 @@ rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb) {
     buf->decomp_pos = 0;
     buf->decomp_capacity = 0;
     buf->eof_reached = 0;
+    buf->chunks_read = 0;  /* Initialize chunk counter for order validation */
+
+    /* Get the compressor for the specified algorithm */
+    buf->compressor = rdbGetCompressor(algorithm);
+    if (buf->compressor == NULL) {
+        serverLog(LL_WARNING, "Unknown compression algorithm %d, cannot create chunk buffer for read", algorithm);
+        zfree(buf);
+        return NULL;
+    }
+
+    /* Compression context will be deserialized from RDB file during load */
+    buf->compress_ctx = NULL;
+    buf->header_meta_written = 0;  /* Not applicable for read buffers */
 
     return buf;
+}
+
+/* Set the compression context for a chunk buffer.
+ * This is used after deserializing the context from the RDB file. */
+void rdbChunkBufferSetCompressionContext(rdbChunkBuffer *buf, void *ctx) {
+    if (buf != NULL) {
+        buf->compress_ctx = ctx;
+    }
 }
 
 int rdbChunkBufferIsWriteBuffer(rdbChunkBuffer *buf) {
@@ -293,6 +1055,11 @@ int rdbChunkBufferIsWriteBuffer(rdbChunkBuffer *buf) {
  * This should be called after rdbChunkBufferFlush() to ensure all data is written. */
 void rdbChunkBufferFree(rdbChunkBuffer *buf) {
     if (buf == NULL) return;
+
+    /* Free compression context if present */
+    if (buf->compress_ctx != NULL && buf->compressor != NULL && buf->compressor->free_context != NULL) {
+        buf->compressor->free_context(buf->compress_ctx);
+    }
 
     /* Free write buffer if present */
     if (buf->data != NULL) {
@@ -344,7 +1111,7 @@ static int rdbWriteUncompressedChunk(rdbChunkBuffer *buf, unsigned char *data, s
 /* Compress and write a chunk to the underlying rio stream.
  * Returns 0 on success, -1 on error. */
 static int rdbCompressChunkData(rdbChunkBuffer *buf, unsigned char *data, size_t data_size) {
-    if (buf == NULL || data == NULL) {
+    if (buf == NULL || data == NULL || buf->compressor == NULL) {
         return -1;
     }
 
@@ -360,29 +1127,64 @@ static int rdbCompressChunkData(rdbChunkBuffer *buf, unsigned char *data, size_t
         return -1;
     }
 
-    /* Allocate buffer for compressed data.
-     * LZF worst case is original size + 1 byte per 32 bytes. */
-    size_t max_compressed_size = data_size + (data_size / 32) + 1;
-    /* Ensure compression buffer is available and large enough. */
+    /* Validate input size <= INT_MAX before compression (Requirement 1.3, 8.1)
+     * Many compression libraries use int for sizes, so we must ensure compatibility */
+    if (data_size > INT_MAX) {
+        serverLog(LL_WARNING, "Chunk size %zu exceeds INT_MAX, falling back to uncompressed storage", data_size);
+        return rdbWriteUncompressedChunk(buf, data, data_size);
+    }
+
+    /* Calculate max compressed size using the compressor's max_compressed_size function */
+    size_t max_compressed_size = buf->compressor->max_compressed_size(data_size);
+    if (max_compressed_size == 0) {
+        /* Invalid size returned, fall back to uncompressed */
+        serverLog(LL_WARNING, "Compressor returned invalid max_compressed_size, falling back to uncompressed");
+        return rdbWriteUncompressedChunk(buf, data, data_size);
+    }
+    
+    /* Ensure compression buffer is available and large enough (Requirement 8.3, 8.5) */
     if (rdbEnsureBuffer(&buf->compress_tmp, &buf->compress_capacity, max_compressed_size) == C_ERR) {
-        /* Memory allocation failed, write uncompressed */
+        /* Memory allocation failed, write uncompressed (Requirement 8.3)
+         * This is a graceful degradation - we can still save the data uncompressed */
+        serverLog(LL_WARNING, "Failed to allocate compression buffer (%zu bytes required). "
+                 "Memory allocation failure. Falling back to uncompressed storage for this chunk.",
+                 max_compressed_size);
         return rdbWriteUncompressedChunk(buf, data, data_size);
     }
 
-    /* Compress the chunk */
-    size_t compressed_size = lzf_compress(data, data_size, buf->compress_tmp, max_compressed_size);
-
-    if (compressed_size == 0) {
-        /* Compression failed or data is incompressible, write uncompressed */
+    /* Compress the chunk using the selected algorithm (Requirement 1.3) */
+    ssize_t compressed_size = buf->compressor->compress(buf->compress_ctx, 
+                                                        data, data_size,
+                                                        buf->compress_tmp, max_compressed_size);
+    
+    /* Handle incompressible data or compression failure (Requirement 2.5, 8.1, 8.5)
+     * compressed_size <= 0 means compression failed or error
+     * compressed_size >= data_size means data expanded (incompressible) */
+    if (compressed_size <= 0 || (size_t)compressed_size >= data_size) {
+        /* Compression failed or data is incompressible, write uncompressed
+         * This is normal behavior - not all data compresses well */
+        if (compressed_size < 0) {
+            serverLog(LL_WARNING, "Compression failed with error (returned %zd). "
+                     "Writing chunk uncompressed. This may indicate internal compressor error.",
+                     compressed_size);
+        } else if (compressed_size == 0) {
+            serverLog(LL_DEBUG, "Data is incompressible (compressor returned 0). "
+                     "Writing chunk uncompressed. This is normal for random or already-compressed data.");
+        } else {
+            serverLog(LL_DEBUG, "Compressed size %zd >= uncompressed size %zu. "
+                     "Writing chunk uncompressed. This is normal for incompressible data.",
+                     compressed_size, data_size);
+        }
         return rdbWriteUncompressedChunk(buf, data, data_size);
     }
 
-    if (rdbWriteChunkHeader(buf, compressed_size, data_size) == -1) return -1;
-    if (rdbWriteRaw(buf->rdb, buf->compress_tmp, compressed_size) == -1) return -1;
+    /* Write compressed chunk */
+    if (rdbWriteChunkHeader(buf, (size_t)compressed_size, data_size) == -1) return -1;
+    if (rdbWriteRaw(buf->rdb, buf->compress_tmp, (size_t)compressed_size) == -1) return -1;
 
     /* Update statistics */
     buf->chunks_written++;
-    buf->bytes_compressed += compressed_size;
+    buf->bytes_compressed += (size_t)compressed_size;
     buf->bytes_uncompressed += data_size;
 
     return 0;
@@ -549,9 +1351,12 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
         }
     }
 
-    /* Ensure decompressed buffer is available */
+    /* Ensure decompressed buffer is available (Requirement 8.3, 8.5) */
     if (rdbEnsureBuffer(&buf->decomp_data, &buf->decomp_capacity, uncompressed_size) == C_ERR) {
-        rdbReportReadError("Failed to allocate %llu bytes for decompressed chunk",
+        /* Memory allocation failed - this is a fatal error during load
+         * We cannot proceed without a decompression buffer (Requirement 8.2) */
+        rdbReportReadError("Failed to allocate %llu bytes for decompressed chunk. "
+                          "Memory allocation failure. Cannot continue loading RDB file.",
                           (unsigned long long)uncompressed_size);
         return -1;
     }
@@ -570,12 +1375,23 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
         }
         buf->decomp_size = uncompressed_size;
         buf->decomp_pos = 0;
+        
+        /* Track chunks read for monitoring (Requirement 8.4) */
+        buf->chunks_read++;
+        
+        serverLog(LL_DEBUG, "Read uncompressed chunk %llu (%llu bytes)",
+                 (unsigned long long)buf->chunks_read,
+                 (unsigned long long)uncompressed_size);
+        
         return 0;
     }
 
-    /* Ensure buffer for compressed data */
+    /* Ensure buffer for compressed data (Requirement 8.3, 8.5) */
     if (rdbEnsureBuffer(&buf->compressed_buf, &buf->compressed_capacity, compressed_size) == C_ERR) {
-        rdbReportReadError("Failed to allocate %llu bytes for compressed chunk",
+        /* Memory allocation failed - this is a fatal error during load
+         * We cannot proceed without a buffer to read compressed data (Requirement 8.2) */
+        rdbReportReadError("Failed to allocate %llu bytes for compressed chunk. "
+                          "Memory allocation failure. Cannot continue loading RDB file.",
                           (unsigned long long)compressed_size);
         return -1;
     }
@@ -592,26 +1408,59 @@ static int rdbDecompressChunk(rdbChunkBuffer *buf) {
         return -1;
     }
 
-    /* Decompress the data */
-    size_t decompressed_size = lzf_decompress(buf->compressed_buf, compressed_size,
-                                              buf->decomp_data, uncompressed_size);
+    /* Decompress the data using the selected algorithm (Requirement 8.2, 8.4) */
+    if (buf->compressor == NULL) {
+        rdbReportCorruptRDB("No compressor available for decompression. "
+                           "This indicates internal error or corrupted RDB file.");
+        return -1;
+    }
+    
+    ssize_t decompressed_size = buf->compressor->decompress(buf->compress_ctx,
+                                                            buf->compressed_buf, compressed_size,
+                                                            buf->decomp_data, uncompressed_size);
 
-    if (decompressed_size == 0) {
-        rdbReportCorruptRDB("Failed to decompress chunk (compressed: %llu bytes, expected uncompressed: %llu bytes). "
-                           "Data may be corrupted or using unsupported compression format.",
+    /* Check for decompression failure (Requirement 8.2, 8.4, 8.5)
+     * Decompression failure indicates corruption or streaming state corruption
+     * Must halt load immediately - cannot continue after decompression failure */
+    if (decompressed_size < 0) {
+        rdbReportCorruptRDB("Failed to decompress chunk using %s "
+                           "(compressed: %llu bytes, expected uncompressed: %llu bytes). "
+                           "This indicates: "
+                           "1) Data corruption in compressed chunk, "
+                           "2) Unsupported compression format, "
+                           "3) For streaming compression: corrupted state from previous chunk. "
+                           "Cannot continue loading RDB file.",
+                           buf->compressor->name,
                            (unsigned long long)compressed_size, (unsigned long long)uncompressed_size);
         return -1;
     }
 
-    if (decompressed_size != uncompressed_size) {
-        rdbReportCorruptRDB("Decompressed size mismatch: expected %llu bytes, got %zu bytes. "
-                           "Chunk data is corrupted.",
+    /* CRITICAL VALIDATION: Decompressed size MUST match expected uncompressed size
+     * This is a key correctness property - any mismatch indicates corruption (Requirement 8.4) */
+    if ((size_t)decompressed_size != uncompressed_size) {
+        rdbReportCorruptRDB("Decompressed size mismatch using %s: expected %llu bytes, got %zd bytes. "
+                           "Chunk data is corrupted. The chunk header specified %llu bytes but "
+                           "decompression produced %zd bytes. This indicates data corruption. "
+                           "Cannot continue loading RDB file.",
+                           buf->compressor->name,
+                           (unsigned long long)uncompressed_size, decompressed_size,
                            (unsigned long long)uncompressed_size, decompressed_size);
         return -1;
     }
 
+    /* Track chunks read for monitoring and order validation (Requirement 8.4) */
+    buf->chunks_read++;
+    
     buf->decomp_size = decompressed_size;
     buf->decomp_pos = 0;
+    
+    serverLog(LL_DEBUG, "Successfully decompressed chunk %llu using %s "
+             "(compressed: %llu bytes, uncompressed: %llu bytes)",
+             (unsigned long long)buf->chunks_read,
+             buf->compressor->name,
+             (unsigned long long)compressed_size,
+             (unsigned long long)uncompressed_size);
+    
     return 0;
 }
 
@@ -2004,9 +2853,21 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     rio *actual_rdb = rdb;
     rdbChunkBuffer *chunk_buf = NULL;
     int use_chunk_compression = 0;
+    
+    /* Determine if this is a replication save and get algorithm selection */
+    int is_replication = (rdbflags & RDBFLAGS_REPLICATION) != 0;
+    int use_new_format = 1;  /* Default to new format for non-replication saves */
+    rdbCompressionAlgorithm selected_algo = server.rdb_compression_algorithm;
+    
+    if (is_replication && rsi && rsi->repl_compression_algorithm >= 0) {
+        /* Use algorithm selected based on replica capabilities */
+        use_new_format = rsi->repl_use_new_format;
+        selected_algo = rsi->repl_compression_algorithm;
+    }
 
     /* Try to initialize chunk compression BEFORE writing header */
     if (server.rdb_chunk_compression) {
+        /* Create chunk buffer with selected algorithm */
         rioInitWithChunkCompression(&chunk_rio, rdb, server.rdb_chunk_size);
 
         /* Check if chunk buffer allocation succeeded */
@@ -2017,31 +2878,80 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
             goto werr;
         }
 
+        chunk_buf = chunk_rio.io.chunk.chunk_buf;
+        
+        /* Override the algorithm if it doesn't match the configured algorithm */
+        if (selected_algo != chunk_buf->compressor->algorithm) {
+            /* Free the default chunk buffer and create one with the selected algorithm */
+            rdbChunkBufferFree(chunk_buf);
+            
+            chunk_buf = rdbChunkBufferCreate(rdb, server.rdb_chunk_size, selected_algo);
+            if (chunk_buf == NULL) {
+                serverLog(LL_WARNING, "Failed to create chunk buffer with algorithm %d", selected_algo);
+                errno = ENOMEM;
+                goto werr;
+            }
+            chunk_rio.io.chunk.chunk_buf = chunk_buf;
+        }
+        
         use_chunk_compression = 1;
-        serverLog(LL_NOTICE, "RDB: Chunk compression enabled with chunk size %zu bytes",
-                  server.rdb_chunk_size);
-    }
-
-    /* Write header with correct version based on actual compression mode */
-    if (server.rdb_checksum) rdb->update_cksum = rioGenericUpdateChecksum;
-    int rdb_version = use_chunk_compression ? 81 : 80;
-    snprintf(magic, sizeof(magic), "VALKEY%03d", rdb_version);
-    if (rdbWriteRaw(rdb, magic, 9) == -1) goto werr;
-
-    /* Now switch to chunk rio if compression is enabled */
-    if (use_chunk_compression) {
+        
+        /* Log algorithm at RDB save start */
+        serverLog(LL_NOTICE, "RDB: Starting save with chunk compression enabled - "
+                  "chunk size: %zu bytes, algorithm: %s%s",
+                  server.rdb_chunk_size, chunk_buf->compressor->name,
+                  is_replication ? " (replication)" : "");
+        
+        /* Write RDB header based on format selection */
+        if (server.rdb_checksum) rdb->update_cksum = rioGenericUpdateChecksum;
+        
+        if (use_new_format) {
+            /* New format: write version + algorithm byte */
+            int rdb_version = RDB_VERSION;  /* Use version 81 for chunk compression with algorithm byte */
+            snprintf(magic, sizeof(magic), "VALKEY%03d", rdb_version);
+            if (rdbWriteRaw(rdb, magic, 9) == -1) goto werr;
+            
+            /* Write algorithm identifier byte (Requirement 3.2) */
+            unsigned char algo_byte = (unsigned char)chunk_buf->compressor->algorithm;
+            if (rdbWriteRaw(rdb, &algo_byte, 1) == -1) goto werr;
+            
+            serverLog(LL_NOTICE, "RDB: Using new format with compression algorithm: %s (ID=%d)", 
+                      chunk_buf->compressor->name, algo_byte);
+            
+            /* NOTE: For LZ4 streaming, no dictionary serialization is needed.
+             * The dictionary evolves naturally within the LZ4_stream_t during compression.
+             * Each chunk references the previous 64KB via LZ4's sliding window.
+             * Requirement 3.2: Do NOT write dictionary data (no serialization needed) */
+            chunk_buf->header_meta_written = 1;  /* Mark header as complete */
+        } else {
+            /* Old format: write version only (no algorithm byte) */
+            int rdb_version = RDB_VERSION;  /* Use current version without algorithm byte */
+            snprintf(magic, sizeof(magic), "VALKEY%03d", rdb_version);
+            if (rdbWriteRaw(rdb, magic, 9) == -1) goto werr;
+            
+            serverLog(LL_NOTICE, "RDB: Using old format (no algorithm byte) with LZF compression");
+        }
+        
+        /* Now switch to chunk rio for data writing */
         actual_rdb = &chunk_rio;
-        /* Seed checksum and counters with the bytes already written (header). */
+        
+        /* Seed checksum and counters with the bytes already written (header + algo). */
         actual_rdb->cksum = rdb->cksum;
         actual_rdb->processed_bytes = rdb->processed_bytes;
         actual_rdb->flags = rdb->flags;
         actual_rdb->max_processing_chunk = rdb->max_processing_chunk;
-        /* Copy checksum settings to chunk rio and seed with header checksum */
+        
+        /* Copy checksum settings to chunk rio */
         if (server.rdb_checksum) {
             actual_rdb->update_cksum = rioGenericUpdateChecksum;
-            /* Seed the chunk rio checksum with the header bytes we already wrote */
-            actual_rdb->cksum = rdb->cksum;
         }
+    } else {
+        /* No chunk compression - write header immediately with old version */
+        if (server.rdb_checksum) rdb->update_cksum = rioGenericUpdateChecksum;
+        int rdb_version = 80;
+        snprintf(magic, sizeof(magic), "VALKEY%03d", rdb_version);
+        if (rdbWriteRaw(rdb, magic, 9) == -1) goto werr;
+        actual_rdb = rdb;
     }
     if (rdbSaveInfoAuxFields(actual_rdb, rdbflags, rsi) == -1) goto werr;
     if (!(req & REPLICA_REQ_RDB_EXCLUDE_DATA) && rdbSaveModulesAux(actual_rdb, VALKEYMODULE_AUX_BEFORE_RDB) == -1) goto werr;
@@ -2075,9 +2985,11 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
             uint64_t uncompressed = chunk_buf->bytes_uncompressed;
             double ratio = uncompressed > 0 ? (double)uncompressed / (double)compressed : 1.0;
 
+            /* Log compression statistics at RDB save complete (Requirement 10.3) */
             serverLog(LL_NOTICE,
-                      "RDB: Chunk compression complete - %llu chunks, %llu bytes compressed, "
-                      "%llu bytes uncompressed, ratio: %.2fx",
+                      "RDB: Chunk compression complete - algorithm: %s, %llu chunks, "
+                      "%llu bytes compressed, %llu bytes uncompressed, ratio: %.2fx",
+                      chunk_buf->compressor->name,
                       (unsigned long long)chunks,
                       (unsigned long long)compressed,
                       (unsigned long long)uncompressed,
@@ -3654,10 +4566,14 @@ static void rdbLoadChecksumCallback(rio *r, const void *buf, size_t len) {
 }
 
 /* Progress-only callback for the underlying rio when chunk decompression is used.
- * This tracks progress on compressed bytes without updating the checksum
- * (checksum is calculated on decompressed data by the chunk rio). */
+ * This tracks progress on compressed bytes AND updates the checksum.
+ * We need to calculate the checksum on the compressed bytes (what's actually in the file)
+ * so it matches the checksum calculated during save. */
 static void rdbLoadProgressOnlyCallback(rio *r, const void *buf, size_t len) {
-    UNUSED(buf);
+    /* Update checksum on compressed bytes */
+    if (server.rdb_checksum) rioGenericUpdateChecksum(r, buf, len);
+    
+    /* Track progress */
     if (server.loading_process_events_interval_bytes &&
         (r->processed_bytes + len) / server.loading_process_events_interval_bytes >
             r->processed_bytes / server.loading_process_events_interval_bytes) {
@@ -3792,14 +4708,108 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
     rio chunk_rio;
     rio *actual_rdb = rdb;
     use_chunk_decompression = (rdbver == 81);
+    rdbCompressionAlgorithm detected_algorithm = RDB_COMPRESSION_LZF; /* Default to LZF */
+    void *compression_ctx = NULL;
 
     if (use_chunk_decompression) {
-        serverLog(LL_NOTICE, "RDB version 81 detected, initializing chunk decompression");
-        rioInitWithChunkCompression(&chunk_rio, rdb, 0); /* 0 = reading mode */
-        if (chunk_rio.io.chunk.chunk_buf == NULL) {
-            serverLog(LL_WARNING, "Failed to initialize chunk decompression buffer");
-            return C_ERR;
+        serverLog(LL_NOTICE, "RDB version 81 detected, reading compression algorithm");
+        
+        /* Read algorithm identifier byte */
+        unsigned char algo_byte;
+        if (rioRead(rdb, &algo_byte, 1) == 0) {
+            serverLog(LL_WARNING, "Failed to read compression algorithm identifier");
+            goto eoferr;
         }
+        
+        detected_algorithm = (rdbCompressionAlgorithm)algo_byte;
+        
+        /* Get compressor from registry (Requirement 8.2, 8.4) */
+        rdbCompressor *compressor = rdbGetCompressor(detected_algorithm);
+        if (compressor == NULL) {
+            serverLog(LL_WARNING, "Unknown compression algorithm %d in RDB file (possible corruption "
+                     "or unsupported version)", detected_algorithm);
+            rdbReportCorruptRDB("Unknown compression algorithm %d", detected_algorithm);
+            return RDB_FAILED;
+        }
+        
+        /* Log detected algorithm at RDB load start (Requirement 10.1, 10.3) */
+        serverLog(LL_NOTICE, "RDB: Starting load with compression algorithm: %s (ID=%d)", 
+                  compressor->name, detected_algorithm);
+        
+        /* Deserialize or create compression context based on algorithm requirements
+         * (Requirements 3.3, 8.2, 8.4, 8.5) */
+        if (compressor->deserialize_context != NULL) {
+            /* Algorithm stores context in RDB file (e.g., dictionary-based compression)
+             * Deserialize the context from the RDB file */
+            serverLog(LL_NOTICE, "RDB: Deserializing compression context for algorithm %s", compressor->name);
+            compression_ctx = compressor->deserialize_context(rdb);
+            if (compression_ctx == NULL) {
+                /* Context deserialization failed - this is a fatal error (Requirement 8.2)
+                 * Cannot proceed without the context for dictionary-based compression */
+                serverLog(LL_WARNING, "Failed to deserialize compression context for algorithm %s. "
+                         "This indicates: "
+                         "1) Data corruption in RDB file header, "
+                         "2) Memory allocation failure, "
+                         "3) Unsupported context format. "
+                         "Cannot continue loading RDB file.",
+                         compressor->name);
+                rdbReportCorruptRDB("Failed to deserialize compression context for algorithm %s", 
+                                   compressor->name);
+                return RDB_FAILED;
+            }
+            
+            serverLog(LL_NOTICE, "RDB: Successfully deserialized compression context");
+        } else if (compressor->create_context != NULL) {
+            /* Algorithm needs context but doesn't store it in RDB file (e.g., streaming compression)
+             * Create a new context for decompression (Requirements 3.3, 8.2, 8.5) */
+            serverLog(LL_NOTICE, "RDB: Creating streaming decompression context for algorithm %s", 
+                     compressor->name);
+            compression_ctx = compressor->create_context(0);  /* dict_size ignored for streaming */
+            if (compression_ctx == NULL) {
+                /* Context creation failed - this is a fatal error (Requirement 8.2)
+                 * For streaming decompression, context creation failure is fatal
+                 * because we cannot decompress chunks without the context */
+                serverLog(LL_WARNING, "Failed to create decompression context for algorithm %s. "
+                         "This indicates memory allocation failure. "
+                         "Cannot load RDB file without decompression context. "
+                         "Halting load operation.",
+                         compressor->name);
+                return RDB_FAILED;
+            }
+            
+            serverLog(LL_NOTICE, "RDB: Successfully created streaming decompression context");
+        }
+        /* else: Algorithm doesn't need context (e.g., plain LZF) */
+        
+        /* Create chunk buffer with detected algorithm (Requirement 8.3, 8.5) */
+        rdbChunkBuffer *chunk_buf = rdbChunkBufferCreateForRead(rdb, detected_algorithm);
+        if (chunk_buf == NULL) {
+            /* Chunk buffer creation failed - this is a fatal error (Requirement 8.2)
+             * Cannot proceed without a chunk buffer for decompression */
+            serverLog(LL_WARNING, "Failed to create chunk buffer for algorithm %s. "
+                     "This indicates memory allocation failure. "
+                     "Cannot load RDB file without chunk buffer. "
+                     "Halting load operation.",
+                     compressor->name);
+            /* Free compression context if it was created (Requirement 8.5) */
+            if (compression_ctx != NULL && compressor->free_context != NULL) {
+                compressor->free_context(compression_ctx);
+                serverLog(LL_DEBUG, "Freed compression context after chunk buffer creation failure");
+            }
+            return RDB_FAILED;
+        }
+        
+        /* Set the compression context in the chunk buffer
+         * For streaming decompression, this context will be used by all chunk decompressions
+         * Chunks MUST be decompressed sequentially to maintain streaming state (Requirement 2.4) */
+        rdbChunkBufferSetCompressionContext(chunk_buf, compression_ctx);
+        
+        /* Initialize chunk rio with the created buffer */
+        chunk_rio = rioChunkIO;
+        chunk_rio.io.chunk.underlying_rio = rdb;
+        chunk_rio.io.chunk.pos = 0;
+        chunk_rio.io.chunk.chunk_buf = chunk_buf;
+        
         rdb->update_cksum = rdbLoadProgressOnlyCallback;
         actual_rdb = &chunk_rio;
         actual_rdb->cksum = rdb->cksum;

@@ -175,6 +175,11 @@ configEnum rdb_version_check_enum[] = {{"strict", RDB_VERSION_CHECK_STRICT},
                                        {"relaxed", RDB_VERSION_CHECK_RELAXED},
                                        {NULL, 0}};
 
+configEnum rdb_compression_algorithm_enum[] = {
+    {"lzf", RDB_COMPRESSION_LZF},
+    {"lz4-stream", RDB_COMPRESSION_LZ4_STREAM},
+    {NULL, 0}};
+
 /* Output buffer limits presets. */
 clientBufferLimitsConfig clientBufferLimitsDefaults[CLIENT_TYPE_OBUF_COUNT] = {
     {0, 0, 0},                                 /* normal */
@@ -2472,6 +2477,17 @@ static int isValidRdbChunkSize(long long val, const char **err) {
     return 1;
 }
 
+/* Validate compression configuration consistency */
+int validateCompressionConfig(const char **err) {
+    /* Validate chunk_size is within INT_MAX for compression API compatibility */
+    if (server.rdb_chunk_size > INT_MAX) {
+        *err = "rdb-chunk-size must not exceed INT_MAX for compression API compatibility";
+        return 0;
+    }
+    
+    return 1;
+}
+
 /* Validate specified string is a valid proc-title-template */
 static int isValidProcTitleTemplate(char *val, const char **err) {
     if (!validateProcTitleTemplate(val)) {
@@ -3318,6 +3334,7 @@ standardConfig static_configs[] = {
     createEnumConfig("log-format", NULL, MODIFIABLE_CONFIG, log_format_enum, server.log_format, LOG_FORMAT_LEGACY, NULL, NULL),
     createEnumConfig("log-timestamp-format", NULL, MODIFIABLE_CONFIG, log_timestamp_format_enum, server.log_timestamp_format, LOG_TIMESTAMP_LEGACY, NULL, NULL),
     createEnumConfig("rdb-version-check", NULL, MODIFIABLE_CONFIG, rdb_version_check_enum, server.rdb_version_check, RDB_VERSION_CHECK_STRICT, NULL, NULL),
+    createEnumConfig("rdb-compression-algorithm", NULL, MODIFIABLE_CONFIG, rdb_compression_algorithm_enum, server.rdb_compression_algorithm, RDB_COMPRESSION_LZF, NULL, NULL),
 
     /* Integer configs */
     createIntConfig("databases", NULL, IMMUTABLE_CONFIG, 1, INT_MAX, server.config_databases, 16, INTEGER_CONFIG, NULL, NULL),

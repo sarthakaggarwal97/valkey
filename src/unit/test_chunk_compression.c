@@ -11,8 +11,9 @@
 #include "../lzf.h"
 
 /* External functions from rdb.c that we need to test */
-extern struct rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size);
-extern struct rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb);
+extern struct rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size, 
+                                                    rdbCompressionAlgorithm algorithm, size_t dict_size);
+extern struct rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb, rdbCompressionAlgorithm algorithm);
 extern void rdbChunkBufferFree(struct rdbChunkBuffer *buf);
 extern void rdbChunkBufferFreeForRead(struct rdbChunkBuffer *buf);
 extern ssize_t rdbChunkBufferWrite(struct rdbChunkBuffer *buf, void *data, size_t len);
@@ -32,7 +33,7 @@ int test_compressHighlyCompressibleData(int argc, char **argv, int flags) {
 
     /* Create chunk buffer with 8KB size */
     size_t chunk_size = 8192;
-    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size);
+    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
 
     /* Write highly compressible data (repeated 'A's) */
@@ -70,7 +71,7 @@ int test_compressIncompressibleData(int argc, char **argv, int flags) {
 
     /* Create chunk buffer with 4KB size */
     size_t chunk_size = 4096;
-    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size);
+    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
 
     /* Write incompressible data (pseudo-random pattern) */
@@ -110,7 +111,7 @@ int test_compressionRatioVariousPatterns(int argc, char **argv, int flags) {
         sds buf = sdsempty();
         rioInitWithBuffer(&r, buf);
         
-        struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size);
+        struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size, RDB_COMPRESSION_LZF, 0);
         TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
         
         char *data = zmalloc(chunk_size);
@@ -133,7 +134,7 @@ int test_compressionRatioVariousPatterns(int argc, char **argv, int flags) {
         sds buf = sdsempty();
         rioInitWithBuffer(&r, buf);
         
-        struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size);
+        struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size, RDB_COMPRESSION_LZF, 0);
         TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
         
         char *data = zmalloc(chunk_size);
@@ -170,7 +171,7 @@ int test_decompressValidChunks(int argc, char **argv, int flags) {
     sds write_buf = sdsempty();
     rioInitWithBuffer(&write_rio, write_buf);
     
-    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size);
+    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Write chunk buffer creation should succeed", write_chunk_buf != NULL);
     
     /* Write test data */
@@ -187,7 +188,7 @@ int test_decompressValidChunks(int argc, char **argv, int flags) {
     rio read_rio;
     rioInitWithBuffer(&read_rio, write_rio.io.buffer.ptr);
     
-    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio);
+    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio, RDB_COMPRESSION_LZF);
     TEST_ASSERT_MESSAGE("Read chunk buffer creation should succeed", read_chunk_buf != NULL);
     
     /* Read decompressed data */
@@ -221,7 +222,7 @@ int test_decompressMultipleChunks(int argc, char **argv, int flags) {
     sds write_buf = sdsempty();
     rioInitWithBuffer(&write_rio, write_buf);
     
-    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size);
+    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Write chunk buffer creation should succeed", write_chunk_buf != NULL);
     
     /* Write test data that spans multiple chunks */
@@ -238,7 +239,7 @@ int test_decompressMultipleChunks(int argc, char **argv, int flags) {
     rio read_rio;
     rioInitWithBuffer(&read_rio, write_rio.io.buffer.ptr);
     
-    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio);
+    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio, RDB_COMPRESSION_LZF);
     TEST_ASSERT_MESSAGE("Read chunk buffer creation should succeed", read_chunk_buf != NULL);
     
     /* Read all decompressed data */
@@ -271,7 +272,7 @@ int test_uncompressedChunkHandling(int argc, char **argv, int flags) {
     sds write_buf = sdsempty();
     rioInitWithBuffer(&write_rio, write_buf);
     
-    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size);
+    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Write chunk buffer creation should succeed", write_chunk_buf != NULL);
     
     /* Write incompressible data */
@@ -288,7 +289,7 @@ int test_uncompressedChunkHandling(int argc, char **argv, int flags) {
     rio read_rio;
     rioInitWithBuffer(&read_rio, write_rio.io.buffer.ptr);
     
-    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio);
+    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio, RDB_COMPRESSION_LZF);
     TEST_ASSERT_MESSAGE("Read chunk buffer creation should succeed", read_chunk_buf != NULL);
     
     char *decompressed_data = zmalloc(chunk_size);
@@ -321,7 +322,7 @@ int test_compressionMixedData(int argc, char **argv, int flags) {
     sds write_buf = sdsempty();
     rioInitWithBuffer(&write_rio, write_buf);
     
-    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size);
+    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Write chunk buffer creation should succeed", write_chunk_buf != NULL);
     
     char *original_data = zmalloc(total_size);
@@ -340,7 +341,7 @@ int test_compressionMixedData(int argc, char **argv, int flags) {
     rio read_rio;
     rioInitWithBuffer(&read_rio, write_rio.io.buffer.ptr);
     
-    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio);
+    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio, RDB_COMPRESSION_LZF);
     TEST_ASSERT_MESSAGE("Read chunk buffer creation should succeed", read_chunk_buf != NULL);
     
     char *decompressed_data = zmalloc(total_size);
@@ -383,7 +384,7 @@ int test_roundTripCompressionVariousSizes(int argc, char **argv, int flags) {
         sds write_buf = sdsempty();
         rioInitWithBuffer(&write_rio, write_buf);
         
-        struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size);
+        struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size, RDB_COMPRESSION_LZF, 0);
         TEST_ASSERT_MESSAGE("Write chunk buffer creation should succeed", write_chunk_buf != NULL);
         
         rdbChunkBufferWrite(write_chunk_buf, original_data, data_size);
@@ -394,7 +395,7 @@ int test_roundTripCompressionVariousSizes(int argc, char **argv, int flags) {
         rio read_rio;
         rioInitWithBuffer(&read_rio, write_rio.io.buffer.ptr);
         
-        struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio);
+        struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio, RDB_COMPRESSION_LZF);
         TEST_ASSERT_MESSAGE("Read chunk buffer creation should succeed", read_chunk_buf != NULL);
         
         char *decompressed_data = zmalloc(data_size);
@@ -428,7 +429,7 @@ int test_compressionEmptyData(int argc, char **argv, int flags) {
 
     /* Create chunk buffer */
     size_t chunk_size = 4096;
-    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size);
+    struct rdbChunkBuffer *chunk_buf = rdbChunkBufferCreate(&r, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Chunk buffer creation should succeed", chunk_buf != NULL);
 
     /* Flush without writing any data */
@@ -458,7 +459,7 @@ int test_verifyCompressionActuallyOccurs(int argc, char **argv, int flags) {
     sds write_buf = sdsempty();
     rioInitWithBuffer(&write_rio, write_buf);
     
-    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size);
+    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Write chunk buffer creation should succeed", write_chunk_buf != NULL);
     
     char *original_data = zmalloc(chunk_size);
@@ -477,7 +478,7 @@ int test_verifyCompressionActuallyOccurs(int argc, char **argv, int flags) {
     rio read_rio;
     rioInitWithBuffer(&read_rio, write_rio.io.buffer.ptr);
     
-    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio);
+    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio, RDB_COMPRESSION_LZF);
     TEST_ASSERT_MESSAGE("Read chunk buffer creation should succeed", read_chunk_buf != NULL);
     
     char *decompressed_data = zmalloc(chunk_size);
@@ -511,7 +512,7 @@ int test_partialReads(int argc, char **argv, int flags) {
     sds write_buf = sdsempty();
     rioInitWithBuffer(&write_rio, write_buf);
     
-    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size);
+    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Write chunk buffer creation should succeed", write_chunk_buf != NULL);
     
     char *original_data = zmalloc(total_data_size);
@@ -527,7 +528,7 @@ int test_partialReads(int argc, char **argv, int flags) {
     rio read_rio;
     rioInitWithBuffer(&read_rio, write_rio.io.buffer.ptr);
     
-    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio);
+    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio, RDB_COMPRESSION_LZF);
     TEST_ASSERT_MESSAGE("Read chunk buffer creation should succeed", read_chunk_buf != NULL);
     
     char *decompressed_data = zmalloc(total_data_size);
@@ -571,7 +572,7 @@ int test_differentDataProducesDifferentOutput(int argc, char **argv, int flags) 
     sds write_buf1 = sdsempty();
     rioInitWithBuffer(&write_rio1, write_buf1);
     
-    struct rdbChunkBuffer *write_chunk_buf1 = rdbChunkBufferCreate(&write_rio1, chunk_size);
+    struct rdbChunkBuffer *write_chunk_buf1 = rdbChunkBufferCreate(&write_rio1, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Write chunk buffer 1 creation should succeed", write_chunk_buf1 != NULL);
     
     char *data1 = zmalloc(chunk_size);
@@ -586,7 +587,7 @@ int test_differentDataProducesDifferentOutput(int argc, char **argv, int flags) 
     sds write_buf2 = sdsempty();
     rioInitWithBuffer(&write_rio2, write_buf2);
     
-    struct rdbChunkBuffer *write_chunk_buf2 = rdbChunkBufferCreate(&write_rio2, chunk_size);
+    struct rdbChunkBuffer *write_chunk_buf2 = rdbChunkBufferCreate(&write_rio2, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Write chunk buffer 2 creation should succeed", write_chunk_buf2 != NULL);
     
     char *data2 = zmalloc(chunk_size);
@@ -627,7 +628,7 @@ int test_compressionPreservesExactBytes(int argc, char **argv, int flags) {
     sds write_buf = sdsempty();
     rioInitWithBuffer(&write_rio, write_buf);
     
-    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size);
+    struct rdbChunkBuffer *write_chunk_buf = rdbChunkBufferCreate(&write_rio, chunk_size, RDB_COMPRESSION_LZF, 0);
     TEST_ASSERT_MESSAGE("Write chunk buffer creation should succeed", write_chunk_buf != NULL);
     
     char *original_data = zmalloc(chunk_size);
@@ -643,7 +644,7 @@ int test_compressionPreservesExactBytes(int argc, char **argv, int flags) {
     rio read_rio;
     rioInitWithBuffer(&read_rio, write_rio.io.buffer.ptr);
     
-    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio);
+    struct rdbChunkBuffer *read_chunk_buf = rdbChunkBufferCreateForRead(&read_rio, RDB_COMPRESSION_LZF);
     TEST_ASSERT_MESSAGE("Read chunk buffer creation should succeed", read_chunk_buf != NULL);
     
     char *decompressed_data = zmalloc(chunk_size);

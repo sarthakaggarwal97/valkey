@@ -929,6 +929,67 @@ need_full_resync:
     return C_ERR;
 }
 
+/* Select RDB compression algorithm based on replica capabilities.
+ * 
+ * This implements a two-level capability negotiation:
+ * 1. Format capability: Does replica understand the new header format?
+ * 2. Algorithm capability: Does replica support specific algorithms?
+ * 
+ * Master behavior:
+ * - If replica does NOT announce rdb-cmpr-meta-v1: use old RDB format (no algorithm byte)
+ *   This means we must use LZF and NOT write the algorithm byte.
+ * - If replica announces rdb-cmpr-meta-v1: use new format (with algorithm byte)
+ *   - If replica announces rdb-lz4 AND master configured for LZ4: use LZ4
+ *   - Otherwise: use LZF (algorithm=0)
+ * 
+ * Returns the selected algorithm and sets use_new_format flag.
+ */
+rdbCompressionAlgorithm selectReplicationCompressionAlgorithm(int mincapa, int *use_new_format) {
+    rdbCompressionAlgorithm selected_algo;
+    
+    /* Check if all replicas support the new RDB header format with algorithm byte */
+    if (!(mincapa & REPLICA_CAPA_RDB_CMPR_META_V1)) {
+        /* Old replicas don't understand algorithm byte - use old format with LZF */
+        *use_new_format = 0;
+        selected_algo = RDB_COMPRESSION_LZF;
+        serverLog(LL_NOTICE, 
+                  "RDB replication: Using old format (no algorithm byte) with LZF compression "
+                  "for backward compatibility with replicas that don't support rdb-cmpr-meta-v1");
+        return selected_algo;
+    }
+    
+    /* All replicas support new format - use it */
+    *use_new_format = 1;
+    
+    /* Check if we can use LZ4-stream:
+     * - Master must be configured for LZ4-stream
+     * - All replicas must support LZ4 capability */
+    if (server.rdb_compression_algorithm == RDB_COMPRESSION_LZ4_STREAM &&
+        (mincapa & REPLICA_CAPA_RDB_LZ4)) {
+        selected_algo = RDB_COMPRESSION_LZ4_STREAM;
+        serverLog(LL_NOTICE,
+                  "RDB replication: Using new format with LZ4-stream compression "
+                  "- all replicas support it");
+    } else {
+        /* Fall back to LZF if:
+         * - Master is configured for LZF, OR
+         * - Master is configured for LZ4-stream but not all replicas support it */
+        selected_algo = RDB_COMPRESSION_LZF;
+        
+        if (server.rdb_compression_algorithm == RDB_COMPRESSION_LZ4_STREAM) {
+            serverLog(LL_NOTICE,
+                      "RDB replication: Using new format with LZF compression "
+                      "(fallback from LZ4-stream) - not all replicas support rdb-lz4");
+        } else {
+            serverLog(LL_NOTICE,
+                      "RDB replication: Using new format with LZF compression "
+                      "(master configured for LZF)");
+        }
+    }
+    
+    return selected_algo;
+}
+
 /* Start a BGSAVE for replication goals, which is, selecting the disk or
  * socket target depending on the configuration, and making sure that
  * the script cache is flushed before to start.
@@ -966,6 +1027,14 @@ int startBgsaveForReplication(int mincapa, int req) {
 
     rdbSaveInfo rsi, *rsiptr;
     rsiptr = rdbPopulateSaveInfo(&rsi);
+    
+    /* Select compression algorithm based on replica capabilities */
+    if (rsiptr) {
+        int use_new_format = 0;
+        rdbCompressionAlgorithm selected_algo = selectReplicationCompressionAlgorithm(mincapa, &use_new_format);
+        rsiptr->repl_use_new_format = use_new_format;
+        rsiptr->repl_compression_algorithm = selected_algo;
+    }
     /* Only do rdbSave* when rsiptr is not NULL,
      * otherwise replica will miss repl-stream-db. */
     if (rsiptr) {
@@ -1393,6 +1462,10 @@ void replconfCommand(client *c) {
                 c->repl_data->replica_capa |= REPLICA_CAPA_DUAL_CHANNEL;
             } else if (!strcasecmp(c->argv[j + 1]->ptr, REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR))
                 c->repl_data->replica_capa |= REPLICA_CAPA_SKIP_RDB_CHECKSUM;
+            else if (!strcasecmp(c->argv[j + 1]->ptr, REPLICA_CAPA_RDB_CMPR_META_V1_STR))
+                c->repl_data->replica_capa |= REPLICA_CAPA_RDB_CMPR_META_V1;
+            else if (!strcasecmp(c->argv[j + 1]->ptr, REPLICA_CAPA_RDB_LZ4_STR))
+                c->repl_data->replica_capa |= REPLICA_CAPA_RDB_LZ4;
         } else if (!strcasecmp(c->argv[j]->ptr, "ack")) {
             /* REPLCONF ACK is used by replica to inform the primary the amount
              * of replication stream that it processed so far. It is an
@@ -3744,8 +3817,8 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
 
     // we can ignore primary's conditions when sending capa (is_primary_stream_verified=1)
     int send_skip_rdb_checksum_capa = replicationSupportSkipRDBChecksum(conn, useDisklessLoad(), 1);
-    char *argv[9] = {"REPLCONF", "capa", "eof", "capa", "psync2", NULL, NULL, NULL, NULL};
-    size_t lens[9] = {8, 4, 3, 4, 6, 0, 0, 0, 0};
+    char *argv[13] = {"REPLCONF", "capa", "eof", "capa", "psync2", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+    size_t lens[13] = {8, 4, 3, 4, 6, 0, 0, 0, 0, 0, 0, 0, 0};
     int argc = 5;
     if (send_skip_rdb_checksum_capa) {
         argv[argc] = "capa";
@@ -3763,6 +3836,20 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
         lens[argc] = strlen("dual-channel");
         argc++;
     }
+    /* Announce support for new RDB compression metadata format */
+    argv[argc] = "capa";
+    lens[argc] = strlen("capa");
+    argc++;
+    argv[argc] = REPLICA_CAPA_RDB_CMPR_META_V1_STR;
+    lens[argc] = strlen(REPLICA_CAPA_RDB_CMPR_META_V1_STR);
+    argc++;
+    /* Announce support for LZ4 compression */
+    argv[argc] = "capa";
+    lens[argc] = strlen("capa");
+    argc++;
+    argv[argc] = REPLICA_CAPA_RDB_LZ4_STR;
+    lens[argc] = strlen(REPLICA_CAPA_RDB_LZ4_STR);
+    argc++;
     err = sendCommandArgv(conn, argc, argv, lens);
     if (err) goto err;
 

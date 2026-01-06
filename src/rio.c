@@ -647,8 +647,9 @@ void rioFreeConnset(rio *r) {
 /* ------------------- Chunk compression wrapper implementation -------------- */
 
 /* Forward declarations for rdbChunkBuffer functions from rdb.c */
-struct rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size);
-struct rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb);
+struct rdbChunkBuffer *rdbChunkBufferCreate(rio *rdb, size_t chunk_size, 
+                                            rdbCompressionAlgorithm algorithm, size_t dict_size);
+struct rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb, rdbCompressionAlgorithm algorithm);
 int rdbChunkBufferIsWriteBuffer(struct rdbChunkBuffer *buf);
 void rdbChunkBufferFree(struct rdbChunkBuffer *buf);
 void rdbChunkBufferFreeForRead(struct rdbChunkBuffer *buf);
@@ -689,7 +690,7 @@ static int rioChunkFlush(rio *r) {
     return rdbChunkBufferFlush(r->io.chunk.chunk_buf) == 0 ? 1 : 0;
 }
 
-static const rio rioChunkIO = {
+const rio rioChunkIO = {
     rioChunkRead,
     rioChunkWrite,
     rioChunkTell,
@@ -704,18 +705,23 @@ static const rio rioChunkIO = {
 
 /* Initialize a rio with chunk compression wrapping an underlying rio.
  * For writing (compression), chunk_size should be the desired chunk size.
- * For reading (decompression), chunk_size should be 0. */
+ * For reading (decompression), chunk_size should be 0. 
+ * 
+ * Note: This function uses LZF compression by default for backward compatibility.
+ * For other algorithms, the caller should create the chunk buffer directly.
+ */
 void rioInitWithChunkCompression(rio *r, rio *underlying, size_t chunk_size) {
     *r = rioChunkIO;
     r->io.chunk.underlying_rio = underlying;
     r->io.chunk.pos = 0;
     
     if (chunk_size > 0) {
-        /* Initialize for writing (compression) */
-        r->io.chunk.chunk_buf = rdbChunkBufferCreate(underlying, chunk_size);
+        /* Initialize for writing (compression) with LZF (default) */
+        r->io.chunk.chunk_buf = rdbChunkBufferCreate(underlying, chunk_size, 
+                                                      RDB_COMPRESSION_LZF, 0);
     } else {
-        /* Initialize for reading (decompression) */
-        r->io.chunk.chunk_buf = rdbChunkBufferCreateForRead(underlying);
+        /* Initialize for reading (decompression) with LZF (default) */
+        r->io.chunk.chunk_buf = rdbChunkBufferCreateForRead(underlying, RDB_COMPRESSION_LZF);
     }
 }
 

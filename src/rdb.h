@@ -178,6 +178,64 @@ enum RdbType {
 #define RDB_LOAD_ERR_UNKNOWN_TYPE 2 /* Unknown type in file */
 #define RDB_LOAD_ERR_OTHER 3        /* Any other errors */
 
+/* ------------------- Compression Algorithm Interface ------------------- */
+
+/* Compression algorithm identifiers */
+typedef enum {
+    RDB_COMPRESSION_LZF = 0,         /* Legacy LZF compression */
+    RDB_COMPRESSION_LZ4_STREAM = 1,  /* LZ4 with streaming compression/decompression */
+    /* 2-255 reserved for future algorithms */
+} rdbCompressionAlgorithm;
+
+/* Forward declaration of rdbCompressor */
+typedef struct rdbCompressor rdbCompressor;
+
+/* Compression algorithm interface */
+struct rdbCompressor {
+    /* Algorithm identifier */
+    rdbCompressionAlgorithm algorithm;
+    
+    /* Algorithm name for logging */
+    const char *name;
+    
+    /* Compress data into output buffer
+     * Returns compressed size on success, 0 if incompressible/error */
+    ssize_t (*compress)(void *ctx, const unsigned char *input, size_t input_size,
+                       unsigned char *output, size_t output_capacity);
+    
+    /* Decompress data into output buffer
+     * Returns exactly output_capacity on success, -1 on error
+     * This normalized contract ensures decompressed size matches expected size */
+    ssize_t (*decompress)(void *ctx, const unsigned char *input, size_t input_size,
+                         unsigned char *output, size_t output_capacity);
+    
+    /* Calculate maximum compressed size for given input size */
+    size_t (*max_compressed_size)(size_t input_size);
+    
+    /* Create compression context (optional, can be NULL) */
+    void *(*create_context)(size_t dict_size);
+    
+    /* Free compression context (optional, can be NULL) */
+    void (*free_context)(void *ctx);
+    
+    /* Serialize context to RDB file (for dictionary, optional) */
+    int (*serialize_context)(void *ctx, rio *rdb);
+    
+    /* Deserialize context from RDB file (for dictionary, optional) */
+    void *(*deserialize_context)(rio *rdb);
+};
+
+/* Compression algorithm registry functions */
+void rdbInitCompressionAlgorithms(void);
+void rdbRegisterCompressor(rdbCompressionAlgorithm algo, rdbCompressor *compressor);
+rdbCompressor *rdbGetCompressor(rdbCompressionAlgorithm algo);
+
+/* Chunk buffer functions */
+struct rdbChunkBuffer *rdbChunkBufferCreateForRead(rio *rdb, rdbCompressionAlgorithm algorithm);
+void rdbChunkBufferSetCompressionContext(struct rdbChunkBuffer *buf, void *ctx);
+
+/* ------------------- End Compression Algorithm Interface ------------------- */
+
 bool rdbIsVersionAccepted(int rdbver, bool is_valkey_magic, bool is_redis_magic);
 ssize_t rdbWriteRaw(rio *rdb, void *p, size_t len);
 int rdbSaveType(rio *rdb, unsigned char type);

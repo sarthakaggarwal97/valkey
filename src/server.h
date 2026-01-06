@@ -475,9 +475,13 @@ typedef enum {
 #define REPLICA_CAPA_PSYNC2 (1 << 1)            /* Supports PSYNC2 protocol. */
 #define REPLICA_CAPA_DUAL_CHANNEL (1 << 2)      /* Supports dual channel replication sync */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM (1 << 3) /* Supports skipping RDB checksum for sync requests. */
+#define REPLICA_CAPA_RDB_CMPR_META_V1 (1 << 4)  /* Understands new RDB header format with algorithm byte. */
+#define REPLICA_CAPA_RDB_LZ4 (1 << 5)           /* Supports LZ4 compression. */
 
 /* Replica capability strings */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR "skip-rdb-checksum" /* Supports skipping RDB checksum for sync requests. */
+#define REPLICA_CAPA_RDB_CMPR_META_V1_STR "rdb-cmpr-meta-v1"   /* Understands new RDB header format with algorithm byte. */
+#define REPLICA_CAPA_RDB_LZ4_STR "rdb-lz4"                     /* Supports LZ4 compression. */
 
 /* Replica requirements */
 #define REPLICA_REQ_NONE 0
@@ -1544,9 +1548,13 @@ typedef struct rdbSaveInfo {
     int repl_id_is_set;                   /* True if repl_id field is set. */
     char repl_id[CONFIG_RUN_ID_SIZE + 1]; /* Replication ID. */
     long long repl_offset;                /* Replication offset. */
+    
+    /* Replication compression algorithm selection (used only for replication) */
+    int repl_use_new_format;              /* Use new RDB format with algorithm byte */
+    int repl_compression_algorithm;       /* Selected compression algorithm for replication */
 } rdbSaveInfo;
 
-#define RDB_SAVE_INFO_INIT {-1, 0, "0000000000000000000000000000000000000000", -1}
+#define RDB_SAVE_INFO_INIT {-1, 0, "0000000000000000000000000000000000000000", -1, 0, -1}
 
 struct malloc_stats {
     size_t zmalloc_used;
@@ -1969,6 +1977,7 @@ struct valkeyServer {
     int rdb_compression;                  /* Use compression in RDB? */
     int rdb_chunk_compression;            /* Use chunk-based compression in RDB? */
     size_t rdb_chunk_size;                /* Chunk size for chunk-based compression */
+    int rdb_compression_algorithm;        /* Compression algorithm for RDB chunks (rdbCompressionAlgorithm) */
     uint64_t rdb_last_save_chunks;        /* Number of chunks in last save */
     uint64_t rdb_last_save_compressed_bytes;   /* Compressed bytes in last save */
     uint64_t rdb_last_save_uncompressed_bytes; /* Uncompressed bytes in last save */
@@ -3531,6 +3540,7 @@ typedef enum {
 } configType;
 
 void loadServerConfig(char *filename, char config_from_stdin, char *options);
+int validateCompressionConfig(const char **err);
 void appendServerSaveParams(time_t seconds, int changes);
 void resetServerSaveParams(void);
 struct rewriteConfigState; /* Forward declaration to export API. */
