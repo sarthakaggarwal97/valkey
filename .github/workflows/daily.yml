@@ -816,13 +816,13 @@ jobs:
           sudo apt-get install tcl8.6 tclx -y
       - name: unittest
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
-        run: ./src/valkey-unit-tests --large-memory --clients 5
+        run: ./src/valkey-unit-tests --large-memory --clients 1
       - name: large memory tests
         if: true && !contains(github.event.inputs.skiptests, 'valkey')
-        run: ./runtest --accurate --verbose --dump-logs --clients 5 --large-memory --tags large-memory ${{github.event.inputs.test_args}}
+        run: ./runtest --accurate --verbose --dump-logs --clients 1 --large-memory --tags large-memory ${{github.event.inputs.test_args}}
       - name: large memory module api tests
         if: true && !contains(github.event.inputs.skiptests, 'modules')
-        run: CFLAGS='-Werror' ./runtest-moduleapi --verbose --dump-logs --clients 5 --large-memory --tags large-memory ${{github.event.inputs.test_args}}
+        run: CFLAGS='-Werror' ./runtest-moduleapi --verbose --dump-logs --clients 1 --large-memory --tags large-memory ${{github.event.inputs.test_args}}
   test-sanitizer-undefined:
     runs-on: ubuntu-latest
     if: |
@@ -909,13 +909,13 @@ jobs:
           sudo apt-get install tcl8.6 tclx -y
       - name: unittest
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
-        run: ./src/valkey-unit-tests --accurate --large-memory --clients 5
+        run: ./src/valkey-unit-tests --accurate --large-memory --clients 1
       - name: large memory tests
         if: true && !contains(github.event.inputs.skiptests, 'valkey')
-        run: ./runtest --accurate --verbose --dump-logs --clients 5 --large-memory --tags large-memory ${{github.event.inputs.test_args}}
+        run: ./runtest --accurate --verbose --dump-logs --clients 1 --large-memory --tags large-memory ${{github.event.inputs.test_args}}
       - name: large memory module api tests
         if: true && !contains(github.event.inputs.skiptests, 'modules')
-        run: CFLAGS='-Werror' ./runtest-moduleapi --verbose --dump-logs --clients 5 --large-memory --tags large-memory ${{github.event.inputs.test_args}}
+        run: CFLAGS='-Werror' ./runtest-moduleapi --verbose --dump-logs --clients 1 --large-memory --tags large-memory ${{github.event.inputs.test_args}}
   test-sanitizer-force-defrag:
     runs-on: ubuntu-latest
     if: |
