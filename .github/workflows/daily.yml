@@ -816,7 +816,7 @@ jobs:
           sudo apt-get install tcl8.6 tclx -y
       - name: unittest
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
-        run: ./src/valkey-unit-tests --large-memory
+        run: ./src/valkey-unit-tests --large-memory --clients 5
       - name: large memory tests
         if: true && !contains(github.event.inputs.skiptests, 'valkey')
         run: ./runtest --accurate --verbose --dump-logs --clients 5 --large-memory --tags large-memory ${{github.event.inputs.test_args}}
@@ -909,7 +909,7 @@ jobs:
           sudo apt-get install tcl8.6 tclx -y
       - name: unittest
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
-        run: ./src/valkey-unit-tests --accurate --large-memory
+        run: ./src/valkey-unit-tests --accurate --large-memory --clients 5
       - name: large memory tests
         if: true && !contains(github.event.inputs.skiptests, 'valkey')
         run: ./runtest --accurate --verbose --dump-logs --clients 5 --large-memory --tags large-memory ${{github.event.inputs.test_args}}
