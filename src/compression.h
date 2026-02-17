@@ -42,6 +42,12 @@ typedef struct {
         void *zstd; /* ZSTD_CCtx* */
     } ctx;
     int frame_started;
+    int stable_src; /* LZ4F optimization: set to 1 only when the caller
+                     * guarantees the input buffer remains valid and
+                     * unmodified until the next streamCompressFeed call.
+                     * Default 0 (safe). The async replication path sets
+                     * this to 1 because the accumulator sds is swapped
+                     * out before submission, giving exclusive ownership. */
 } stream_compressor_t;
 
 /* --- Streaming decompressor context --- */

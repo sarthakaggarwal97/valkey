@@ -249,10 +249,12 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
 
         /* Compress input data */
         if (input_len > 0) {
-            /* PERF: stableSrc=1 — input buffer is exclusively owned by the
-             * work item (accumulator sds was swapped out before submission),
-             * so LZ4F can skip its internal memcpy. */
-            LZ4F_compressOptions_t opts = {.stableSrc = 1};
+            /* stableSrc is caller-controlled. The async replication path
+             * sets sc->stable_src=1 because the accumulator sds is swapped
+             * out before submission (exclusive ownership). The sync RDB
+             * path leaves it at 0 (default) since callers may reuse the
+             * input buffer between writes. */
+            LZ4F_compressOptions_t opts = {.stableSrc = (unsigned)sc->stable_src};
             size_t r = LZ4F_compressUpdate((LZ4F_cctx *)sc->ctx.lz4f,
                                            output + offset,
                                            output_capacity - offset,
