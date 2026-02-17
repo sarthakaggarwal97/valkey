@@ -43,6 +43,7 @@ distclean:
 	-(cd hdr_histogram && $(MAKE) clean) > /dev/null || true
 	-(cd fpconv && $(MAKE) clean) > /dev/null || true
 	-(cd fast_float_c_interface && $(MAKE) clean) > /dev/null || true
+	-(cd lz4 && $(MAKE) clean) > /dev/null || true
 	-(rm -f .make-*)
 
 .PHONY: distclean
@@ -128,3 +129,9 @@ fast_float_c_interface: .make-prerequisites
 	cd fast_float_c_interface && $(MAKE)
 
 .PHONY: fast_float_c_interface
+
+lz4: .make-prerequisites
+	@printf '%b %b\n' $(MAKECOLOR)MAKE$(ENDCOLOR) $(BINCOLOR)$@$(ENDCOLOR)
+	cd lz4 && $(MAKE) CFLAGS="$(CFLAGS)"
+
+.PHONY: lz4
