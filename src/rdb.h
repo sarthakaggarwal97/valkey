@@ -31,6 +31,7 @@
 #define __RDB_H
 
 #include <stdio.h>
+#include <string.h>
 #include "rio.h"
 
 /* TBD: include only necessary headers. */

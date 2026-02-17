@@ -29,6 +29,7 @@ int writeVkcsEnvelope(vkcsEmitFn emit_cb,
                       compression_algo_t algo,
                       uint8_t stream_kind) {
     /* Only streaming algorithms are valid in the envelope. */
+    if (!emit_cb) return -1;
     if (algo != ALGO_LZ4 && algo != ALGO_ZSTD) return -1;
     if (stream_kind != STREAM_KIND_RDB && stream_kind != STREAM_KIND_REPL) return -1;
 
