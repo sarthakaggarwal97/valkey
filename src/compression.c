@@ -9,6 +9,8 @@
  * See .kiro/specs/compression-module/design-compact.md for full design. */
 
 #include "compression.h"
+#include "zmalloc.h"
+#include <limits.h>
 #include <lz4frame.h>
 #include <string.h>
 
@@ -102,7 +104,10 @@ int streamCompressorInit(stream_compressor_t *sc, compression_algo_t algo, int l
     case ALGO_LZ4: {
         LZ4F_cctx *cctx = NULL;
         LZ4F_errorCode_t err = LZ4F_createCompressionContext(&cctx, LZ4F_VERSION);
-        if (LZ4F_isError(err)) return -1;
+        if (LZ4F_isError(err)) {
+            memset(sc, 0, sizeof(*sc)); /* restore clean zero state */
+            return -1;
+        }
         sc->ctx.lz4f = cctx;
         return 0;
     }
@@ -133,7 +138,7 @@ void streamCompressorDestroy(stream_compressor_t *sc) {
         break;
     }
     sc->algo = ALGO_NONE;
-    sc->frame_started = 0;
+    sc->frame_started = false;
 }
 
 /* Initialize a streaming decompressor for the given algorithm.
@@ -149,7 +154,10 @@ int streamDecompressorInit(stream_decompressor_t *sd, compression_algo_t algo) {
     case ALGO_LZ4: {
         LZ4F_dctx *dctx = NULL;
         LZ4F_errorCode_t err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
-        if (LZ4F_isError(err)) return -1;
+        if (LZ4F_isError(err)) {
+            memset(sd, 0, sizeof(*sd)); /* restore clean zero state */
+            return -1;
+        }
         sd->ctx.lz4f = dctx;
         return 0;
     }
@@ -179,27 +187,47 @@ void streamDecompressorDestroy(stream_decompressor_t *sd) {
     default:
         break;
     }
+    if (sd->out_buf) {
+        zfree(sd->out_buf);
+        sd->out_buf = NULL;
+        sd->out_buf_capacity = 0;
+    }
     sd->algo = ALGO_NONE;
 }
+
+/* Shared LZ4F preferences — used by both streamCompressOutputBound() and
+ * streamCompressFeed() to ensure the bound calculation matches the actual
+ * compression parameters. Without this, LZ4F_compressBound(0, NULL) assumes
+ * the default 64KB block size while the compressor uses 1MB blocks, producing
+ * a bound up to 16x too small for flush/end operations. */
+static const LZ4F_preferences_t lz4f_prefs = {
+    .frameInfo = {
+        .contentChecksumFlag = LZ4F_noContentChecksum,
+        .blockChecksumFlag = LZ4F_noBlockChecksum,
+        .blockSizeID = LZ4F_max1MB,
+    },
+    .compressionLevel = 0, /* bound calculation uses 0 (worst-case); actual
+                            * compression uses sc->level via a local copy */
+};
 
 /* Return upper bound on compressed output size.
  * Accounts for frame header overhead when !frame_started and
  * flush/end overhead for internally buffered data.
- * For LZ4: LZ4F_compressBound already accounts for internal buffering.
+ * For LZ4: uses lz4f_prefs (1MB blocks) to match streamCompressFeed.
  * For ZSTD: deferred to task 22.3. */
-size_t streamCompressOutputBound(compression_algo_t algo, size_t input_len, int frame_started, int flush_mode) {
+size_t streamCompressOutputBound(compression_algo_t algo, size_t input_len, int frame_started, compress_flush_mode_t flush_mode) {
     switch (algo) {
     case ALGO_LZ4: {
-        size_t bound = LZ4F_compressBound(input_len, NULL);
+        size_t bound = LZ4F_compressBound(input_len, &lz4f_prefs);
         if (!frame_started) {
             bound += LZ4F_HEADER_SIZE_MAX;
         }
-        if (flush_mode == 1) {
+        if (flush_mode == FLUSH_SYNC) {
             /* LZ4F_flush may emit up to one full block of buffered data */
-            bound += LZ4F_compressBound(0, NULL);
-        } else if (flush_mode == 2) {
+            bound += LZ4F_compressBound(0, &lz4f_prefs);
+        } else if (flush_mode == FLUSH_END) {
             /* LZ4F_compressEnd: end mark (4 bytes), no content checksum in v1 */
-            bound += LZ4F_compressBound(0, NULL) + 4;
+            bound += LZ4F_compressBound(0, &lz4f_prefs) + 4;
         }
         return bound;
     }
@@ -222,37 +250,34 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
                            size_t output_capacity,
                            const uint8_t *input,
                            size_t input_len,
-                           int flush_mode) {
+                           compress_flush_mode_t flush_mode) {
     if (!sc || !output_ptr || !*output_ptr) return -1;
 
     switch (sc->algo) {
     case ALGO_LZ4: {
+        if (!sc->ctx.lz4f) return -1;
         uint8_t *output = *output_ptr;
         size_t offset = 0;
 
         /* Begin frame on first call */
         if (!sc->frame_started) {
-            LZ4F_preferences_t prefs = {
-                .frameInfo = {
-                    .contentChecksumFlag = LZ4F_noContentChecksum,
-                    .blockChecksumFlag = LZ4F_noBlockChecksum,
-                    .blockSizeID = LZ4F_max1MB,
-                },
-                .compressionLevel = sc->level,
-            };
+            /* Local copy of shared prefs so we can set the actual level */
+            LZ4F_preferences_t prefs = lz4f_prefs;
+            prefs.compressionLevel = sc->level;
             size_t r = LZ4F_compressBegin((LZ4F_cctx *)sc->ctx.lz4f,
                                           output, output_capacity, &prefs);
             if (LZ4F_isError(r)) return -1;
             offset = r;
-            sc->frame_started = 1;
+            sc->frame_started = true;
         }
 
         /* Compress input data */
         if (input_len > 0) {
+            if (offset > output_capacity) return -1;
             /* stableSrc is caller-controlled. The async replication path
-             * sets sc->stable_src=1 because the accumulator sds is swapped
+             * sets sc->stable_src=true because the accumulator sds is swapped
              * out before submission (exclusive ownership). The sync RDB
-             * path leaves it at 0 (default) since callers may reuse the
+             * path leaves it at false (default) since callers may reuse the
              * input buffer between writes. */
             LZ4F_compressOptions_t opts = {.stableSrc = (unsigned)sc->stable_src};
             size_t r = LZ4F_compressUpdate((LZ4F_cctx *)sc->ctx.lz4f,
@@ -264,21 +289,24 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
         }
 
         /* Handle flush/end modes */
-        if (flush_mode == 1) {
+        if (flush_mode == FLUSH_SYNC) {
+            if (offset > output_capacity) return -1;
             size_t r = LZ4F_flush((LZ4F_cctx *)sc->ctx.lz4f,
                                   output + offset,
                                   output_capacity - offset, NULL);
             if (LZ4F_isError(r)) return -1;
             offset += r;
-        } else if (flush_mode == 2) {
+        } else if (flush_mode == FLUSH_END) {
+            if (offset > output_capacity) return -1;
             size_t r = LZ4F_compressEnd((LZ4F_cctx *)sc->ctx.lz4f,
                                         output + offset,
                                         output_capacity - offset, NULL);
             if (LZ4F_isError(r)) return -1;
             offset += r;
-            sc->frame_started = 0;
+            sc->frame_started = false;
         }
 
+        if (offset > (size_t)SSIZE_MAX) return -1;
         return (ssize_t)offset;
     }
     case ALGO_ZSTD:
@@ -304,6 +332,7 @@ ssize_t streamDecompressFeed(stream_decompressor_t *sd,
 
     switch (sd->algo) {
     case ALGO_LZ4: {
+        if (!sd->ctx.lz4f) return -1;
         size_t dst_size = output_capacity;
         size_t src_size = input_len;
         size_t ret = LZ4F_decompress((LZ4F_dctx *)sd->ctx.lz4f,
@@ -311,6 +340,7 @@ ssize_t streamDecompressFeed(stream_decompressor_t *sd,
                                      input, &src_size, NULL);
         if (LZ4F_isError(ret)) return -1;
         *input_consumed = src_size;
+        if (dst_size > (size_t)SSIZE_MAX) return -1;
         return (ssize_t)dst_size;
     }
     case ALGO_ZSTD:
