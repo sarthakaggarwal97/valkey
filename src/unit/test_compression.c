@@ -472,7 +472,7 @@ int test_streamDecompressFeedErrors(int argc, char **argv, int flags) {
     return 0;
 }
 
-/* --- Test: compressor is permanently failed after error --- */
+/* --- Test: pre-frame errors are recoverable, mid-frame errors are permanent --- */
 int test_streamCompressFeedErrorRecovery(int argc, char **argv, int flags) {
     UNUSED(argc);
     UNUSED(argv);
@@ -481,23 +481,61 @@ int test_streamCompressFeedErrorRecovery(int argc, char **argv, int flags) {
     stream_compressor_t sc;
     TEST_ASSERT(streamCompressorInit(&sc, ALGO_LZ4, 0) == 0);
 
-    /* Force an error by providing a tiny output buffer */
+    /* Pre-frame error: compressBegin fails with tiny buffer, but no frame
+     * bytes have been emitted yet — this is recoverable. */
     uint8_t tiny[1];
     uint8_t *ptr = tiny;
     ssize_t ret = streamCompressFeed(&sc, &ptr, 1,
                                      (const uint8_t *)"test data", 9, FLUSH_END);
     TEST_ASSERT_MESSAGE("should fail with tiny buffer", ret == -1);
-    TEST_ASSERT_MESSAGE("errored flag should be set", sc.errored == true);
+    TEST_ASSERT_MESSAGE("errored should NOT be set (pre-frame failure)",
+                        sc.errored == false);
+    TEST_ASSERT_MESSAGE("frame_started should still be false",
+                        sc.frame_started == false);
 
-    /* Subsequent calls must fail immediately — no mid-stream retry */
-    size_t bound = streamCompressOutputBound(ALGO_LZ4, 5, 0, FLUSH_END);
-    uint8_t *buf2 = zmalloc(bound);
-    uint8_t *ptr2 = buf2;
+    /* Retry with a proper buffer — should succeed */
+    size_t bound = streamCompressOutputBound(ALGO_LZ4, 9, 0, FLUSH_END);
+    uint8_t *buf = zmalloc(bound);
+    uint8_t *ptr2 = buf;
     ssize_t ret2 = streamCompressFeed(&sc, &ptr2, bound,
-                                      (const uint8_t *)"hello", 5, FLUSH_END);
-    TEST_ASSERT_MESSAGE("must fail on errored compressor", ret2 == -1);
-    zfree(buf2);
-
+                                      (const uint8_t *)"test data", 9, FLUSH_END);
+    TEST_ASSERT_MESSAGE("retry after pre-frame error should succeed", ret2 > 0);
+    zfree(buf);
     streamCompressorDestroy(&sc);
+
+    /* Mid-frame error: start a frame, then force an error — this is permanent. */
+    stream_compressor_t sc2;
+    TEST_ASSERT(streamCompressorInit(&sc2, ALGO_LZ4, 0) == 0);
+
+    /* First call with enough space to start the frame */
+    size_t bound2 = streamCompressOutputBound(ALGO_LZ4, 5, 0, FLUSH_CONTINUE);
+    uint8_t *buf2 = zmalloc(bound2);
+    uint8_t *ptr3 = buf2;
+    ssize_t ret3 = streamCompressFeed(&sc2, &ptr3, bound2,
+                                      (const uint8_t *)"hello", 5, FLUSH_CONTINUE);
+    TEST_ASSERT_MESSAGE("first write should succeed", ret3 >= 0);
+    TEST_ASSERT_MESSAGE("frame should be started", sc2.frame_started == true);
+
+    /* Now force a mid-frame error with a tiny buffer */
+    uint8_t tiny2[1];
+    uint8_t *ptr4 = tiny2;
+    ssize_t ret4 = streamCompressFeed(&sc2, &ptr4, 1,
+                                      (const uint8_t *)"more data to compress", 21,
+                                      FLUSH_END);
+    TEST_ASSERT_MESSAGE("mid-frame error should fail", ret4 == -1);
+    TEST_ASSERT_MESSAGE("errored should be set (mid-frame failure)",
+                        sc2.errored == true);
+
+    /* Subsequent calls must fail immediately */
+    size_t bound3 = streamCompressOutputBound(ALGO_LZ4, 5, 0, FLUSH_END);
+    uint8_t *buf3 = zmalloc(bound3);
+    uint8_t *ptr5 = buf3;
+    ssize_t ret5 = streamCompressFeed(&sc2, &ptr5, bound3,
+                                      (const uint8_t *)"hello", 5, FLUSH_END);
+    TEST_ASSERT_MESSAGE("must fail on errored compressor", ret5 == -1);
+    zfree(buf3);
+    zfree(buf2);
+    streamCompressorDestroy(&sc2);
+
     return 0;
 }

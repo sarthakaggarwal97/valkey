@@ -273,7 +273,12 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
             prefs.compressionLevel = sc->level;
             size_t r = LZ4F_compressBegin((LZ4F_cctx *)sc->ctx.lz4f,
                                           output, output_capacity, &prefs);
-            if (LZ4F_isError(r)) goto lz4_error;
+            if (LZ4F_isError(r)) {
+                /* compressBegin failure before any frame bytes are emitted is
+                 * recoverable — the LZ4F context is still clean. Caller can
+                 * retry with a larger buffer. Don't set errored. */
+                return -1;
+            }
             offset = r;
             sc->frame_started = true;
         }
