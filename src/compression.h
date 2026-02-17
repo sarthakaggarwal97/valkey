@@ -9,7 +9,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 #include <sys/types.h>
 
 /* --- Algorithm identifiers --- */
@@ -30,14 +29,6 @@ typedef enum {
 
 #define STREAM_KIND_RDB 0x00
 #define STREAM_KIND_REPL 0x01
-
-/* RDB magic validation helper — checks whether a buffer starts with a
- * recognized RDB magic prefix ("REDIS" or "VALKE").  Used for format
- * detection: "VKCS" = compressed, valid RDB magic = uncompressed. */
-static inline int rdbIsValidMagic(const char *header, size_t len) {
-    return len >= 5 &&
-           (memcmp(header, "REDIS", 5) == 0 || memcmp(header, "VALKE", 5) == 0);
-}
 
 /* --- Emit callback type --- */
 typedef int (*vkcsEmitFn)(void *ctx, const uint8_t *data, size_t len);

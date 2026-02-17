@@ -42,7 +42,8 @@ int writeVkcsEnvelope(vkcsEmitFn emit_cb,
     envelope[6] = stream_kind; /* already validated to be 0 or 1 */
     envelope[7] = 0;           /* reserved */
 
-    return emit_cb(ctx, envelope, VKCS_ENVELOPE_SIZE);
+    int rc = emit_cb(ctx, envelope, VKCS_ENVELOPE_SIZE);
+    return rc == 0 ? 0 : -1;
 }
 
 /* Parse 8-byte VKCS envelope from buffer.
