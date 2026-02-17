@@ -12,8 +12,7 @@
 
 /* --- Rio Decorator: compress_rio_t --- */
 
-void rioInitWithCompress(compress_rio_t *cr, rio *inner,
-                         const sync_compress_config_t *cfg) {
+void rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_config_t *cfg) {
     /* TODO: Task 3.4 */
     (void)cr;
     (void)inner;
@@ -32,8 +31,7 @@ void compress_rio_destroy(compress_rio_t *cr) {
 
 /* --- Rio Decorator: decompress_rio_t --- */
 
-void decompress_rio_init(decompress_rio_t *dr, rio *inner,
-                         compression_algo_t algo) {
+void decompress_rio_init(decompress_rio_t *dr, rio *inner, compression_algo_t algo) {
     /* TODO: Task 3.5 */
     (void)dr;
     (void)inner;
@@ -47,8 +45,7 @@ void decompress_rio_destroy(decompress_rio_t *dr) {
 
 /* --- Rio Decorator: prefix_replay_rio_t --- */
 
-void prefix_replay_rio_init(prefix_replay_rio_t *pr, rio *inner,
-                            const char *prefix, size_t prefix_len) {
+void prefix_replay_rio_init(prefix_replay_rio_t *pr, rio *inner, const char *prefix, size_t prefix_len) {
     /* TODO: Task 3.6 */
     (void)pr;
     (void)inner;

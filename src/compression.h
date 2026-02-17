@@ -56,12 +56,13 @@ typedef struct {
 
 /* Write VKCS envelope via callback. Returns 0 on success, -1 on error. */
 int write_vkcs_envelope(void (*emit_cb)(void *ctx, const uint8_t *data, size_t len),
-                        void *ctx, compression_algo_t algo, uint8_t stream_kind);
+                        void *ctx,
+                        compression_algo_t algo,
+                        uint8_t stream_kind);
 
 /* Parse VKCS envelope from buffer. Returns 0 on success, -1 on error.
  * On success, *algo and *stream_kind are populated. */
-int envelope_read(const uint8_t *buf, size_t len,
-                  compression_algo_t *algo, uint8_t *stream_kind);
+int envelope_read(const uint8_t *buf, size_t len, compression_algo_t *algo, uint8_t *stream_kind);
 
 /* --- Streaming compression API --- */
 
@@ -76,22 +77,25 @@ void stream_decompressor_destroy(stream_decompressor_t *sd);
 /* Return upper bound on compressed output size.
  * frame_started: whether the algorithm frame header has already been written.
  * flush_mode: 0=continue, 1=flush, 2=end. */
-size_t streamCompressOutputBound(compression_algo_t algo, size_t input_len,
-                                 int frame_started, int flush_mode);
+size_t streamCompressOutputBound(compression_algo_t algo, size_t input_len, int frame_started, int flush_mode);
 
 /* Feed data through streaming compressor.
  * flush_mode: 0=continue, 1=flush, 2=end.
  * Returns bytes written to *output_ptr, 0 for no output, -1 on error. */
 ssize_t streamCompressFeed(stream_compressor_t *sc,
-                           uint8_t **output_ptr, size_t output_capacity,
-                           const uint8_t *input, size_t input_len,
+                           uint8_t **output_ptr,
+                           size_t output_capacity,
+                           const uint8_t *input,
+                           size_t input_len,
                            int flush_mode);
 
 /* Feed compressed data through streaming decompressor.
  * Returns bytes written to output, 0 for no output, -1 on error. */
 ssize_t streamDecompressFeed(stream_decompressor_t *sd,
-                             uint8_t *output, size_t output_capacity,
-                             const uint8_t *input, size_t input_len,
+                             uint8_t *output,
+                             size_t output_capacity,
+                             const uint8_t *input,
+                             size_t input_len,
                              size_t *input_consumed);
 
 #endif /* COMPRESSION_H */

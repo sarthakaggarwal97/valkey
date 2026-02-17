@@ -31,7 +31,7 @@ typedef struct {
 
 /* --- Compression rio decorator (RDB save) --- */
 typedef struct {
-    rio base;   /* Must be first — allows casting to (rio *) */
+    rio base; /* Must be first — allows casting to (rio *) */
     rio *inner;
     sync_compress_ctx_t compressor;
     int finalized;
@@ -39,7 +39,7 @@ typedef struct {
 
 /* --- Decompression rio decorator (RDB load) --- */
 typedef struct {
-    rio base;   /* Must be first */
+    rio base; /* Must be first */
     rio *inner;
     stream_decompressor_t decompressor;
     uint8_t *read_buf;
@@ -52,7 +52,7 @@ typedef struct {
 
 /* --- Prefix-replay rio decorator (format detection) --- */
 typedef struct {
-    rio base;   /* Must be first */
+    rio base; /* Must be first */
     rio *inner;
     char prefix[8];
     size_t prefix_len;
@@ -98,17 +98,14 @@ struct async_compress_ctx_t {
 };
 
 /* --- Rio Decorator API --- */
-void rioInitWithCompress(compress_rio_t *cr, rio *inner,
-                         const sync_compress_config_t *cfg);
+void rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_config_t *cfg);
 void compress_rio_finish(compress_rio_t *cr);
 void compress_rio_destroy(compress_rio_t *cr);
 
-void decompress_rio_init(decompress_rio_t *dr, rio *inner,
-                         compression_algo_t algo);
+void decompress_rio_init(decompress_rio_t *dr, rio *inner, compression_algo_t algo);
 void decompress_rio_destroy(decompress_rio_t *dr);
 
-void prefix_replay_rio_init(prefix_replay_rio_t *pr, rio *inner,
-                            const char *prefix, size_t prefix_len);
+void prefix_replay_rio_init(prefix_replay_rio_t *pr, rio *inner, const char *prefix, size_t prefix_len);
 
 /* --- Sync Compress API --- */
 sync_compress_ctx_t *sync_compress_create(const sync_compress_config_t *cfg);

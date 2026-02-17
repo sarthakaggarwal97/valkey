@@ -15,7 +15,9 @@
 /* --- Envelope --- */
 
 int write_vkcs_envelope(void (*emit_cb)(void *ctx, const uint8_t *data, size_t len),
-                        void *ctx, compression_algo_t algo, uint8_t stream_kind) {
+                        void *ctx,
+                        compression_algo_t algo,
+                        uint8_t stream_kind) {
     /* TODO: Task 1.3 */
     (void)emit_cb;
     (void)ctx;
@@ -24,8 +26,7 @@ int write_vkcs_envelope(void (*emit_cb)(void *ctx, const uint8_t *data, size_t l
     return -1;
 }
 
-int envelope_read(const uint8_t *buf, size_t len,
-                  compression_algo_t *algo, uint8_t *stream_kind) {
+int envelope_read(const uint8_t *buf, size_t len, compression_algo_t *algo, uint8_t *stream_kind) {
     /* TODO: Task 1.3 */
     (void)buf;
     (void)len;
@@ -61,8 +62,7 @@ void stream_decompressor_destroy(stream_decompressor_t *sd) {
     (void)sd;
 }
 
-size_t streamCompressOutputBound(compression_algo_t algo, size_t input_len,
-                                 int frame_started, int flush_mode) {
+size_t streamCompressOutputBound(compression_algo_t algo, size_t input_len, int frame_started, int flush_mode) {
     /* TODO: Task 2.3 */
     (void)algo;
     (void)input_len;
@@ -72,8 +72,10 @@ size_t streamCompressOutputBound(compression_algo_t algo, size_t input_len,
 }
 
 ssize_t streamCompressFeed(stream_compressor_t *sc,
-                           uint8_t **output_ptr, size_t output_capacity,
-                           const uint8_t *input, size_t input_len,
+                           uint8_t **output_ptr,
+                           size_t output_capacity,
+                           const uint8_t *input,
+                           size_t input_len,
                            int flush_mode) {
     /* TODO: Task 2.3 */
     (void)sc;
@@ -86,8 +88,10 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
 }
 
 ssize_t streamDecompressFeed(stream_decompressor_t *sd,
-                             uint8_t *output, size_t output_capacity,
-                             const uint8_t *input, size_t input_len,
+                             uint8_t *output,
+                             size_t output_capacity,
+                             const uint8_t *input,
+                             size_t input_len,
                              size_t *input_consumed) {
     /* TODO: Task 2.2 */
     (void)sd;
