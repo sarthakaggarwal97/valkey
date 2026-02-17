@@ -32,12 +32,15 @@ typedef enum {
 #define STREAM_KIND_REPL 0x01
 
 /* RDB magic validation helper — checks whether a buffer starts with a
- * recognized RDB magic prefix ("REDIS" or "VALKEY").  Used for format
- * detection: "VKCS" = compressed, valid RDB magic = uncompressed.
- * Requires at least 5 bytes in `header`. */
-static inline int rdbIsValidMagic(const char *header) {
-    return memcmp(header, "REDIS", 5) == 0 || memcmp(header, "VALKE", 5) == 0;
+ * recognized RDB magic prefix ("REDIS" or "VALKE").  Used for format
+ * detection: "VKCS" = compressed, valid RDB magic = uncompressed. */
+static inline int rdbIsValidMagic(const char *header, size_t len) {
+    return len >= 5 &&
+           (memcmp(header, "REDIS", 5) == 0 || memcmp(header, "VALKE", 5) == 0);
 }
+
+/* --- Emit callback type --- */
+typedef int (*vkcsEmitFn)(void *ctx, const uint8_t *data, size_t len);
 
 /* --- Streaming compressor context --- */
 typedef struct {
@@ -63,25 +66,26 @@ typedef struct {
 
 /* --- Envelope API --- */
 
-/* Write VKCS envelope via callback. Returns 0 on success, -1 on error. */
-int write_vkcs_envelope(void (*emit_cb)(void *ctx, const uint8_t *data, size_t len),
-                        void *ctx,
-                        compression_algo_t algo,
-                        uint8_t stream_kind);
+/* Write VKCS envelope via callback.  Returns 0 on success, -1 on error
+ * (invalid algo or emit_cb failure). */
+int writeVkcsEnvelope(vkcsEmitFn emit_cb,
+                      void *ctx,
+                      compression_algo_t algo,
+                      uint8_t stream_kind);
 
-/* Parse VKCS envelope from buffer. Returns 0 on success, -1 on error.
+/* Parse VKCS envelope from buffer.  Returns 0 on success, -1 on error.
  * On success, *algo and *stream_kind are populated. */
-int envelope_read(const uint8_t *buf, size_t len, compression_algo_t *algo, uint8_t *stream_kind);
+int readVkcsEnvelope(const uint8_t *buf, size_t len, compression_algo_t *algo, uint8_t *stream_kind);
 
 /* --- Streaming compression API --- */
 
 /* Initialize/destroy streaming compressor. */
-int stream_compressor_init(stream_compressor_t *sc, compression_algo_t algo, int level);
-void stream_compressor_destroy(stream_compressor_t *sc);
+int streamCompressorInit(stream_compressor_t *sc, compression_algo_t algo, int level);
+void streamCompressorDestroy(stream_compressor_t *sc);
 
 /* Initialize/destroy streaming decompressor. */
-int stream_decompressor_init(stream_decompressor_t *sd, compression_algo_t algo);
-void stream_decompressor_destroy(stream_decompressor_t *sd);
+int streamDecompressorInit(stream_decompressor_t *sd, compression_algo_t algo);
+void streamDecompressorDestroy(stream_decompressor_t *sd);
 
 /* Return upper bound on compressed output size.
  * frame_started: whether the algorithm frame header has already been written.
