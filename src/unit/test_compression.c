@@ -471,7 +471,7 @@ int test_streamDecompressFeedErrors(int argc, char **argv, int flags) {
     return 0;
 }
 
-/* --- Test: compressor context is usable after error recovery --- */
+/* --- Test: compressor is permanently failed after error --- */
 int test_streamCompressFeedErrorRecovery(int argc, char **argv, int flags) {
     UNUSED(argc);
     UNUSED(argv);
@@ -486,17 +486,16 @@ int test_streamCompressFeedErrorRecovery(int argc, char **argv, int flags) {
     ssize_t ret = streamCompressFeed(&sc, &ptr, 1,
                                      (const uint8_t *)"test data", 9, FLUSH_END);
     TEST_ASSERT_MESSAGE("should fail with tiny buffer", ret == -1);
+    TEST_ASSERT_MESSAGE("errored flag should be set", sc.errored == true);
 
-    /* Context should have been reset — verify it's usable for a new frame */
-    if (sc.ctx.lz4f != NULL) {
-        size_t bound = streamCompressOutputBound(ALGO_LZ4, 5, 0, FLUSH_END);
-        uint8_t *buf2 = malloc(bound);
-        uint8_t *ptr2 = buf2;
-        ssize_t ret2 = streamCompressFeed(&sc, &ptr2, bound,
-                                          (const uint8_t *)"hello", 5, FLUSH_END);
-        TEST_ASSERT_MESSAGE("should succeed after error recovery", ret2 > 0);
-        free(buf2);
-    }
+    /* Subsequent calls must fail immediately — no mid-stream retry */
+    size_t bound = streamCompressOutputBound(ALGO_LZ4, 5, 0, FLUSH_END);
+    uint8_t *buf2 = malloc(bound);
+    uint8_t *ptr2 = buf2;
+    ssize_t ret2 = streamCompressFeed(&sc, &ptr2, bound,
+                                      (const uint8_t *)"hello", 5, FLUSH_END);
+    TEST_ASSERT_MESSAGE("must fail on errored compressor", ret2 == -1);
+    free(buf2);
 
     streamCompressorDestroy(&sc);
     return 0;

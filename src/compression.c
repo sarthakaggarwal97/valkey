@@ -258,6 +258,7 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
                            size_t input_len,
                            compress_flush_mode_t flush_mode) {
     if (!sc || !output_ptr || !*output_ptr) return -1;
+    if (sc->errored) return -1;
 
     switch (sc->algo) {
     case ALGO_LZ4: {
@@ -316,13 +317,11 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
         return (ssize_t)offset;
 
     lz4_error:
-        LZ4F_freeCompressionContext((LZ4F_cctx *)sc->ctx.lz4f);
-        sc->ctx.lz4f = NULL;
-        sc->frame_started = false;
-        LZ4F_cctx *fresh = NULL;
-        if (!LZ4F_isError(LZ4F_createCompressionContext(&fresh, LZ4F_VERSION))) {
-            sc->ctx.lz4f = fresh;
-        }
+        /* LZ4F state is undefined after an error (lz4frame.h line 325).
+         * Mark permanently failed — no mid-stream retry is possible because
+         * already-emitted frame bytes cannot be unsent. The caller must
+         * tear down the stream (disconnect replica / abort RDB save). */
+        sc->errored = true;
         return -1;
     }
     case ALGO_ZSTD:

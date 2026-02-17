@@ -73,10 +73,11 @@ static inline bool rdbUseValkeyMagic(int rdbver) {
     return rdbver > RDB_FOREIGN_VERSION_MAX;
 }
 
-/* Check whether a buffer starts with a recognized RDB magic prefix
- * ("REDIS0" or "VALKEY").  Uses 6 bytes to match the actual RDB format
- * (e.g. "REDIS0080", "VALKEY080") and avoid false positives on payloads
- * that happen to start with "VALKE" but aren't RDB. */
+/* Check whether a buffer starts with a recognized RDB magic prefix.
+ * "REDIS0" matches the 4-digit zero-padded version format (e.g. "REDIS0080")
+ * which is valid for all RDB versions < 1000. "VALKEY" is the exact 6-byte
+ * magic for Valkey-format RDB (e.g. "VALKEY080").
+ * Matches the same checks used in rdbLoadRio() (rdb.c). */
 static inline bool rdbIsValidMagic(const uint8_t *header, size_t len) {
     return len >= 6 &&
            (memcmp(header, "REDIS0", 6) == 0 || memcmp(header, "VALKEY", 6) == 0);
