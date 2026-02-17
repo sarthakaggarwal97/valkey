@@ -13,7 +13,7 @@ AR= ar
 ARFLAGS= rcs
 
 liblz4.a: lz4.o lz4hc.o lz4frame.o xxhash.o
-	$(AR) $(ARFLAGS) $@ $+
+	$(AR) $(ARFLAGS) $@ $^
 
 lz4.o: lz4.c lz4.h
 lz4hc.o: lz4hc.c lz4hc.h lz4.h
