@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../compression.h"
+#include "../zmalloc.h"
 #include "test_help.h"
 
 /* --- Emit callback that writes into a flat buffer --- */
@@ -348,7 +349,7 @@ int test_streamCompressDecompressRoundTrip(int argc, char **argv, int flags) {
     size_t bound = streamCompressOutputBound(ALGO_LZ4, input_len, 0, FLUSH_END);
     TEST_ASSERT_MESSAGE("bound should be > 0", bound > 0);
 
-    uint8_t *compressed = malloc(bound);
+    uint8_t *compressed = zmalloc(bound);
     TEST_ASSERT(compressed != NULL);
     uint8_t *out_ptr = compressed;
 
@@ -378,7 +379,7 @@ int test_streamCompressDecompressRoundTrip(int argc, char **argv, int flags) {
                         input_consumed == (size_t)compressed_len);
 
     streamDecompressorDestroy(&sd);
-    free(compressed);
+    zfree(compressed);
     return 0;
 }
 
@@ -490,12 +491,12 @@ int test_streamCompressFeedErrorRecovery(int argc, char **argv, int flags) {
 
     /* Subsequent calls must fail immediately — no mid-stream retry */
     size_t bound = streamCompressOutputBound(ALGO_LZ4, 5, 0, FLUSH_END);
-    uint8_t *buf2 = malloc(bound);
+    uint8_t *buf2 = zmalloc(bound);
     uint8_t *ptr2 = buf2;
     ssize_t ret2 = streamCompressFeed(&sc, &ptr2, bound,
                                       (const uint8_t *)"hello", 5, FLUSH_END);
     TEST_ASSERT_MESSAGE("must fail on errored compressor", ret2 == -1);
-    free(buf2);
+    zfree(buf2);
 
     streamCompressorDestroy(&sc);
     return 0;

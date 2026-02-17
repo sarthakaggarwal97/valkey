@@ -280,7 +280,7 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
 
         /* Compress input data */
         if (input_len > 0) {
-            if (offset > output_capacity) goto lz4_error;
+            if (offset >= output_capacity) goto lz4_error;
             /* stableSrc is caller-controlled. The async replication path
              * sets sc->stable_src=true because the accumulator sds is swapped
              * out before submission (exclusive ownership). The sync RDB
@@ -297,14 +297,14 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
 
         /* Handle flush/end modes */
         if (flush_mode == FLUSH_SYNC) {
-            if (offset > output_capacity) goto lz4_error;
+            if (offset >= output_capacity) goto lz4_error;
             size_t r = LZ4F_flush((LZ4F_cctx *)sc->ctx.lz4f,
                                   output + offset,
                                   output_capacity - offset, NULL);
             if (LZ4F_isError(r)) goto lz4_error;
             offset += r;
         } else if (flush_mode == FLUSH_END) {
-            if (offset > output_capacity) goto lz4_error;
+            if (offset >= output_capacity) goto lz4_error;
             size_t r = LZ4F_compressEnd((LZ4F_cctx *)sc->ctx.lz4f,
                                         output + offset,
                                         output_capacity - offset, NULL);
@@ -313,7 +313,7 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
             sc->frame_started = false;
         }
 
-        if (offset > (size_t)SSIZE_MAX) return -1;
+        if (offset > (size_t)SSIZE_MAX) goto lz4_error;
         return (ssize_t)offset;
 
     lz4_error:
