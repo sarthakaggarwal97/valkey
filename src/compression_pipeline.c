@@ -360,9 +360,9 @@ int vkcsDetectFormat(rio *inner,
  * 4. Repeat until requested bytes are available or EOF/error
  * =================================================================== */
 
-#define DECOMPRESS_INITIAL_BUF_SIZE (64 * 1024)       /* 64KB initial buffer */
-#define DECOMPRESS_READ_CHUNK_SIZE (64 * 1024)       /* 64KB read chunk */
-#define DECOMPRESS_MAX_BUF_SIZE (256 * 1024 * 1024)  /* 256MB safety limit */
+#define DECOMPRESS_INITIAL_BUF_SIZE (64 * 1024)     /* 64KB initial buffer */
+#define DECOMPRESS_READ_CHUNK_SIZE (64 * 1024)      /* 64KB read chunk */
+#define DECOMPRESS_MAX_BUF_SIZE (256 * 1024 * 1024) /* 256MB safety limit */
 
 /* Read up to `len` bytes from the inner rio into `buf`.
  * Returns the number of bytes actually read (may be less than len).
