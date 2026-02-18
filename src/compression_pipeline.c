@@ -24,7 +24,8 @@ sync_compress_ctx_t *sync_compress_create(const sync_compress_config_t *cfg,
                                           vkcsEmitFn emit_cb,
                                           void *emit_ctx) {
     if (!cfg || !emit_cb) return NULL;
-    if (cfg->algo != ALGO_LZ4 && cfg->algo != ALGO_ZSTD) return NULL;
+    /* Only LZ4 is supported for now. ZSTD dispatch is added in task 22. */
+    if (cfg->algo != ALGO_LZ4) return NULL;
 
     sync_compress_ctx_t *t = zmalloc(sizeof(*t));
     memset(t, 0, sizeof(*t));
@@ -67,9 +68,13 @@ void sync_compress_destroy(sync_compress_ctx_t *t) {
 static int syncCompressEnsureOutBuf(sync_compress_ctx_t *t, size_t input_len, compress_flush_mode_t flush_mode) {
     size_t needed = streamCompressOutputBound(t->algo, input_len,
                                               t->compressor.frame_started, flush_mode);
-    if (needed == 0 && t->algo != ALGO_LZ4) {
-        /* streamCompressOutputBound returns 0 for unsupported algos */
-        return -1;
+    if (needed == 0) {
+        /* Ensure a minimal valid buffer so streamCompressFeed never gets NULL */
+        if (t->out_buf == NULL) {
+            t->out_buf = zmalloc(64);
+            t->out_buf_size = 64;
+        }
+        return 0;
     }
     if (needed > t->out_buf_size) {
         zfree(t->out_buf);
@@ -264,7 +269,7 @@ int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_conf
      * Do NOT propagate to inner rio — avoid double-checksumming. */
     cr->base.update_cksum = rioGenericUpdateChecksum;
     cr->base.cksum = 0;
-    cr->base.flags = 0;
+    cr->base.flags = RIO_FLAG_STREAMING_COMPRESSION;
     cr->base.processed_bytes = 0;
     cr->base.max_processing_chunk = 0;
 
@@ -296,7 +301,8 @@ int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_conf
  * Idempotent: safe to call multiple times (second call is a no-op). */
 /* Returns 0 on success, -1 if the compressor or inner flush errored. */
 int compress_rio_finish(compress_rio_t *cr) {
-    if (!cr || cr->finalized) return (cr && cr->compressor.errored) ? -1 : 0;
+    if (!cr) return -1;
+    if (cr->finalized) return cr->compressor.errored ? -1 : 0;
     cr->finalized = 1;
 
     sync_compress_finish(&cr->compressor);
@@ -431,7 +437,11 @@ static size_t decompressRioRead(rio *r, void *buf, size_t len) {
                 }
                 if (rioRead(dr->inner, dr->read_buf + dr->read_buf_fill, 1) == 0) {
                     if (dr->read_buf_fill == 0) return 0;
-                    dr->inner->flags &= ~RIO_FLAG_READ_ERROR;
+                    /* Only clear error for buffer rios (short read is not
+                     * a real error). For conn/fd rios, preserve the error
+                     * flag so callers can detect network failures. */
+                    if (rioCheckType(dr->inner) == RIO_TYPE_BUFFER)
+                        dr->inner->flags &= ~RIO_FLAG_READ_ERROR;
                     break;
                 }
                 dr->read_buf_fill++;

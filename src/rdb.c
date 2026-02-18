@@ -516,9 +516,12 @@ ssize_t rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
 
     /* Try LZF compression - under 20 bytes it's unable to compress even
      * aaaaaaaaaaaaaaaaaa so skip it.
-     * Skip per-string LZF when rdb-compression-algo is lz4/zstd to avoid
-     * double-compression (streaming compression wraps the entire RDB). */
-    if (server.rdb_compression && server.rdb_compression_algo == ALGO_LZF && len > 20) {
+     * Skip per-string LZF only when THIS rio has streaming compression
+     * active (RIO_FLAG_STREAMING_COMPRESSION). This avoids double-compression
+     * while preserving LZF for paths without a compress_rio wrapper
+     * (diskless sync, DUMP, AOF rewrite). */
+    if (server.rdb_compression && len > 20 &&
+        !(rdb && (rdb->flags & RIO_FLAG_STREAMING_COMPRESSION))) {
         n = rdbSaveLzfStringObject(rdb, s, len);
         if (n == -1) return -1;
         if (n > 0) return n;
@@ -1595,6 +1598,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
             .stream_kind = STREAM_KIND_RDB,
         };
         if (rioInitWithCompress(&cr, &rdb, &cfg) != 0) {
+            errno = EIO; /* Compressor init failure — set errno for werr log */
             err_op = "rioInitWithCompress";
             goto werr;
         }
@@ -1611,6 +1615,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
     /* Finalize the compression frame before flushing to disk. */
     if (cr_initialized) {
         if (compress_rio_finish(&cr) != 0) {
+            errno = EIO; /* Compression finalization failure */
             err_op = "compress_rio_finish";
             compress_rio_destroy(&cr);
             cr_initialized = 0;
@@ -3617,7 +3622,7 @@ eoferr:
 int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     FILE *fp;
     rio rdb;
-    int retval;
+    int retval = RDB_FAILED;
     struct stat sb;
     int rdb_fd;
 
