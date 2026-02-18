@@ -1059,3 +1059,67 @@ int test_syncCompressWriteAfterFinish(int argc, char **argv, int flags) {
     dynamicBufFree(&db);
     return 0;
 }
+
+/* Test that two independent compress/decompress streams can coexist
+ * without interfering with each other. Verifies no shared mutable state. */
+int test_independentStreamsCoexist(int argc, char **argv, int flags) {
+    UNUSED(argc);
+    UNUSED(argv);
+    UNUSED(flags);
+
+    /* Create two independent compress streams with different data */
+    dynamic_buf_t db1, db2;
+    dynamicBufInit(&db1);
+    dynamicBufInit(&db2);
+
+    sync_compress_config_t cfg = {.algo = ALGO_LZ4, .level = 0, .stream_kind = STREAM_KIND_RDB};
+    sync_compress_ctx_t *t1 = sync_compress_create(&cfg, emitToDynamicBuf, &db1);
+    sync_compress_ctx_t *t2 = sync_compress_create(&cfg, emitToDynamicBuf, &db2);
+    TEST_ASSERT(t1 != NULL && t2 != NULL);
+
+    const char *data1 = "Stream one data - unique content for first stream AAAA";
+    const char *data2 = "Stream two data - different content for second stream BBBB";
+
+    /* Interleave writes to both streams */
+    sync_compress_write(t1, data1, strlen(data1));
+    sync_compress_write(t2, data2, strlen(data2));
+    sync_compress_write(t1, data1, strlen(data1)); /* write again to stream 1 */
+    sync_compress_write(t2, data2, strlen(data2)); /* write again to stream 2 */
+
+    sync_compress_finish(t1);
+    sync_compress_finish(t2);
+
+    /* Decompress both and verify independently */
+    for (int i = 0; i < 2; i++) {
+        dynamic_buf_t *db = (i == 0) ? &db1 : &db2;
+        const char *expected = (i == 0) ? data1 : data2;
+        size_t expected_len = strlen(expected) * 2; /* written twice */
+
+        TEST_ASSERT(db->len > VKCS_ENVELOPE_SIZE);
+        sds comp = sdsnewlen(db->data + VKCS_ENVELOPE_SIZE,
+                             db->len - VKCS_ENVELOPE_SIZE);
+        rio buf_rio;
+        rioInitWithBuffer(&buf_rio, comp);
+
+        decompress_rio_t dr;
+        decompress_rio_init(&dr, &buf_rio, ALGO_LZ4);
+
+        char result[256];
+        memset(result, 0, sizeof(result));
+        TEST_ASSERT_MESSAGE("rioRead should succeed for coexisting stream",
+                            rioRead((rio *)&dr, result, expected_len) != 0);
+        TEST_ASSERT_MESSAGE("first half should match",
+                            memcmp(result, expected, strlen(expected)) == 0);
+        TEST_ASSERT_MESSAGE("second half should match",
+                            memcmp(result + strlen(expected), expected, strlen(expected)) == 0);
+
+        decompress_rio_destroy(&dr);
+        sdsfree(comp);
+    }
+
+    sync_compress_destroy(t1);
+    sync_compress_destroy(t2);
+    dynamicBufFree(&db1);
+    dynamicBufFree(&db2);
+    return 0;
+}
