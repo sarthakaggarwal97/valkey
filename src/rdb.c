@@ -1610,7 +1610,12 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
 
     /* Finalize the compression frame before flushing to disk. */
     if (cr_initialized) {
-        compress_rio_finish(&cr);
+        if (compress_rio_finish(&cr) != 0) {
+            err_op = "compress_rio_finish";
+            compress_rio_destroy(&cr);
+            cr_initialized = 0;
+            goto werr;
+        }
         compress_rio_destroy(&cr);
         cr_initialized = 0;
     }
@@ -1698,8 +1703,9 @@ int rdbSave(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
 
     serverLog(LL_NOTICE, "DB saved on disk");
     if (isRdbStreamingCompressionEnabled()) {
-        serverLog(LL_NOTICE,
-                  "RDB saved with streaming compression; requires compression-capable Valkey to load");
+        serverLog(LL_VERBOSE,
+                  "RDB saved with %s streaming compression",
+                  server.rdb_compression_algo == ALGO_LZ4 ? "LZ4" : "ZSTD");
     }
     server.dirty = 0;
     server.lastsave = time(NULL);
@@ -3660,6 +3666,12 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
             goto done;
         }
         decompress_rio_init(&dr, &rdb, algo);
+        if (dr.base.flags & RIO_FLAG_READ_ERROR) {
+            serverLog(LL_WARNING, "Failed to initialize decompressor for RDB file %s", filename);
+            retval = RDB_FAILED;
+            dr_initialized = 1; /* still need to destroy */
+            goto done;
+        }
         dr_initialized = 1;
         load_rio = (rio *)&dr;
         serverLog(LL_NOTICE, "Loading RDB with streaming compression (algo=%d) from %s",

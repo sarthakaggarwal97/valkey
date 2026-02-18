@@ -10,7 +10,6 @@
 
 #include "compression_pipeline.h"
 #include "zmalloc.h"
-#include <assert.h>
 #include <string.h>
 
 /* ===================================================================
@@ -295,8 +294,9 @@ int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_conf
 /* Finalize the compression frame and flush inner rio.
  * Must be called exactly once at end of stream.
  * Idempotent: safe to call multiple times (second call is a no-op). */
-void compress_rio_finish(compress_rio_t *cr) {
-    if (!cr || cr->finalized) return;
+/* Returns 0 on success, -1 if the compressor or inner flush errored. */
+int compress_rio_finish(compress_rio_t *cr) {
+    if (!cr || cr->finalized) return (cr && cr->compressor.errored) ? -1 : 0;
     cr->finalized = 1;
 
     sync_compress_finish(&cr->compressor);
@@ -309,6 +309,7 @@ void compress_rio_finish(compress_rio_t *cr) {
             cr->compressor.errored = 1;
         }
     }
+    return cr->compressor.errored ? -1 : 0;
 }
 
 /* Free compressor context and buffers. Does NOT finalize the frame.
@@ -356,10 +357,14 @@ static size_t decompressRioReadPartial(rio *inner, void *buf, size_t len) {
         if (got > 0) inner->processed_bytes += got;
         return got;
     }
-    /* For buffer/conn/fd rios: rioRead is all-or-nothing but doesn't
-     * consume bytes on failure, so it's safe to try the full chunk. */
+    /* For buffer/conn/fd rios: rioRead is all-or-nothing but buffer rios
+     * don't consume bytes on failure. Clear the error flag for buffer rios
+     * so subsequent reads can retry. For conn/fd rios, a failed read is
+     * a real error — don't mask it. */
     if (rioRead(inner, buf, len) != 0) return len;
-    inner->flags &= ~RIO_FLAG_READ_ERROR;
+    if (rioCheckType(inner) == RIO_TYPE_BUFFER) {
+        inner->flags &= ~RIO_FLAG_READ_ERROR;
+    }
     return 0;
 }
 
@@ -660,8 +665,15 @@ void prefix_replay_rio_init(prefix_replay_rio_t *pr, rio *inner, const char *pre
 
     pr->inner = inner;
 
-    /* Copy prefix bytes — must fit in the fixed-size buffer */
-    assert(prefix_len <= sizeof(pr->prefix));
+    /* Copy prefix bytes — must fit in the fixed-size buffer.
+     * Callers must pass prefix_len <= sizeof(pr->prefix). */
+    if (prefix_len > sizeof(pr->prefix)) {
+        /* Invariant violation — should never happen. Set error flag
+         * so reads fail immediately rather than corrupting data. */
+        pr->base.flags |= RIO_FLAG_READ_ERROR;
+        pr->prefix_len = 0;
+        return;
+    }
     if (prefix && prefix_len > 0) {
         memcpy(pr->prefix, prefix, prefix_len);
     }
