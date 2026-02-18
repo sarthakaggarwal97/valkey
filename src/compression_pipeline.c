@@ -5,15 +5,14 @@
  */
 
 /* Rio decorators (compress_rio, decompress_rio, prefix_replay_rio) and
- * async compress context for replication compression pipeline.
- * See .kiro/specs/compression-module/design-compact.md for full design. */
+ * async compress context for replication compression pipeline. */
 
 #include "compression_pipeline.h"
 #include "zmalloc.h"
 #include <string.h>
 
 /* ===================================================================
- * Sync Compress API (Tasks 3.1, 3.2, 3.3)
+ * Sync Compress API
  * Used internally by compress_rio_t. Fork-safe by design.
  * =================================================================== */
 
@@ -24,7 +23,7 @@ sync_compress_ctx_t *sync_compress_create(const sync_compress_config_t *cfg,
                                           vkcsEmitFn emit_cb,
                                           void *emit_ctx) {
     if (!cfg || !emit_cb) return NULL;
-    /* Only LZ4 is supported for now. ZSTD dispatch is added in task 22. */
+    /* Only LZ4 is supported for now. */
     if (cfg->algo != ALGO_LZ4) return NULL;
 
     sync_compress_ctx_t *t = zmalloc(sizeof(*t));
@@ -64,8 +63,9 @@ void sync_compress_destroy(sync_compress_ctx_t *t) {
 }
 
 /* Ensure the output buffer is large enough for the given input.
- * Reuses the existing buffer when possible to avoid per-write allocation. */
-static int syncCompressEnsureOutBuf(sync_compress_ctx_t *t, size_t input_len, compress_flush_mode_t flush_mode) {
+ * Reuses the existing buffer when possible to avoid per-write allocation.
+ * zmalloc aborts on OOM, so this cannot fail. */
+static void syncCompressEnsureOutBuf(sync_compress_ctx_t *t, size_t input_len, compress_flush_mode_t flush_mode) {
     size_t needed = streamCompressOutputBound(t->algo, input_len,
                                               t->compressor.frame_started, flush_mode);
     if (needed == 0) {
@@ -74,14 +74,13 @@ static int syncCompressEnsureOutBuf(sync_compress_ctx_t *t, size_t input_len, co
             t->out_buf = zmalloc(64);
             t->out_buf_size = 64;
         }
-        return 0;
+        return;
     }
     if (needed > t->out_buf_size) {
         zfree(t->out_buf);
         t->out_buf = zmalloc(needed);
         t->out_buf_size = needed;
     }
-    return 0;
 }
 
 /* Write data through the sync compressor.
@@ -103,10 +102,7 @@ void sync_compress_write(sync_compress_ctx_t *t, const void *buf, size_t len) {
     }
 
     /* Ensure output buffer is large enough */
-    if (syncCompressEnsureOutBuf(t, len, FLUSH_CONTINUE) != 0) {
-        t->errored = 1;
-        return;
-    }
+    syncCompressEnsureOutBuf(t, len, FLUSH_CONTINUE);
 
     uint8_t *out_ptr = t->out_buf;
     ssize_t compressed = streamCompressFeed(&t->compressor, &out_ptr,
@@ -144,10 +140,7 @@ void sync_compress_finish(sync_compress_ctx_t *t) {
     }
 
     /* Ensure output buffer is large enough for finalization */
-    if (syncCompressEnsureOutBuf(t, 0, FLUSH_END) != 0) {
-        t->errored = 1;
-        return;
-    }
+    syncCompressEnsureOutBuf(t, 0, FLUSH_END);
 
     uint8_t *out_ptr = t->out_buf;
     ssize_t compressed = streamCompressFeed(&t->compressor, &out_ptr,
@@ -167,7 +160,7 @@ void sync_compress_finish(sync_compress_ctx_t *t) {
 }
 
 /* ===================================================================
- * Compression Rio Decorator (Task 3.4)
+ * Compression Rio Decorator
  * Wraps an inner rio for transparent compression on write.
  * Used by BGSAVE (fork child) and diskless sync.
  *
@@ -222,10 +215,7 @@ static int compressRioFlush(rio *r) {
 
     /* Only flush if we've started writing (envelope + frame exist) */
     if (cr->compressor.envelope_written && cr->compressor.compressor.frame_started) {
-        if (syncCompressEnsureOutBuf(&cr->compressor, 0, FLUSH_SYNC) != 0) {
-            cr->compressor.errored = 1;
-            return 0;
-        }
+        syncCompressEnsureOutBuf(&cr->compressor, 0, FLUSH_SYNC);
 
         uint8_t *out_ptr = cr->compressor.out_buf;
         ssize_t compressed = streamCompressFeed(&cr->compressor.compressor,
@@ -330,7 +320,36 @@ void compress_rio_destroy(compress_rio_t *cr) {
 }
 
 /* ===================================================================
- * Decompression Rio Decorator (Task 3.5)
+ * VKCS Format Detection
+ * =================================================================== */
+
+/* Detect whether a rio stream starts with a VKCS envelope.
+ * Reads VKCS_ENVELOPE_SIZE bytes from `inner` into `header_out`.
+ * If the magic matches, parses the envelope and populates `algo_out`
+ * and `stream_kind_out`.
+ * Returns 1 if VKCS detected and parsed, 0 if not VKCS (header still
+ * populated for caller to inspect), -1 on read error. */
+int vkcsDetectFormat(rio *inner,
+                     uint8_t *header_out,
+                     compression_algo_t *algo_out,
+                     uint8_t *stream_kind_out) {
+    if (rioRead(inner, header_out, VKCS_ENVELOPE_SIZE) == 0) {
+        return -1;
+    }
+
+    if (header_out[0] == VKCS_MAGIC_0 && header_out[1] == VKCS_MAGIC_1 &&
+        header_out[2] == VKCS_MAGIC_2 && header_out[3] == VKCS_MAGIC_3) {
+        if (readVkcsEnvelope(header_out, VKCS_ENVELOPE_SIZE, algo_out, stream_kind_out) != 0) {
+            return -1;
+        }
+        return 1;
+    }
+
+    return 0;
+}
+
+/* ===================================================================
+ * Decompression Rio Decorator
  * Wraps an inner rio for transparent decompression on read.
  * Used by RDB load.
  *
@@ -341,8 +360,9 @@ void compress_rio_destroy(compress_rio_t *cr) {
  * 4. Repeat until requested bytes are available or EOF/error
  * =================================================================== */
 
-#define DECOMPRESS_INITIAL_BUF_SIZE (64 * 1024) /* 64KB initial buffer */
-#define DECOMPRESS_READ_CHUNK_SIZE (64 * 1024)  /* 64KB read chunk */
+#define DECOMPRESS_INITIAL_BUF_SIZE (64 * 1024)       /* 64KB initial buffer */
+#define DECOMPRESS_READ_CHUNK_SIZE (64 * 1024)       /* 64KB read chunk */
+#define DECOMPRESS_MAX_BUF_SIZE (256 * 1024 * 1024)  /* 256MB safety limit */
 
 /* Read up to `len` bytes from the inner rio into `buf`.
  * Returns the number of bytes actually read (may be less than len).
@@ -374,25 +394,96 @@ static size_t decompressRioReadPartial(rio *inner, void *buf, size_t len) {
     return 0;
 }
 
-/* rio vtable: read callback — read from inner, decompress, serve.
- *
- * State machine:
- * 1. If decomp_buf has available bytes, serve them immediately
- * 2. Else, read compressed bytes from inner rio (accumulating in read_buf)
- * 3. Decompress into decomp_buf
- * 4. Repeat until requested bytes are available or EOF/error
- *
- * The inner rio may not have 64KB available (e.g., buffer rio with small
- * compressed data). We handle this by trying a large read first, then
- * falling back to accumulating 1 byte at a time until the decompressor
- * can make progress. */
+/* Decompress data in read_buf into decomp_buf. Grows decomp_buf as needed.
+ * Preserves unconsumed bytes at the front of read_buf.
+ * Returns -1 on decompressor error, 0 otherwise. */
+static int decompressDrainReadBuf(decompress_rio_t *dr) {
+    size_t src_offset = 0;
+    while (src_offset < dr->read_buf_fill) {
+        if (dr->decomp_buf_len >= dr->decomp_buf_size) {
+            size_t new_size = dr->decomp_buf_size * 2;
+            if (new_size < dr->decomp_buf_size || new_size > DECOMPRESS_MAX_BUF_SIZE)
+                return -1;
+            dr->decomp_buf = zrealloc(dr->decomp_buf, new_size);
+            dr->decomp_buf_size = new_size;
+        }
+        size_t out_space = dr->decomp_buf_size - dr->decomp_buf_len;
+        size_t consumed = 0;
+        ssize_t produced = streamDecompressFeed(
+            &dr->decompressor,
+            dr->decomp_buf + dr->decomp_buf_len, out_space,
+            dr->read_buf + src_offset,
+            dr->read_buf_fill - src_offset, &consumed);
+        if (produced < 0) return -1;
+        dr->decomp_buf_len += (size_t)produced;
+        src_offset += consumed;
+        if (consumed == 0 && produced == 0) break;
+    }
+    /* Preserve unconsumed bytes at front of read_buf */
+    if (src_offset > 0 && src_offset < dr->read_buf_fill) {
+        memmove(dr->read_buf, dr->read_buf + src_offset,
+                dr->read_buf_fill - src_offset);
+    }
+    if (src_offset > 0) dr->read_buf_fill -= src_offset;
+    return 0;
+}
+
+/* Read compressed data from inner rio and decompress into decomp_buf.
+ * Returns 0 on success (decomp_buf has data), or signals EOF/error. */
+static int decompressFillBuf(decompress_rio_t *dr) {
+    dr->decomp_buf_pos = 0;
+    dr->decomp_buf_len = 0;
+
+    /* Ensure read_buf has room for a chunk */
+    size_t need = dr->read_buf_fill + DECOMPRESS_READ_CHUNK_SIZE;
+    if (need < dr->read_buf_fill) return -1; /* overflow */
+    if (need > dr->read_buf_size) {
+        if (need > DECOMPRESS_MAX_BUF_SIZE) return -1;
+        dr->read_buf = zrealloc(dr->read_buf, need);
+        dr->read_buf_size = need;
+    }
+
+    /* Try bulk read first */
+    size_t got = decompressRioReadPartial(
+        dr->inner,
+        dr->read_buf + dr->read_buf_fill,
+        DECOMPRESS_READ_CHUNK_SIZE);
+    if (got > 0) {
+        dr->read_buf_fill += got;
+        if (decompressDrainReadBuf(dr) < 0) return -1;
+        if (dr->decomp_buf_len > 0) return 0;
+    }
+
+    /* Bulk read got nothing (or produced no output). Accumulate byte
+     * by byte until the decompressor can make progress or EOF. */
+    while (dr->decomp_buf_len == 0) {
+        if (dr->read_buf_fill >= dr->read_buf_size) {
+            size_t new_size = dr->read_buf_size * 2;
+            if (new_size < dr->read_buf_size || new_size > DECOMPRESS_MAX_BUF_SIZE)
+                return -1;
+            dr->read_buf_size = new_size;
+            dr->read_buf = zrealloc(dr->read_buf, dr->read_buf_size);
+        }
+        if (rioRead(dr->inner, dr->read_buf + dr->read_buf_fill, 1) == 0) {
+            if (rioCheckType(dr->inner) == RIO_TYPE_BUFFER)
+                dr->inner->flags &= ~RIO_FLAG_READ_ERROR;
+            break;
+        }
+        dr->read_buf_fill++;
+        if (decompressDrainReadBuf(dr) < 0) return -1;
+    }
+
+    if (dr->decomp_buf_len == 0 && dr->read_buf_fill == 0) return -1;
+    return 0;
+}
+
 static size_t decompressRioRead(rio *r, void *buf, size_t len) {
     decompress_rio_t *dr = (decompress_rio_t *)r;
     uint8_t *dst = (uint8_t *)buf;
     size_t remaining = len;
 
     while (remaining > 0) {
-        /* 1. Serve from decomp_buf if available */
+        /* Serve from decomp_buf if available */
         size_t avail = dr->decomp_buf_len - dr->decomp_buf_pos;
         if (avail > 0) {
             size_t to_copy = avail < remaining ? avail : remaining;
@@ -403,118 +494,8 @@ static size_t decompressRioRead(rio *r, void *buf, size_t len) {
             continue;
         }
 
-        /* 2. decomp_buf exhausted — reset and fill from inner rio */
-        dr->decomp_buf_pos = 0;
-        dr->decomp_buf_len = 0;
-
-        /* Ensure read_buf can hold at least DECOMPRESS_READ_CHUNK_SIZE
-         * plus any leftover bytes from a previous partial consume. */
-        size_t need = dr->read_buf_fill + DECOMPRESS_READ_CHUNK_SIZE;
-        if (need > dr->read_buf_size) {
-            dr->read_buf = zrealloc(dr->read_buf, need);
-            dr->read_buf_size = need;
-        }
-
-        /* Read compressed data from inner rio into read_buf.
-         * decompressRioReadPartial handles file rios (fread partial reads)
-         * and buffer rios (all-or-nothing without data loss) correctly. */
-        int got_new_data = 0;
-        size_t got = decompressRioReadPartial(
-            dr->inner,
-            dr->read_buf + dr->read_buf_fill,
-            DECOMPRESS_READ_CHUNK_SIZE);
-        if (got > 0) {
-            dr->read_buf_fill += got;
-            got_new_data = 1;
-        }
-
-        if (!got_new_data && dr->read_buf_fill == 0) {
-            /* No leftover and no new data — accumulate byte by byte */
-            while (dr->decomp_buf_len == 0) {
-                if (dr->read_buf_fill >= dr->read_buf_size) {
-                    dr->read_buf_size *= 2;
-                    dr->read_buf = zrealloc(dr->read_buf, dr->read_buf_size);
-                }
-                if (rioRead(dr->inner, dr->read_buf + dr->read_buf_fill, 1) == 0) {
-                    if (dr->read_buf_fill == 0) return 0;
-                    /* Only clear error for buffer rios (short read is not
-                     * a real error). For conn/fd rios, preserve the error
-                     * flag so callers can detect network failures. */
-                    if (rioCheckType(dr->inner) == RIO_TYPE_BUFFER)
-                        dr->inner->flags &= ~RIO_FLAG_READ_ERROR;
-                    break;
-                }
-                dr->read_buf_fill++;
-
-                /* Try to decompress what we have so far */
-                size_t src_offset = 0;
-                while (src_offset < dr->read_buf_fill) {
-                    if (dr->decomp_buf_len >= dr->decomp_buf_size) {
-                        size_t new_size = dr->decomp_buf_size * 2;
-                        dr->decomp_buf = zrealloc(dr->decomp_buf, new_size);
-                        dr->decomp_buf_size = new_size;
-                    }
-                    size_t out_space = dr->decomp_buf_size - dr->decomp_buf_len;
-                    size_t consumed = 0;
-                    ssize_t produced = streamDecompressFeed(
-                        &dr->decompressor,
-                        dr->decomp_buf + dr->decomp_buf_len, out_space,
-                        dr->read_buf + src_offset,
-                        dr->read_buf_fill - src_offset, &consumed);
-                    if (produced < 0) return 0;
-                    dr->decomp_buf_len += (size_t)produced;
-                    src_offset += consumed;
-                    if (consumed == 0 && produced == 0) break;
-                }
-                /* Preserve unconsumed bytes at front of read_buf */
-                if (src_offset > 0 && src_offset < dr->read_buf_fill) {
-                    memmove(dr->read_buf, dr->read_buf + src_offset,
-                            dr->read_buf_fill - src_offset);
-                    dr->read_buf_fill -= src_offset;
-                } else if (src_offset == dr->read_buf_fill) {
-                    dr->read_buf_fill = 0;
-                }
-
-                if (dr->decomp_buf_len > 0) break;
-            }
-            if (dr->decomp_buf_len == 0 && dr->read_buf_fill == 0) return 0;
-            continue;
-        }
-
-        /* 3. Decompress available data (large chunk + any leftover) */
-        size_t src_offset = 0;
-        while (src_offset < dr->read_buf_fill) {
-            if (dr->decomp_buf_len >= dr->decomp_buf_size) {
-                size_t new_size = dr->decomp_buf_size * 2;
-                dr->decomp_buf = zrealloc(dr->decomp_buf, new_size);
-                dr->decomp_buf_size = new_size;
-            }
-            size_t out_space = dr->decomp_buf_size - dr->decomp_buf_len;
-            size_t consumed = 0;
-            ssize_t produced = streamDecompressFeed(
-                &dr->decompressor,
-                dr->decomp_buf + dr->decomp_buf_len, out_space,
-                dr->read_buf + src_offset,
-                dr->read_buf_fill - src_offset, &consumed);
-            if (produced < 0) return 0;
-            dr->decomp_buf_len += (size_t)produced;
-            src_offset += consumed;
-            if (consumed == 0 && produced == 0) break;
-        }
-
-        /* Preserve unconsumed compressed bytes for next iteration.
-         * Without this, partial consume from streamDecompressFeed
-         * would silently drop trailing bytes, causing false EOF or
-         * corruption on the next read call. */
-        if (src_offset > 0 && src_offset < dr->read_buf_fill) {
-            memmove(dr->read_buf, dr->read_buf + src_offset,
-                    dr->read_buf_fill - src_offset);
-            dr->read_buf_fill -= src_offset;
-        } else if (src_offset >= dr->read_buf_fill) {
-            dr->read_buf_fill = 0;
-        }
-
-        if (dr->decomp_buf_len == 0) return 0;
+        /* Refill decomp_buf from inner rio */
+        if (decompressFillBuf(dr) < 0) return 0;
     }
 
     return len;
@@ -528,9 +509,12 @@ static size_t decompressRioWrite(rio *r, const void *buf, size_t len) {
     return 0; /* Not supported — decompress_rio is read-only */
 }
 
-/* rio vtable: tell callback */
+/* rio vtable: tell callback — return inner (compressed) rio position
+ * so loading progress reports compressed_bytes / compressed_file_size,
+ * not decompressed_bytes / compressed_file_size (which would exceed 100%). */
 static off_t decompressRioTell(rio *r) {
-    return (off_t)r->processed_bytes;
+    decompress_rio_t *dr = (decompress_rio_t *)r;
+    return rioTell(dr->inner);
 }
 
 /* rio vtable: flush callback — no-op for read-only rio */
@@ -601,7 +585,7 @@ void decompress_rio_destroy(decompress_rio_t *dr) {
 }
 
 /* ===================================================================
- * Prefix Replay Rio Decorator (Task 3.6)
+ * Prefix Replay Rio Decorator
  * Serves buffered prefix bytes before delegating to inner rio.
  * Used for uncompressed RDB files where header bytes were consumed
  * for format detection and need to be replayed.
@@ -692,17 +676,17 @@ void prefix_replay_rio_init(prefix_replay_rio_t *pr, rio *inner, const char *pre
 }
 
 /* ===================================================================
- * Async Compress API (stubs — implemented in Tasks 7.x)
+ * Async Compress API (stubs)
  * =================================================================== */
 
 async_compress_ctx_t *async_compress_create(const async_compress_config_t *cfg) {
-    /* TODO: Task 7.1 */
+    /* Stub — async replication compression not yet implemented. */
     (void)cfg;
     return NULL;
 }
 
 size_t async_compress_write(async_compress_ctx_t *t, const void *buf, size_t len) {
-    /* TODO: Task 7.2 */
+    /* Stub */
     (void)t;
     (void)buf;
     (void)len;
@@ -710,27 +694,27 @@ size_t async_compress_write(async_compress_ctx_t *t, const void *buf, size_t len
 }
 
 void async_compress_finish(async_compress_ctx_t *t) {
-    /* TODO: Task 7.3 */
+    /* Stub */
     (void)t;
 }
 
 void async_compress_destroy(async_compress_ctx_t *t) {
-    /* TODO: Task 7.1 */
+    /* Stub */
     (void)t;
 }
 
 void async_compress_check_timeout(async_compress_ctx_t *t, long long now_us) {
-    /* TODO: Task 6.2 */
+    /* Stub */
     (void)t;
     (void)now_us;
 }
 
 void async_compress_retain(async_compress_ctx_t *t) {
-    /* TODO: Task 7.1 */
+    /* Stub */
     (void)t;
 }
 
 void async_compress_release(async_compress_ctx_t *t) {
-    /* TODO: Task 7.1 */
+    /* Stub */
     (void)t;
 }

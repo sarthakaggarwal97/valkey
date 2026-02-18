@@ -69,7 +69,7 @@
 /* This macro is called when RDB read failed (possibly a short read) */
 #define rdbReportReadError(...) rdbReportError(0, __LINE__, __VA_ARGS__)
 
-/* Returns 1 if streaming compression (LZ4/ZSTD) is enabled for RDB saves. */
+/* Returns 1 if streaming compression is enabled for RDB saves. */
 static inline int isRdbStreamingCompressionEnabled(void) {
     return server.rdb_compression &&
            (server.rdb_compression_algo == ALGO_LZ4 ||
@@ -1649,7 +1649,8 @@ werr:
     saved_errno = errno;
     serverLog(LL_WARNING, "Write error while saving DB to the disk(%s): %s", err_op, strerror(errno));
     if (cr_initialized) {
-        compress_rio_finish(&cr);
+        /* Skip finish on error — output is being discarded (unlink below).
+         * Just release resources. */
         compress_rio_destroy(&cr);
     }
     if (fp) fclose(fp);
@@ -3639,58 +3640,39 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     startLoadingFile(sb.st_size, filename, rdbflags);
     rioInitWithFile(&rdb, fp);
 
-    /* Format detection: read first 8 bytes to distinguish VKCS-compressed
-     * RDB from uncompressed RDB. */
+    /* Format detection: check for VKCS envelope, fall back to RDB magic. */
     uint8_t header[VKCS_ENVELOPE_SIZE];
-    size_t header_read = 0;
+    compression_algo_t algo;
+    uint8_t stream_kind;
     decompress_rio_t dr;
     prefix_replay_rio_t pr;
     int dr_initialized = 0;
     rio *load_rio = &rdb;
 
-    if (rioRead(&rdb, header, VKCS_ENVELOPE_SIZE) == 0) {
+    int vkcs = vkcsDetectFormat(&rdb, header, &algo, &stream_kind);
+    if (vkcs < 0) {
         serverLog(LL_WARNING, "Short read loading RDB header from %s", filename);
-        retval = RDB_FAILED;
         goto done;
-    }
-    header_read = VKCS_ENVELOPE_SIZE;
-
-    if (header[0] == VKCS_MAGIC_0 && header[1] == VKCS_MAGIC_1 &&
-        header[2] == VKCS_MAGIC_2 && header[3] == VKCS_MAGIC_3) {
-        /* VKCS envelope detected — parse and set up decompression. */
-        compression_algo_t algo;
-        uint8_t stream_kind;
-        if (readVkcsEnvelope(header, VKCS_ENVELOPE_SIZE, &algo, &stream_kind) != 0) {
-            serverLog(LL_WARNING, "Invalid VKCS envelope in RDB file %s", filename);
-            retval = RDB_FAILED;
-            goto done;
-        }
+    } else if (vkcs == 1) {
+        /* VKCS compressed stream */
         if (stream_kind != STREAM_KIND_RDB) {
-            serverLog(LL_WARNING, "VKCS envelope stream_kind is not RDB in file %s", filename);
-            retval = RDB_FAILED;
+            serverLog(LL_WARNING, "VKCS stream_kind is not RDB in file %s", filename);
             goto done;
         }
         decompress_rio_init(&dr, &rdb, algo);
+        dr_initialized = 1;
         if (dr.base.flags & RIO_FLAG_READ_ERROR) {
-            serverLog(LL_WARNING, "Failed to initialize decompressor for RDB file %s", filename);
-            retval = RDB_FAILED;
-            dr_initialized = 1; /* still need to destroy */
+            serverLog(LL_WARNING, "Failed to initialize decompressor for %s", filename);
             goto done;
         }
-        dr_initialized = 1;
         load_rio = (rio *)&dr;
-        serverLog(LL_NOTICE, "Loading RDB with streaming compression (algo=%d) from %s",
-                  (int)algo, filename);
-    } else if (rdbIsValidMagic(header, header_read)) {
-        /* Uncompressed RDB — replay the consumed header bytes. */
-        prefix_replay_rio_init(&pr, &rdb, (const char *)header, header_read);
+        serverLog(LL_NOTICE, "Loading compressed RDB (algo=%d) from %s", (int)algo, filename);
+    } else if (rdbIsValidMagic(header, VKCS_ENVELOPE_SIZE)) {
+        /* Uncompressed RDB — replay the consumed header bytes */
+        prefix_replay_rio_init(&pr, &rdb, (const char *)header, VKCS_ENVELOPE_SIZE);
         load_rio = (rio *)&pr;
     } else {
-        serverLog(LL_WARNING,
-                  "Wrong signature trying to load DB from file %s: "
-                  "neither VKCS nor valid RDB magic",
-                  filename);
-        retval = RDB_FAILED;
+        serverLog(LL_WARNING, "Unrecognized format loading RDB from %s", filename);
         goto done;
     }
 

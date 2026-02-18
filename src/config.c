@@ -183,7 +183,7 @@ configEnum rdb_compression_algo_enum[] = {{"lzf", ALGO_LZF},
                                           {"zstd", ALGO_ZSTD},
                                           {NULL, 0}};
 
-/* Reject ZSTD until ZSTD support is compiled/enabled. */
+/* Reject unsupported compression algorithms at config time. */
 static int isValidRdbCompressionAlgo(int val, const char **err) {
     if (val == ALGO_ZSTD) {
         *err = "ZSTD compression is not yet supported. Use lzf or lz4.";

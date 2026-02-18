@@ -119,6 +119,12 @@ void decompress_rio_destroy(decompress_rio_t *dr);
 
 void prefix_replay_rio_init(prefix_replay_rio_t *pr, rio *inner, const char *prefix, size_t prefix_len);
 
+/* --- Stream Format Detection --- */
+int vkcsDetectFormat(rio *inner,
+                     uint8_t *header_out,
+                     compression_algo_t *algo_out,
+                     uint8_t *stream_kind_out);
+
 /* --- Sync Compress API --- */
 sync_compress_ctx_t *sync_compress_create(const sync_compress_config_t *cfg,
                                           vkcsEmitFn emit_cb,
