@@ -110,7 +110,7 @@ struct async_compress_ctx_t {
 };
 
 /* --- Rio Decorator API --- */
-void rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_config_t *cfg);
+int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_config_t *cfg);
 void compress_rio_finish(compress_rio_t *cr);
 void compress_rio_destroy(compress_rio_t *cr);
 

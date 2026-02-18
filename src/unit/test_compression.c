@@ -701,9 +701,7 @@ int test_compressRioRoundTrip(int argc, char **argv, int flags) {
 
     sync_compress_config_t cfg = {.algo = ALGO_LZ4, .level = 0, .stream_kind = STREAM_KIND_RDB};
     compress_rio_t cr;
-    rioInitWithCompress(&cr, &buffer_rio, &cfg);
-
-    /* Write data through the compress rio */
+    TEST_ASSERT(rioInitWithCompress(&cr, &buffer_rio, &cfg) == 0);
     const char *test_data = "The quick brown fox jumps over the lazy dog. "
                             "Pack my box with five dozen liquor jugs.";
     size_t data_len = strlen(test_data);
@@ -854,7 +852,7 @@ int test_compressRioFinishIdempotent(int argc, char **argv, int flags) {
 
     sync_compress_config_t cfg = {.algo = ALGO_LZ4, .level = 0, .stream_kind = STREAM_KIND_RDB};
     compress_rio_t cr;
-    rioInitWithCompress(&cr, &buffer_rio, &cfg);
+    TEST_ASSERT(rioInitWithCompress(&cr, &buffer_rio, &cfg) == 0);
 
     rioWrite((rio *)&cr, "test", 4);
     compress_rio_finish(&cr);
@@ -883,7 +881,7 @@ int test_compressRioFlushMidStream(int argc, char **argv, int flags) {
 
     sync_compress_config_t cfg = {.algo = ALGO_LZ4, .level = 0, .stream_kind = STREAM_KIND_RDB};
     compress_rio_t cr;
-    rioInitWithCompress(&cr, &buffer_rio, &cfg);
+    TEST_ASSERT(rioInitWithCompress(&cr, &buffer_rio, &cfg) == 0);
 
     /* Write some data */
     TEST_ASSERT(rioWrite((rio *)&cr, "first chunk", 11) != 0);

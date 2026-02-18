@@ -10,6 +10,7 @@
 
 #include "compression_pipeline.h"
 #include "zmalloc.h"
+#include <assert.h>
 #include <string.h>
 
 /* ===================================================================
@@ -183,9 +184,15 @@ static int compressRioEmit(void *ctx, const uint8_t *data, size_t len) {
 /* rio vtable: write callback — compress then delegate to inner rio */
 static size_t compressRioWrite(rio *r, const void *buf, size_t len) {
     compress_rio_t *cr = (compress_rio_t *)r;
-    if (cr->finalized || cr->compressor.errored) return 0;
+    if (cr->finalized || cr->compressor.errored) {
+        r->flags |= RIO_FLAG_WRITE_ERROR;
+        return 0;
+    }
     sync_compress_write(&cr->compressor, buf, len);
-    if (cr->compressor.errored) return 0;
+    if (cr->compressor.errored) {
+        r->flags |= RIO_FLAG_WRITE_ERROR;
+        return 0;
+    }
     return len; /* rio write returns 0 on error, non-zero on success */
 }
 
@@ -243,8 +250,9 @@ static int compressRioFlush(rio *r) {
 /* Initialize a compression rio decorator wrapping an inner rio.
  * Sets up the rio vtable so callers can use standard rioWrite/rioFlush.
  * The compressor is initialized with a fresh algorithm context (fork-safe). */
-void rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_config_t *cfg) {
-    if (!cr || !inner || !cfg) return;
+/* Returns 0 on success, -1 on failure (e.g., compressor init failed). */
+int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_config_t *cfg) {
+    if (!cr || !inner || !cfg) return -1;
 
     memset(cr, 0, sizeof(*cr));
 
@@ -279,7 +287,9 @@ void rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_con
 
     if (streamCompressorInit(&cr->compressor.compressor, cfg->algo, cfg->level) != 0) {
         cr->compressor.errored = 1;
+        return -1;
     }
+    return 0;
 }
 
 /* Finalize the compression frame and flush inner rio.
@@ -291,9 +301,13 @@ void compress_rio_finish(compress_rio_t *cr) {
 
     sync_compress_finish(&cr->compressor);
 
-    /* Flush inner rio to ensure all bytes reach the destination */
+    /* Flush inner rio to ensure all bytes reach the destination.
+     * Propagate flush failure to the compressor error state so
+     * callers can detect it. */
     if (cr->inner->flush) {
-        cr->inner->flush(cr->inner);
+        if (cr->inner->flush(cr->inner) == 0) {
+            cr->compressor.errored = 1;
+        }
     }
 }
 
@@ -321,7 +335,7 @@ void compress_rio_destroy(compress_rio_t *cr) {
  * =================================================================== */
 
 #define DECOMPRESS_INITIAL_BUF_SIZE (64 * 1024) /* 64KB initial buffer */
-#define DECOMPRESS_READ_CHUNK_SIZE (64 * 1024)   /* 64KB read chunk */
+#define DECOMPRESS_READ_CHUNK_SIZE (64 * 1024)  /* 64KB read chunk */
 
 /* Read up to `len` bytes from the inner rio into `buf`.
  * Returns the number of bytes actually read (may be less than len).
@@ -534,6 +548,12 @@ void decompress_rio_init(decompress_rio_t *dr, rio *inner, compression_algo_t al
     /* Initialize decompressor */
     if (streamDecompressorInit(&dr->decompressor, algo) != 0) {
         dr->base.flags |= RIO_FLAG_READ_ERROR;
+        /* Allocate minimal buffers so destroy() and accidental reads
+         * don't dereference NULL. */
+        dr->read_buf = zmalloc(1);
+        dr->read_buf_size = 1;
+        dr->decomp_buf = zmalloc(1);
+        dr->decomp_buf_size = 1;
         return;
     }
 
@@ -622,8 +642,7 @@ static int prefixReplayRioFlush(rio *r) {
 /* Initialize a prefix-replay rio decorator.
  * Stores the consumed header bytes and serves them before inner rio.
  * prefix_len must be <= 8 (size of the prefix buffer). */
-void prefix_replay_rio_init(prefix_replay_rio_t *pr, rio *inner,
-                            const char *prefix, size_t prefix_len) {
+void prefix_replay_rio_init(prefix_replay_rio_t *pr, rio *inner, const char *prefix, size_t prefix_len) {
     if (!pr || !inner) return;
 
     memset(pr, 0, sizeof(*pr));
@@ -641,8 +660,8 @@ void prefix_replay_rio_init(prefix_replay_rio_t *pr, rio *inner,
 
     pr->inner = inner;
 
-    /* Copy prefix bytes (capped at buffer size) */
-    if (prefix_len > sizeof(pr->prefix)) prefix_len = sizeof(pr->prefix);
+    /* Copy prefix bytes — must fit in the fixed-size buffer */
+    assert(prefix_len <= sizeof(pr->prefix));
     if (prefix && prefix_len > 0) {
         memcpy(pr->prefix, prefix, prefix_len);
     }

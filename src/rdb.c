@@ -69,6 +69,13 @@
 /* This macro is called when RDB read failed (possibly a short read) */
 #define rdbReportReadError(...) rdbReportError(0, __LINE__, __VA_ARGS__)
 
+/* Returns 1 if streaming compression (LZ4/ZSTD) is enabled for RDB saves. */
+static inline int isRdbStreamingCompressionEnabled(void) {
+    return server.rdb_compression &&
+           (server.rdb_compression_algo == ALGO_LZ4 ||
+            server.rdb_compression_algo == ALGO_ZSTD);
+}
+
 /* This macro tells if we are in the context of a RESTORE command, and not loading an RDB or AOF. */
 #define isRestoreContext() ((server.current_client == NULL || server.current_client->id == CLIENT_ID_AOF) ? 0 : 1)
 
@@ -1553,9 +1560,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
     int error = 0;
     int saved_errno;
     char *err_op; /* For a detailed log */
-    int use_streaming_compression = server.rdb_compression &&
-                                    (server.rdb_compression_algo == ALGO_LZ4 ||
-                                     server.rdb_compression_algo == ALGO_ZSTD);
+    int use_streaming_compression = isRdbStreamingCompressionEnabled();
     compress_rio_t cr;
     int cr_initialized = 0;
 
@@ -1589,7 +1594,10 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
             .level = 0, /* default level */
             .stream_kind = STREAM_KIND_RDB,
         };
-        rioInitWithCompress(&cr, &rdb, &cfg);
+        if (rioInitWithCompress(&cr, &rdb, &cfg) != 0) {
+            err_op = "rioInitWithCompress";
+            goto werr;
+        }
         save_rio = (rio *)&cr;
         cr_initialized = 1;
     }
@@ -1689,8 +1697,7 @@ int rdbSave(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
     }
 
     serverLog(LL_NOTICE, "DB saved on disk");
-    if (server.rdb_compression &&
-        (server.rdb_compression_algo == ALGO_LZ4 || server.rdb_compression_algo == ALGO_ZSTD)) {
+    if (isRdbStreamingCompressionEnabled()) {
         serverLog(LL_NOTICE,
                   "RDB saved with streaming compression; requires compression-capable Valkey to load");
     }
