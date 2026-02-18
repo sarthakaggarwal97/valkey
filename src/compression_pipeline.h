@@ -17,16 +17,25 @@
 typedef struct {
     compression_algo_t algo;
     int level;
+    uint8_t stream_kind; /* STREAM_KIND_RDB or STREAM_KIND_REPL */
 } sync_compress_config_t;
 
-/* --- Sync compress context (fork child, bgIteration) --- */
+/* --- Sync compress context (fork child, bgIteration) ---
+ * Used internally by compress_rio_t. Fork-safe by design: each child
+ * creates a fresh context with its own algorithm state. No shared state. */
 typedef struct {
     compression_algo_t algo;
     int compression_level;
     stream_compressor_t compressor;
-    void (*emit_cb)(void *ctx, const uint8_t *data, size_t len);
+    uint8_t *out_buf;    /* Reusable output buffer, sized via streamCompressOutputBound */
+    size_t out_buf_size; /* Current allocation size of out_buf */
+    vkcsEmitFn emit_cb;  /* Returns 0 on success, -1 on error */
     void *emit_ctx;
+    uint8_t stream_kind; /* STREAM_KIND_RDB or STREAM_KIND_REPL */
     int envelope_written;
+    int finished; /* Set by sync_compress_finish — blocks further writes.
+                   * Prevents accidental multi-frame output under one envelope. */
+    int errored;  /* Sticky error flag — once set, all writes fail */
 } sync_compress_ctx_t;
 
 /* --- Compression rio decorator (RDB save) --- */
@@ -44,6 +53,9 @@ typedef struct {
     stream_decompressor_t decompressor;
     uint8_t *read_buf;
     size_t read_buf_size;
+    size_t read_buf_fill; /* Bytes of valid compressed data in read_buf (may
+                           * include unconsumed remainder from previous
+                           * streamDecompressFeed call). */
     uint8_t *decomp_buf;
     size_t decomp_buf_size;
     size_t decomp_buf_pos;
@@ -108,7 +120,9 @@ void decompress_rio_destroy(decompress_rio_t *dr);
 void prefix_replay_rio_init(prefix_replay_rio_t *pr, rio *inner, const char *prefix, size_t prefix_len);
 
 /* --- Sync Compress API --- */
-sync_compress_ctx_t *sync_compress_create(const sync_compress_config_t *cfg);
+sync_compress_ctx_t *sync_compress_create(const sync_compress_config_t *cfg,
+                                          vkcsEmitFn emit_cb,
+                                          void *emit_ctx);
 void sync_compress_write(sync_compress_ctx_t *t, const void *buf, size_t len);
 void sync_compress_finish(sync_compress_ctx_t *t);
 void sync_compress_destroy(sync_compress_ctx_t *t);
