@@ -17,7 +17,10 @@
 typedef struct {
     compression_algo_t algo;
     int level;
-    uint8_t stream_kind; /* STREAM_KIND_RDB or STREAM_KIND_REPL */
+    uint8_t stream_kind;    /* STREAM_KIND_RDB or STREAM_KIND_REPL */
+    int content_checksum;   /* Enable algorithm-native content checksum.
+                             * For LZ4: xxHash32 in the LZ4F frame trailer.
+                             * Set from server.rdb_checksum for RDB streams. */
 } sync_compress_config_t;
 
 /* --- Sync compress context (fork child, bgIteration) ---

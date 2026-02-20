@@ -199,13 +199,13 @@ void streamDecompressorDestroy(stream_decompressor_t *sd) {
 /* Shared LZ4F preferences — used by both streamCompressOutputBound() and
  * streamCompressFeed() to ensure the bound calculation matches the actual
  * compression parameters. Without this, LZ4F_compressBound(0, NULL) assumes
- * the default 64KB block size while the compressor uses 1MB blocks, producing
- * a bound up to 16x too small for flush/end operations. */
+ * the default 64KB block size while the compressor may use different blocks,
+ * producing a bound that doesn't match actual compression parameters. */
 static const LZ4F_preferences_t lz4f_prefs = {
     .frameInfo = {
-        .contentChecksumFlag = LZ4F_noContentChecksum,
+        .contentChecksumFlag = LZ4F_contentChecksumEnabled,
         .blockChecksumFlag = LZ4F_noBlockChecksum,
-        .blockSizeID = LZ4F_max1MB,
+        .blockSizeID = LZ4F_max64KB,
     },
     .compressionLevel = 0, /* bound calculation uses 0 (worst-case); actual
                             * compression uses sc->level via a local copy */
@@ -214,7 +214,7 @@ static const LZ4F_preferences_t lz4f_prefs = {
 /* Return upper bound on compressed output size.
  * Accounts for frame header overhead when !frame_started and
  * flush/end overhead for internally buffered data.
- * For LZ4: uses lz4f_prefs (1MB blocks) to match streamCompressFeed. */
+ * For LZ4: uses lz4f_prefs (64KB blocks) to match streamCompressFeed. */
 size_t streamCompressOutputBound(compression_algo_t algo, size_t input_len, int frame_started, compress_flush_mode_t flush_mode) {
     switch (algo) {
     case ALGO_LZ4: {
@@ -261,9 +261,13 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
 
         /* Begin frame on first call */
         if (!sc->frame_started) {
-            /* Local copy of shared prefs so we can set the actual level */
+            /* Local copy of shared prefs so we can set the actual level
+             * and content checksum flag per-stream. */
             LZ4F_preferences_t prefs = lz4f_prefs;
             prefs.compressionLevel = sc->level;
+            prefs.frameInfo.contentChecksumFlag = sc->content_checksum
+                ? LZ4F_contentChecksumEnabled
+                : LZ4F_noContentChecksum;
             size_t r = LZ4F_compressBegin((LZ4F_cctx *)sc->ctx.lz4f,
                                           output, output_capacity, &prefs);
             if (LZ4F_isError(r)) {

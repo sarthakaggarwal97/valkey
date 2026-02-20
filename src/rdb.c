@@ -1489,7 +1489,11 @@ int rdbSaveRio(int req, int rdbver, rio *rdb, int *error, int rdbflags, rdbSaveI
     long key_counter = 0;
     int j;
 
-    if (server.rdb_checksum) rdb->update_cksum = rioGenericUpdateChecksum;
+    /* Set up CRC64 checksum callback. Skip for streaming-compressed rios —
+     * integrity is provided by the algorithm's native content checksum
+     * (e.g., LZ4F xxHash32). The RDB footer CRC64 will be 0. */
+    if (server.rdb_checksum && !(rdb->flags & RIO_FLAG_STREAMING_COMPRESSION))
+        rdb->update_cksum = rioGenericUpdateChecksum;
     const char *magic_prefix = rdbUseValkeyMagic(rdbver) ? "VALKEY" : "REDIS0";
     serverAssert(rdbver >= 0 && rdbver <= RDB_VERSION);
     snprintf(magic, sizeof(magic), "%s%03d", magic_prefix, rdbver);
@@ -1596,6 +1600,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
             .algo = (compression_algo_t)server.rdb_compression_algo,
             .level = 0, /* default level */
             .stream_kind = STREAM_KIND_RDB,
+            .content_checksum = server.rdb_checksum,
         };
         if (rioInitWithCompress(&cr, &rdb, &cfg) != 0) {
             errno = EIO; /* Compressor init failure — set errno for werr log */
@@ -3077,7 +3082,12 @@ void stopSaving(int success) {
 /* Track loading progress in order to serve client's from time to time
    and if needed calculate rdb checksum  */
 void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
-    if (server.rdb_checksum) rioGenericUpdateChecksum(r, buf, len);
+    /* Skip CRC64 for VKCS compressed streams — integrity is provided by
+     * the algorithm's native content checksum (e.g., LZ4F xxHash32),
+     * validated automatically during decompression. Hashing ~1GB of
+     * decompressed bytes here would be redundant and expensive. */
+    if (server.rdb_checksum && !(r->flags & RIO_FLAG_STREAMING_COMPRESSION))
+        rioGenericUpdateChecksum(r, buf, len);
     if (server.loading_process_events_interval_bytes &&
         (r->processed_bytes + len) / server.loading_process_events_interval_bytes >
             r->processed_bytes / server.loading_process_events_interval_bytes) {
@@ -3579,7 +3589,14 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         if (rioRead(rdb, &cksum, 8) == 0) goto eoferr;
         if (server.rdb_checksum && !server.skip_checksum_validation) {
             memrev64ifbe(&cksum);
-            if (rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) {
+            if (rdb->flags & RIO_FLAG_STREAMING_COMPRESSION) {
+                /* VKCS compressed stream — integrity is provided by the
+                 * algorithm's native content checksum (e.g., LZ4F xxHash32),
+                 * not the RDB CRC64. Skip the footer comparison regardless
+                 * of the stored value (handles both old files with non-zero
+                 * CRC64 and new files with CRC64 = 0). */
+                serverLog(LL_NOTICE, "Streaming-compressed RDB: integrity validated by codec checksum, skipping CRC64.");
+            } else if (rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) {
                 serverLog(LL_NOTICE, "RDB file was saved with checksum disabled: skipped checksum for this transfer");
             } else if (cksum == 0) {
                 serverLog(LL_NOTICE, "RDB file was saved with checksum disabled: no check performed.");

@@ -40,6 +40,7 @@ sync_compress_ctx_t *sync_compress_create(const sync_compress_config_t *cfg,
         zfree(t);
         return NULL;
     }
+    t->compressor.content_checksum = cfg->content_checksum;
 
     /* Pre-allocate output buffer for typical writes. Will be resized
      * as needed in sync_compress_write. */
@@ -164,10 +165,14 @@ void sync_compress_finish(sync_compress_ctx_t *t) {
  * Wraps an inner rio for transparent compression on write.
  * Used by BGSAVE (fork child) and diskless sync.
  *
- * RDB CHECKSUM SEMANTICS: rdbSaveRio() computes CRC64 via rioWrite()
- * on the outer rio. The decorator's base.update_cksum checksums the
- * UNCOMPRESSED bytes before compression. On load, decompress_rio_t
- * returns uncompressed bytes, so the RDB CRC64 matches.
+ * RDB CHECKSUM SEMANTICS: When streaming compression is active, the
+ * RDB CRC64 is NOT computed on uncompressed bytes. Instead, integrity
+ * is provided by the algorithm's native content checksum (e.g., LZ4F
+ * xxHash32), which is validated automatically during decompression.
+ * The RDB footer CRC64 will be 0, which the loader treats as
+ * "checksum disabled". This avoids hashing ~1GB of decompressed data
+ * on load, matching LZF's cost model where integrity checking is
+ * embedded in the codec rather than layered on top.
  * =================================================================== */
 
 /* Emit callback for compress_rio: writes compressed bytes to inner rio.
@@ -255,9 +260,13 @@ int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_conf
     cr->base.write = compressRioWrite;
     cr->base.tell = compressRioTell;
     cr->base.flush = compressRioFlush;
-    /* Checksum the UNCOMPRESSED bytes (RDB CRC64 integrity).
-     * Do NOT propagate to inner rio — avoid double-checksumming. */
-    cr->base.update_cksum = rioGenericUpdateChecksum;
+    /* Checksum strategy: when streaming compression is active, integrity
+     * is provided by the algorithm's native content checksum (e.g., LZ4F
+     * xxHash32) rather than the RDB CRC64. Skip the expensive uncompressed-
+     * domain CRC64 — it would hash ~1GB of decompressed data on load for
+     * no additional benefit. The RDB footer CRC64 will be 0, which the
+     * loader treats as "checksum disabled". */
+    cr->base.update_cksum = NULL;
     cr->base.cksum = 0;
     cr->base.flags = RIO_FLAG_STREAMING_COMPRESSION;
     cr->base.processed_bytes = 0;
@@ -283,6 +292,7 @@ int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_conf
         cr->compressor.errored = 1;
         return -1;
     }
+    cr->compressor.compressor.content_checksum = cfg->content_checksum;
     return 0;
 }
 
@@ -360,10 +370,16 @@ int vkcsDetectFormat(rio *inner,
  * 4. Repeat until requested bytes are available or EOF/error
  * =================================================================== */
 
-#define DECOMPRESS_INITIAL_BUF_SIZE (1024 * 1024)   /* 1MB — matches LZ4 block size */
-#define DECOMPRESS_READ_CHUNK_SIZE (256 * 1024)     /* 256KB read chunk */
-#define DECOMPRESS_MAX_BUF_SIZE (256 * 1024 * 1024) /* 256MB safety limit */
-#define DECOMPRESS_DIRECT_THRESHOLD (64 * 1024)     /* bypass decomp_buf above this */
+#define DECOMPRESS_INITIAL_BUF_SIZE (256 * 1024)          /* 256KB: batch multiple LZ4 blocks per read */
+#define DECOMPRESS_READ_CHUNK_SIZE (256 * 1024)          /* Read 256KB of compressed data per pump cycle.
+                                                          * With 64KB LZ4 blocks this batches ~4 blocks,
+                                                          * reducing fread/pump loop overhead. */
+#define DECOMPRESS_MAX_BUF_SIZE (256 * 1024 * 1024)     /* 256MB safety limit */
+#define DECOMPRESS_DIRECT_THRESHOLD 256                  /* Reads >= 256B go directly into
+                                                          * caller buffer (no decomp_buf copy).
+                                                          * Only tiny metadata reads (type bytes,
+                                                          * lengths, expiry) use the buffered path. */
+#define DECOMPRESS_SMALL_BUF_SIZE (64 * 1024)            /* decomp_buf for small reads */
 
 /* Read up to `len` bytes from the inner rio.
  * Returns bytes actually read (may be less than len). 0 on EOF/error.
@@ -551,8 +567,10 @@ static int decompressRioFlush(rio *r) {
 
 /* Initialize a decompression rio decorator wrapping an inner rio.
  * The VKCS envelope must already be consumed by the caller.
- * Buffers start at DECOMPRESS_INITIAL_BUF_SIZE (1MB) to match LZ4
- * block size and avoid realloc churn during load. */
+ * read_buf starts at DECOMPRESS_INITIAL_BUF_SIZE (256KB) to batch
+ * multiple LZ4 blocks per read and reduce fread/pump overhead.
+ * decomp_buf starts at DECOMPRESS_SMALL_BUF_SIZE (64KB)
+ * for small metadata reads; value-sized reads bypass it entirely. */
 void decompress_rio_init(decompress_rio_t *dr, rio *inner, compression_algo_t algo) {
     if (!dr || !inner) return;
 
@@ -565,7 +583,7 @@ void decompress_rio_init(decompress_rio_t *dr, rio *inner, compression_algo_t al
     dr->base.flush = decompressRioFlush;
     dr->base.update_cksum = NULL;
     dr->base.cksum = 0;
-    dr->base.flags = 0;
+    dr->base.flags = RIO_FLAG_STREAMING_COMPRESSION;
     dr->base.processed_bytes = 0;
     dr->base.max_processing_chunk = 0;
 
@@ -583,11 +601,12 @@ void decompress_rio_init(decompress_rio_t *dr, rio *inner, compression_algo_t al
         return;
     }
 
-    /* 1MB initial buffers match LZ4 block size to avoid realloc churn */
+    /* read_buf sized for one LZ4 block + framing; decomp_buf sized for
+     * small metadata reads only (values go through the direct path). */
     dr->read_buf = zmalloc(DECOMPRESS_INITIAL_BUF_SIZE);
     dr->read_buf_size = DECOMPRESS_INITIAL_BUF_SIZE;
-    dr->decomp_buf = zmalloc(DECOMPRESS_INITIAL_BUF_SIZE);
-    dr->decomp_buf_size = DECOMPRESS_INITIAL_BUF_SIZE;
+    dr->decomp_buf = zmalloc(DECOMPRESS_SMALL_BUF_SIZE);
+    dr->decomp_buf_size = DECOMPRESS_SMALL_BUF_SIZE;
     dr->decomp_buf_pos = 0;
     dr->decomp_buf_len = 0;
 }

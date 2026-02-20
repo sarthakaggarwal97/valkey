@@ -62,6 +62,11 @@ typedef struct {
                       * Default false (safe). The async replication path sets
                       * this to true because the accumulator sds is swapped
                       * out before submission, giving exclusive ownership. */
+    bool content_checksum; /* LZ4F: enable content checksum in frame.
+                            * When true, LZ4F computes xxHash32 over
+                            * uncompressed data and appends it to the frame.
+                            * LZ4F_decompress validates it automatically.
+                            * Set based on server.rdb_checksum. */
 } stream_compressor_t;
 
 /* --- Streaming decompressor context --- */
