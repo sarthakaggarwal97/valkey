@@ -8,7 +8,6 @@
  * Currently supports LZ4 via LZ4F frame API. */
 
 #include "compression.h"
-#include "zmalloc.h"
 #include <limits.h>
 #include <lz4frame.h>
 #include <string.h>
@@ -94,27 +93,21 @@ int readVkcsEnvelope(const uint8_t *buf, size_t len, compression_algo_t *algo, u
 int streamCompressorInit(stream_compressor_t *sc, compression_algo_t algo, int level) {
     if (!sc) return -1;
     memset(sc, 0, sizeof(*sc));
-    sc->algo = algo;
-    sc->level = level;
-    sc->frame_started = false;
 
     switch (algo) {
     case ALGO_LZ4: {
         LZ4F_cctx *cctx = NULL;
         LZ4F_errorCode_t err = LZ4F_createCompressionContext(&cctx, LZ4F_VERSION);
-        if (LZ4F_isError(err)) {
-            memset(sc, 0, sizeof(*sc));
-            return -1;
-        }
+        if (LZ4F_isError(err)) return -1;
+        sc->algo = algo;
+        sc->level = level;
         sc->ctx.lz4f = cctx;
         return 0;
     }
     case ALGO_ZSTD:
         /* Not yet implemented */
-        memset(sc, 0, sizeof(*sc));
         return -1;
     default:
-        memset(sc, 0, sizeof(*sc));
         return -1;
     }
 }
@@ -147,25 +140,20 @@ void streamCompressorDestroy(stream_compressor_t *sc) {
 int streamDecompressorInit(stream_decompressor_t *sd, compression_algo_t algo) {
     if (!sd) return -1;
     memset(sd, 0, sizeof(*sd));
-    sd->algo = algo;
 
     switch (algo) {
     case ALGO_LZ4: {
         LZ4F_dctx *dctx = NULL;
         LZ4F_errorCode_t err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
-        if (LZ4F_isError(err)) {
-            memset(sd, 0, sizeof(*sd));
-            return -1;
-        }
+        if (LZ4F_isError(err)) return -1;
+        sd->algo = algo;
         sd->ctx.lz4f = dctx;
         return 0;
     }
     case ALGO_ZSTD:
         /* Not yet implemented */
-        memset(sd, 0, sizeof(*sd));
         return -1;
     default:
-        memset(sd, 0, sizeof(*sd));
         return -1;
     }
 }
@@ -188,11 +176,6 @@ void streamDecompressorDestroy(stream_decompressor_t *sd) {
     default:
         break;
     }
-    if (sd->out_buf) {
-        zfree(sd->out_buf);
-        sd->out_buf = NULL;
-        sd->out_buf_capacity = 0;
-    }
     sd->algo = ALGO_NONE;
 }
 
@@ -203,9 +186,9 @@ void streamDecompressorDestroy(stream_decompressor_t *sd) {
  * producing a bound that doesn't match actual compression parameters. */
 static const LZ4F_preferences_t lz4f_prefs = {
     .frameInfo = {
-        .contentChecksumFlag = LZ4F_contentChecksumEnabled,
-        .blockChecksumFlag = LZ4F_noBlockChecksum,
+        .blockChecksumFlag = LZ4F_blockChecksumEnabled,
         .blockSizeID = LZ4F_max64KB,
+        .blockMode = LZ4F_blockIndependent,
     },
     .compressionLevel = 0, /* bound calculation uses 0 (worst-case); actual
                             * compression uses sc->level via a local copy */
@@ -262,12 +245,12 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
         /* Begin frame on first call */
         if (!sc->frame_started) {
             /* Local copy of shared prefs so we can set the actual level
-             * and content checksum flag per-stream. */
+             * and checksum mode per-stream. */
             LZ4F_preferences_t prefs = lz4f_prefs;
             prefs.compressionLevel = sc->level;
-            prefs.frameInfo.contentChecksumFlag = sc->content_checksum
-                ? LZ4F_contentChecksumEnabled
-                : LZ4F_noContentChecksum;
+            prefs.frameInfo.blockChecksumFlag = sc->block_checksum
+                                                    ? LZ4F_blockChecksumEnabled
+                                                    : LZ4F_noBlockChecksum;
             size_t r = LZ4F_compressBegin((LZ4F_cctx *)sc->ctx.lz4f,
                                           output, output_capacity, &prefs);
             if (LZ4F_isError(r)) {

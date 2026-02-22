@@ -40,7 +40,9 @@ sync_compress_ctx_t *sync_compress_create(const sync_compress_config_t *cfg,
         zfree(t);
         return NULL;
     }
-    t->compressor.content_checksum = cfg->content_checksum;
+    /* sync_compress_create is a generic helper path (mainly unit tests).
+     * RDB production path sets checksum policy explicitly via rioInitWithCompress. */
+    t->compressor.block_checksum = 0;
 
     /* Pre-allocate output buffer for typical writes. Will be resized
      * as needed in sync_compress_write. */
@@ -167,12 +169,11 @@ void sync_compress_finish(sync_compress_ctx_t *t) {
  *
  * RDB CHECKSUM SEMANTICS: When streaming compression is active, the
  * RDB CRC64 is NOT computed on uncompressed bytes. Instead, integrity
- * is provided by the algorithm's native content checksum (e.g., LZ4F
- * xxHash32), which is validated automatically during decompression.
+ * is provided by codec-native frame checksums (for LZ4, block checksums),
+ * validated automatically during decompression.
  * The RDB footer CRC64 will be 0, which the loader treats as
  * "checksum disabled". This avoids hashing ~1GB of decompressed data
- * on load, matching LZF's cost model where integrity checking is
- * embedded in the codec rather than layered on top.
+ * on load.
  * =================================================================== */
 
 /* Emit callback for compress_rio: writes compressed bytes to inner rio.
@@ -250,7 +251,7 @@ static int compressRioFlush(rio *r) {
  * Sets up the rio vtable so callers can use standard rioWrite/rioFlush.
  * The compressor is initialized with a fresh algorithm context (fork-safe). */
 /* Returns 0 on success, -1 on failure (e.g., compressor init failed). */
-int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_config_t *cfg) {
+int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_config_t *cfg, int codec_checksum) {
     if (!cr || !inner || !cfg) return -1;
 
     memset(cr, 0, sizeof(*cr));
@@ -260,12 +261,8 @@ int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_conf
     cr->base.write = compressRioWrite;
     cr->base.tell = compressRioTell;
     cr->base.flush = compressRioFlush;
-    /* Checksum strategy: when streaming compression is active, integrity
-     * is provided by the algorithm's native content checksum (e.g., LZ4F
-     * xxHash32) rather than the RDB CRC64. Skip the expensive uncompressed-
-     * domain CRC64 — it would hash ~1GB of decompressed data on load for
-     * no additional benefit. The RDB footer CRC64 will be 0, which the
-     * loader treats as "checksum disabled". */
+    /* Checksum strategy: streaming-compressed paths use codec-native
+     * frame checksums, so we do not compute RDB CRC64 on this wrapper. */
     cr->base.update_cksum = NULL;
     cr->base.cksum = 0;
     cr->base.flags = RIO_FLAG_STREAMING_COMPRESSION;
@@ -292,7 +289,7 @@ int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_conf
         cr->compressor.errored = 1;
         return -1;
     }
-    cr->compressor.compressor.content_checksum = cfg->content_checksum;
+    cr->compressor.compressor.block_checksum = codec_checksum != 0;
     return 0;
 }
 
@@ -370,16 +367,11 @@ int vkcsDetectFormat(rio *inner,
  * 4. Repeat until requested bytes are available or EOF/error
  * =================================================================== */
 
-#define DECOMPRESS_INITIAL_BUF_SIZE (256 * 1024)          /* 256KB: batch multiple LZ4 blocks per read */
-#define DECOMPRESS_READ_CHUNK_SIZE (256 * 1024)          /* Read 256KB of compressed data per pump cycle.
-                                                          * With 64KB LZ4 blocks this batches ~4 blocks,
-                                                          * reducing fread/pump loop overhead. */
-#define DECOMPRESS_MAX_BUF_SIZE (256 * 1024 * 1024)     /* 256MB safety limit */
-#define DECOMPRESS_DIRECT_THRESHOLD 256                  /* Reads >= 256B go directly into
-                                                          * caller buffer (no decomp_buf copy).
-                                                          * Only tiny metadata reads (type bytes,
-                                                          * lengths, expiry) use the buffered path. */
-#define DECOMPRESS_SMALL_BUF_SIZE (64 * 1024)            /* decomp_buf for small reads */
+/* Decompression buffer sizing: one base constant drives everything.
+ * DECOMPRESS_BATCH_SIZE controls the decode window, compressed read chunk,
+ * and initial buffer sizes. */
+#define DECOMPRESS_BATCH_SIZE (64 * 1024)           /* 64KB: one LZ4 block per window fill */
+#define DECOMPRESS_MAX_BUF_SIZE (256 * 1024 * 1024) /* 256MB safety limit for read_buf growth */
 
 /* Read up to `len` bytes from the inner rio.
  * Returns bytes actually read (may be less than len). 0 on EOF/error.
@@ -407,7 +399,7 @@ static size_t decompressRioReadPartial(rio *inner, void *buf, size_t len) {
 }
 
 /* Decode primitive: decompress from read_buf into `out[0..out_size)`.
- * Advances read_buf_pos/read_buf_fill, stores the codec's next-input hint.
+ * Advances read_buf_pos/read_buf_fill.
  * Returns -1 on decompressor error, 0 otherwise. */
 static int decompressDrainReadBuf(decompress_rio_t *dr,
                                   uint8_t *out,
@@ -416,17 +408,15 @@ static int decompressDrainReadBuf(decompress_rio_t *dr,
     *out_written = 0;
     while (dr->read_buf_fill > 0 && *out_written < out_size) {
         size_t consumed = 0;
-        size_t hint = 0;
         ssize_t produced = streamDecompressFeed(
             &dr->decompressor,
             out + *out_written, out_size - *out_written,
             dr->read_buf + dr->read_buf_pos,
-            dr->read_buf_fill, &consumed, &hint);
+            dr->read_buf_fill, &consumed, NULL);
         if (produced < 0) return -1;
         *out_written += (size_t)produced;
         dr->read_buf_pos += consumed;
         dr->read_buf_fill -= consumed;
-        dr->next_input_hint = hint;
         if (consumed == 0 && produced == 0) break;
     }
     if (dr->read_buf_fill == 0) dr->read_buf_pos = 0;
@@ -478,12 +468,8 @@ static int decompressPump(decompress_rio_t *dr,
             /* Drain consumed everything but produced nothing — need more input */
         }
 
-        /* Choose read size: honour codec hint, clamp to chunk minimum */
-        size_t read_size = DECOMPRESS_READ_CHUNK_SIZE;
-        if (dr->next_input_hint > dr->read_buf_fill) {
-            size_t want = dr->next_input_hint - dr->read_buf_fill;
-            if (want > read_size) read_size = want;
-        }
+        /* Fixed-size compressed reads keep the pump loop predictable. */
+        size_t read_size = DECOMPRESS_BATCH_SIZE;
 
         if (decompressEnsureReadBuf(dr, read_size) < 0) return -1;
 
@@ -498,46 +484,61 @@ static int decompressPump(decompress_rio_t *dr,
     return 0;
 }
 
+/* Fill the decode window by pumping decompressed data into decomp_buf.
+ * Resets the window position and length, then fills up to decomp_buf_size.
+ * Returns bytes decoded into the window, 0 on EOF, -1 on error. */
+static ssize_t decompressFillWindow(decompress_rio_t *dr) {
+    dr->decomp_buf_pos = 0;
+    dr->decomp_buf_len = 0;
+    size_t written = 0;
+    if (decompressPump(dr, dr->decomp_buf, dr->decomp_buf_size, &written) < 0)
+        return -1;
+    dr->decomp_buf_len = written;
+    return (ssize_t)written;
+}
+
+/* Return available decoded bytes in the window. */
+static inline size_t decompressWindowAvail(const decompress_rio_t *dr) {
+    return dr->decomp_buf_len - dr->decomp_buf_pos;
+}
+
+/* Copy available decoded bytes from window to caller buffer.
+ * Updates dst/remaining and returns copied bytes. */
+static size_t decompressCopyFromWindow(decompress_rio_t *dr,
+                                       uint8_t **dst,
+                                       size_t *remaining) {
+    size_t avail = decompressWindowAvail(dr);
+    if (avail == 0 || *remaining == 0) return 0;
+
+    size_t to_copy = avail < *remaining ? avail : *remaining;
+    memcpy(*dst, dr->decomp_buf + dr->decomp_buf_pos, to_copy);
+    dr->decomp_buf_pos += to_copy;
+    *dst += to_copy;
+    *remaining -= to_copy;
+    return to_copy;
+}
+
 static size_t decompressRioRead(rio *r, void *buf, size_t len) {
     decompress_rio_t *dr = (decompress_rio_t *)r;
+    if (dr->base.flags & RIO_FLAG_READ_ERROR) return 0;
+    if (!dr->decomp_buf || dr->decomp_buf_size == 0) return 0;
     uint8_t *dst = (uint8_t *)buf;
     size_t remaining = len;
 
-    /* Serve leftover from decomp_buf first */
-    size_t avail = dr->decomp_buf_len - dr->decomp_buf_pos;
-    if (avail > 0) {
-        size_t to_copy = avail < remaining ? avail : remaining;
-        memcpy(dst, dr->decomp_buf + dr->decomp_buf_pos, to_copy);
-        dr->decomp_buf_pos += to_copy;
-        dst += to_copy;
-        remaining -= to_copy;
-        if (remaining == 0) return len;
-    }
+    /* Serve any existing decoded bytes first. */
+    decompressCopyFromWindow(dr, &dst, &remaining);
+    if (remaining == 0) return len;
 
-    /* Large reads: decompress directly into caller buffer (no extra copy) */
-    while (remaining >= DECOMPRESS_DIRECT_THRESHOLD) {
-        size_t written = 0;
-        if (decompressPump(dr, dst, remaining, &written) < 0) return 0;
-        if (written == 0) return 0; /* EOF before request satisfied */
-        dst += written;
-        remaining -= written;
-    }
-
-    /* Small reads: pump into decomp_buf, serve via memcpy */
+    /* Decode into the window and serve via memcpy.
+     * This keeps the read path simple and predictable. */
     while (remaining > 0) {
-        dr->decomp_buf_pos = 0;
-        dr->decomp_buf_len = 0;
-        size_t written = 0;
-        if (decompressPump(dr, dr->decomp_buf, dr->decomp_buf_size, &written) < 0)
-            return 0;
-        if (written == 0) return 0; /* EOF */
-        dr->decomp_buf_len = written;
+        if (decompressWindowAvail(dr) == 0) {
+            ssize_t filled = decompressFillWindow(dr);
+            if (filled < 0) return 0;
+            if (filled == 0) return 0; /* EOF */
+        }
 
-        size_t to_copy = written < remaining ? written : remaining;
-        memcpy(dst, dr->decomp_buf, to_copy);
-        dr->decomp_buf_pos = to_copy;
-        dst += to_copy;
-        remaining -= to_copy;
+        decompressCopyFromWindow(dr, &dst, &remaining);
     }
 
     return len;
@@ -567,10 +568,10 @@ static int decompressRioFlush(rio *r) {
 
 /* Initialize a decompression rio decorator wrapping an inner rio.
  * The VKCS envelope must already be consumed by the caller.
- * read_buf starts at DECOMPRESS_INITIAL_BUF_SIZE (256KB) to batch
- * multiple LZ4 blocks per read and reduce fread/pump overhead.
- * decomp_buf starts at DECOMPRESS_SMALL_BUF_SIZE (64KB)
- * for small metadata reads; value-sized reads bypass it entirely. */
+ * Both read_buf and decomp_buf are sized to DECOMPRESS_BATCH_SIZE (64KB).
+ * The decode window (decomp_buf) is the key performance structure: LZ4F
+ * decodes full blocks into it, and multiple rioRead calls are served via
+ * memcpy. At 10KB values, ~25 reads per window fill. */
 void decompress_rio_init(decompress_rio_t *dr, rio *inner, compression_algo_t algo) {
     if (!dr || !inner) return;
 
@@ -592,21 +593,16 @@ void decompress_rio_init(decompress_rio_t *dr, rio *inner, compression_algo_t al
     /* Initialize decompressor */
     if (streamDecompressorInit(&dr->decompressor, algo) != 0) {
         dr->base.flags |= RIO_FLAG_READ_ERROR;
-        /* Allocate minimal buffers so destroy() and accidental reads
-         * don't dereference NULL. */
-        dr->read_buf = zmalloc(1);
-        dr->read_buf_size = 1;
-        dr->decomp_buf = zmalloc(1);
-        dr->decomp_buf_size = 1;
         return;
     }
 
-    /* read_buf sized for one LZ4 block + framing; decomp_buf sized for
-     * small metadata reads only (values go through the direct path). */
-    dr->read_buf = zmalloc(DECOMPRESS_INITIAL_BUF_SIZE);
-    dr->read_buf_size = DECOMPRESS_INITIAL_BUF_SIZE;
-    dr->decomp_buf = zmalloc(DECOMPRESS_SMALL_BUF_SIZE);
-    dr->decomp_buf_size = DECOMPRESS_SMALL_BUF_SIZE;
+    /* Both buffers sized to DECOMPRESS_BATCH_SIZE. read_buf batches
+     * compressed input; decomp_buf is the decode window serving
+     * multiple rioRead calls per fill via memcpy. */
+    dr->read_buf = zmalloc(DECOMPRESS_BATCH_SIZE);
+    dr->read_buf_size = DECOMPRESS_BATCH_SIZE;
+    dr->decomp_buf = zmalloc(DECOMPRESS_BATCH_SIZE);
+    dr->decomp_buf_size = DECOMPRESS_BATCH_SIZE;
     dr->decomp_buf_pos = 0;
     dr->decomp_buf_len = 0;
 }

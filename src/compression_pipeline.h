@@ -17,10 +17,7 @@
 typedef struct {
     compression_algo_t algo;
     int level;
-    uint8_t stream_kind;    /* STREAM_KIND_RDB or STREAM_KIND_REPL */
-    int content_checksum;   /* Enable algorithm-native content checksum.
-                             * For LZ4: xxHash32 in the LZ4F frame trailer.
-                             * Set from server.rdb_checksum for RDB streams. */
+    uint8_t stream_kind; /* STREAM_KIND_RDB or STREAM_KIND_REPL */
 } sync_compress_config_t;
 
 /* --- Sync compress context (fork child, bgIteration) ---
@@ -56,10 +53,9 @@ typedef struct {
     stream_decompressor_t decompressor;
     uint8_t *read_buf;
     size_t read_buf_size;
-    size_t read_buf_pos;    /* Start offset of valid data in read_buf */
-    size_t read_buf_fill;   /* Bytes of valid compressed data in read_buf
-                             * starting at read_buf_pos. */
-    size_t next_input_hint; /* LZ4F hint: expected bytes for next frame chunk */
+    size_t read_buf_pos;  /* Start offset of valid data in read_buf */
+    size_t read_buf_fill; /* Bytes of valid compressed data in read_buf
+                           * starting at read_buf_pos. */
     uint8_t *decomp_buf;
     size_t decomp_buf_size;
     size_t decomp_buf_pos;
@@ -114,7 +110,7 @@ struct async_compress_ctx_t {
 };
 
 /* --- Rio Decorator API --- */
-int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_config_t *cfg);
+int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_config_t *cfg, int codec_checksum);
 int compress_rio_finish(compress_rio_t *cr);
 void compress_rio_destroy(compress_rio_t *cr);
 
