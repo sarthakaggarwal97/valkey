@@ -331,8 +331,10 @@ ssize_t streamDecompressFeed(stream_decompressor_t *sd,
 }
 
 /* Parse LZ4 frame flags at `frame_offset` (frame start) without
- * advancing stream state. On success, sets *has_checksum to 1 when
- * an integrity checksum flag is enabled, else 0. */
+ * advancing stream state.
+ * Requires a seekable fd (regular file); returns -1 for pipes/sockets.
+ * On success, sets *has_checksum to 1 when an integrity checksum flag is
+ * enabled, else 0. */
 static int lz4FrameHasIntegrityChecksum(int fd, off_t frame_offset, int *has_checksum) {
     if (fd < 0 || frame_offset < 0 || !has_checksum) return -1;
 

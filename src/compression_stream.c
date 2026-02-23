@@ -145,7 +145,9 @@ stream_writer_t *stream_writer_create(const stream_writer_config_t *cfg,
 int stream_writer_write(stream_writer_t *t, const void *buf, size_t len) {
     if (!t) return -1;
     if (t->errored) return -1;
-    if (t->finished) return 0;
+    /* Writes after finish are always a caller bug. Returning an error
+     * prevents silent data drops in shared API users (rio/replication). */
+    if (t->finished) return -1;
     if (len == 0) return 0;
 
     if (streamWriterEnsureEnvelope(t) != 0) return -1;
@@ -156,6 +158,7 @@ int stream_writer_write(stream_writer_t *t, const void *buf, size_t len) {
 int stream_writer_flush(stream_writer_t *t) {
     if (!t) return -1;
     if (t->errored) return -1;
+    /* Flush-after-finish is a harmless no-op: frame is already closed. */
     if (t->finished) return 0;
 
     if (!t->envelope_written || !t->compressor.frame_started) return 0;

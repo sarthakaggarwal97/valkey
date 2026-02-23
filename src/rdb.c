@@ -3707,6 +3707,7 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
                 codec_checksum_verified = has_codec_checksum;
             } else {
                 rdbLogCompressedFrameChecksumInspectFailure(filename, algo);
+                goto done;
             }
         }
         decompress_rio_init(&dr, &rdb, algo);

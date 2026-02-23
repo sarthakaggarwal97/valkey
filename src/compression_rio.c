@@ -304,7 +304,11 @@ static int decompressPump(decompress_rio_t *dr,
         }
 
         size_t read_size = decompressReadBufTailSpace(dr);
-        if (read_size == 0) return -1; /* decoder stalled with a full input buffer */
+        if (read_size == 0) {
+            /* With 64KB LZ4 blocks and a 1MB read buffer, this should not
+             * happen for valid streams. Treat as decode/input corruption. */
+            return -1;
+        }
 
         size_t got = decompressRioReadPartial(
             dr->inner,

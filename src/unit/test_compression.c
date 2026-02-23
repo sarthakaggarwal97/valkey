@@ -1219,10 +1219,8 @@ int test_decompressRioDirectPath(int argc, char **argv, int flags) {
     return 0;
 }
 
-/* --- Test: stream_writer_write after finish is silently ignored.
- * Before the fix, writes after finish could start a new LZ4 frame
- * under the same envelope, violating the one-envelope/one-frame
- * contract. (P2 regression test) --- */
+/* --- Test: stream_writer_write after finish is rejected.
+ * Writes after finish must fail and must not emit bytes. --- */
 int test_streamWriterWriteAfterFinish(int argc, char **argv, int flags) {
     UNUSED(argc);
     UNUSED(argv);
@@ -1239,8 +1237,8 @@ int test_streamWriterWriteAfterFinish(int argc, char **argv, int flags) {
     stream_writer_finish(t);
     size_t len_after_finish = db.len;
 
-    /* Write after finish — should be silently ignored */
-    stream_writer_write(t, "world", 5);
+    /* Write after finish must fail and emit no output. */
+    TEST_ASSERT(stream_writer_write(t, "world", 5) != 0);
     TEST_ASSERT_MESSAGE("write after finish should not produce output",
                         db.len == len_after_finish);
 

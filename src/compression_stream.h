@@ -28,8 +28,14 @@ typedef struct stream_writer stream_writer_t;
 stream_writer_t *stream_writer_create(const stream_writer_config_t *cfg,
                                       vkcsEmitFn emit_cb,
                                       void *emit_ctx);
+/* Returns 0 on success, -1 on error.
+ * After stream_writer_finish(), write returns -1 and does not emit bytes. */
 int stream_writer_write(stream_writer_t *t, const void *buf, size_t len);
+/* Returns 0 on success, -1 on error.
+ * Flush-after-finish is a no-op success. */
 int stream_writer_flush(stream_writer_t *t);
+/* Returns 0 on success, -1 on error.
+ * Calling finish more than once is a no-op success. */
 int stream_writer_finish(stream_writer_t *t);
 void stream_writer_destroy(stream_writer_t *t);
 int stream_writer_is_errored(const stream_writer_t *t);
