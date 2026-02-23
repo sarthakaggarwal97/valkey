@@ -99,7 +99,7 @@ static int lz4FrameHasIntegrityChecksum(FILE *fp, int *has_checksum) {
     if (magic != 0x184D2204U) return C_ERR;
 
     uint8_t flg = hdr[4];
-    size_t header_len = 7; /* magic + FLG + BD + HC */
+    size_t header_len = 7;                /* magic + FLG + BD + HC */
     if (flg & (1u << 3)) header_len += 8; /* content size */
     if (flg & 1u) header_len += 4;        /* dict ID */
     if (n < header_len) return C_ERR;
