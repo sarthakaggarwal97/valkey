@@ -48,21 +48,24 @@ typedef struct {
         void *lz4f; /* LZ4F_cctx* */
     } ctx;
     bool frame_started;
-    bool errored;        /* Permanently failed — algorithm state is undefined after
-                          * an error. All subsequent streamCompressFeed calls return
-                          * -1 immediately. The caller must tear down the stream
-                          * (disconnect replica / abort RDB save). No mid-stream
-                          * retry is possible because already-emitted frame bytes
-                          * cannot be unsent. */
-    bool stable_src;     /* LZ4F optimization: set to true only when the caller
-                          * guarantees the input buffer remains valid and
-                          * unmodified until the next streamCompressFeed call.
-                          * Default false (safe). The async replication path sets
-                          * this to true because the accumulator sds is swapped
-                          * out before submission, giving exclusive ownership. */
-    bool block_checksum; /* LZ4F block checksum toggle.
-                          * When true, each compressed block carries a checksum
-                          * validated automatically during decompression. */
+    bool errored;          /* Permanently failed — algorithm state is undefined after
+                            * an error. All subsequent streamCompressFeed calls return
+                            * -1 immediately. The caller must tear down the stream
+                            * (disconnect replica / abort RDB save). No mid-stream
+                            * retry is possible because already-emitted frame bytes
+                            * cannot be unsent. */
+    bool stable_src;       /* LZ4F optimization: set to true only when the caller
+                            * guarantees the input buffer remains valid and
+                            * unmodified until the next streamCompressFeed call.
+                            * Default false (safe). The async replication path sets
+                            * this to true because the accumulator sds is swapped
+                            * out before submission, giving exclusive ownership. */
+    bool block_checksum;   /* LZ4F block checksum toggle.
+                            * When true, each compressed block carries a checksum
+                            * validated automatically during decompression. */
+    bool content_checksum; /* LZ4F frame content checksum toggle.
+                            * When true, one checksum is appended at frame end
+                            * and validated during decompression. */
 } stream_compressor_t;
 
 /* --- Streaming decompressor context --- */
@@ -74,6 +77,12 @@ typedef struct {
 } stream_decompressor_t;
 
 /* --- Envelope API --- */
+
+/* Returns 1 if the algorithm supports streaming codec framing. */
+int compressionAlgoSupportsStreaming(compression_algo_t algo);
+
+/* Returns a stable name for logging/debugging. */
+const char *compressionAlgoName(compression_algo_t algo);
 
 /* Write VKCS envelope via callback.  Returns 0 on success, -1 on error
  * (invalid algo or emit_cb failure). */
@@ -120,5 +129,11 @@ ssize_t streamDecompressFeed(stream_decompressor_t *sd,
                              const uint8_t *input,
                              size_t input_len,
                              size_t *input_consumed);
+
+/* Parse codec frame flags at file offset `frame_offset` (frame start)
+ * without changing stream state. On success, sets *has_checksum to 1 when
+ * integrity checksums are enabled for the frame, else 0.
+ * Returns 0 on success, -1 when unsupported/invalid/error. */
+int compressionFrameHasIntegrityChecksum(compression_algo_t algo, int fd, off_t frame_offset, int *has_checksum);
 
 #endif /* COMPRESSION_H */
