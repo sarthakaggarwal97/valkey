@@ -49,7 +49,6 @@ static int streamWriterInitContext(stream_writer_t *t,
     if (streamCompressorInit(&t->compressor, cfg->algo, cfg->level) != 0) {
         return -1;
     }
-    t->compressor.block_checksum = cfg->block_checksum != 0;
     t->compressor.content_checksum = cfg->content_checksum != 0;
     return 0;
 }

@@ -168,17 +168,14 @@ void streamDecompressorDestroy(stream_decompressor_t *sd) {
 }
 
 /* Shared LZ4F preferences template.
- * - Used by streamCompressOutputBound() for conservative bounds.
+ * - Used by streamCompressOutputBound() for bounds.
  * - Copied and selectively overridden in streamCompressFeed() before
- *   LZ4F_compressBegin() (compression level, checksum mode).
+ *   LZ4F_compressBegin() (compression level, content checksum mode).
  *
- * Keep this template conservative for bound calculations:
- * checksums enabled and 64KB blocks. Note that this does NOT force
- * checksums at runtime: streamCompressFeed() overrides checksum flags per
- * stream. */
+ * Runtime streams always use content checksum mode only. */
 static const LZ4F_preferences_t lz4f_prefs = {
     .frameInfo = {
-        .blockChecksumFlag = LZ4F_blockChecksumEnabled,
+        .blockChecksumFlag = LZ4F_noBlockChecksum,
         .contentChecksumFlag = LZ4F_contentChecksumEnabled,
         .blockSizeID = LZ4F_max64KB,
         .blockMode = LZ4F_blockIndependent,
@@ -231,12 +228,9 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
         /* Begin frame on first call */
         if (!sc->frame_started) {
             /* Local copy of shared prefs so we can set the actual level
-             * and checksum mode per-stream. */
+             * and content checksum mode per-stream. */
             LZ4F_preferences_t prefs = lz4f_prefs;
             prefs.compressionLevel = sc->level;
-            prefs.frameInfo.blockChecksumFlag = sc->block_checksum
-                                                    ? LZ4F_blockChecksumEnabled
-                                                    : LZ4F_noBlockChecksum;
             prefs.frameInfo.contentChecksumFlag = sc->content_checksum
                                                       ? LZ4F_contentChecksumEnabled
                                                       : LZ4F_noContentChecksum;
@@ -337,8 +331,8 @@ ssize_t streamDecompressFeed(stream_decompressor_t *sd,
 }
 
 /* Parse LZ4 frame flags at `frame_offset` (frame start) without
- * advancing stream state. On success, sets *has_checksum to 1 when either
- * block checksum or content checksum is enabled, else 0. */
+ * advancing stream state. On success, sets *has_checksum to 1 when
+ * an integrity checksum flag is enabled, else 0. */
 static int lz4FrameHasIntegrityChecksum(int fd, off_t frame_offset, int *has_checksum) {
     if (fd < 0 || frame_offset < 0 || !has_checksum) return -1;
 
@@ -361,9 +355,9 @@ static int lz4FrameHasIntegrityChecksum(int fd, off_t frame_offset, int *has_che
     if (flg & 1u) header_len += 4;        /* dict ID */
     if (n < header_len) return -1;
 
-    int has_block_checksum = (flg & (1u << 4)) != 0;
-    int has_content_checksum = (flg & (1u << 2)) != 0;
-    *has_checksum = has_block_checksum || has_content_checksum;
+    int has_integrity_checksum = ((flg & (1u << 4)) != 0) || /* FLG bit 4 */
+                                 ((flg & (1u << 2)) != 0);   /* FLG bit 2 */
+    *has_checksum = has_integrity_checksum;
     return 0;
 }
 

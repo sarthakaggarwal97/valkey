@@ -65,7 +65,8 @@ static void rioInitBase(rio *base,
  *
  * RDB CHECKSUM SEMANTICS: When streaming compression is active, the
  * RDB CRC64 is NOT computed on uncompressed bytes. Instead, integrity
- * is provided by codec-native frame checksums (for LZ4, block checksums),
+ * is provided by codec-native frame checksums (for LZ4, content checksum
+ * in current RDB config),
  * validated automatically during decompression.
  * The RDB footer CRC64 will be 0, which the loader treats as
  * "checksum disabled". This avoids hashing ~1GB of decompressed data

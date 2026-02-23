@@ -1617,7 +1617,6 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
             .algo = (compression_algo_t)server.rdb_compression_algo,
             .level = server.rdb_streaming_compression_level,
             .stream_kind = STREAM_KIND_RDB,
-            .block_checksum = 0,
             .content_checksum = server.rdb_checksum != 0,
             .raw_frame = 0,
         };

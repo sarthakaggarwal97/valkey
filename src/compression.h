@@ -60,9 +60,6 @@ typedef struct {
                             * Default false (safe). The async replication path sets
                             * this to true because the accumulator sds is swapped
                             * out before submission, giving exclusive ownership. */
-    bool block_checksum;   /* LZ4F block checksum toggle.
-                            * When true, each compressed block carries a checksum
-                            * validated automatically during decompression. */
     bool content_checksum; /* LZ4F frame content checksum toggle.
                             * When true, one checksum is appended at frame end
                             * and validated during decompression. */

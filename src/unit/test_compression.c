@@ -793,7 +793,7 @@ int test_streamWriterRawFrameRoundTrip(int argc, char **argv, int flags) {
     return 0;
 }
 
-static int lz4FrameChecksumFlagFromBlob(const uint8_t *data, size_t len, int *has_checksum) {
+static int lz4FrameIntegrityChecksumFlagFromBlob(const uint8_t *data, size_t len, int *has_checksum) {
     if (!data || !has_checksum) return -1;
     FILE *fp = tmpfile();
     if (!fp) return -1;
@@ -816,13 +816,13 @@ static int lz4FrameChecksumFlagFromBlob(const uint8_t *data, size_t len, int *ha
     return rc;
 }
 
-/* --- Test: block_checksum config toggles checksum flag in LZ4 frame. --- */
-int test_streamWriterBlockChecksumToggle(int argc, char **argv, int flags) {
+/* --- Test: content_checksum config toggles integrity flag in LZ4 frame. --- */
+int test_streamWriterContentChecksumToggle(int argc, char **argv, int flags) {
     UNUSED(argc);
     UNUSED(argv);
     UNUSED(flags);
 
-    const char *payload = "checksum toggle payload for LZ4 frame";
+    const char *payload = "content checksum toggle payload for LZ4 frame";
     size_t payload_len = strlen(payload);
 
     for (int checksum_on = 0; checksum_on <= 1; checksum_on++) {
@@ -834,7 +834,7 @@ int test_streamWriterBlockChecksumToggle(int argc, char **argv, int flags) {
             .level = 0,
             .stream_kind = STREAM_KIND_RDB,
             .raw_frame = 1, /* make frame start at byte 0 for parser helper */
-            .block_checksum = checksum_on,
+            .content_checksum = checksum_on,
         };
         stream_writer_t *t = stream_writer_create(&cfg, emitToDynamicBuf, &db);
         TEST_ASSERT(t != NULL);
@@ -843,8 +843,8 @@ int test_streamWriterBlockChecksumToggle(int argc, char **argv, int flags) {
 
         int has_checksum = -1;
         TEST_ASSERT_MESSAGE("frame parser should succeed",
-                            lz4FrameChecksumFlagFromBlob(db.data, db.len, &has_checksum) == 0);
-        TEST_ASSERT_MESSAGE("frame checksum flag should match config",
+                            lz4FrameIntegrityChecksumFlagFromBlob(db.data, db.len, &has_checksum) == 0);
+        TEST_ASSERT_MESSAGE("frame integrity checksum flag should match config",
                             has_checksum == checksum_on);
 
         stream_writer_destroy(t);
