@@ -79,17 +79,22 @@ static inline int isRdbStreamingCompressionEnabled(void) {
 #define RDB_STREAMING_COMPRESSION_DEFAULT_LEVEL (-9)
 
 /* Parse LZ4 frame header flags at current FILE position (start of frame).
- * Leaves file position unchanged. On success, sets *has_checksum to 1 when
+ * Uses pread() at the current offset so the FILE/rio stream position and
+ * buffering state are untouched. On success, sets *has_checksum to 1 when
  * either block checksum or content checksum is enabled, else 0. */
 static int lz4FrameHasIntegrityChecksum(FILE *fp, int *has_checksum) {
     if (!fp || !has_checksum) return C_ERR;
 
     unsigned char hdr[19]; /* LZ4 frame header max size */
+    int fd = fileno(fp);
+    if (fd == -1) return C_ERR;
+
     off_t pos = ftello(fp);
     if (pos == (off_t)-1) return C_ERR;
 
-    size_t n = fread(hdr, 1, sizeof(hdr), fp);
-    if (fseeko(fp, pos, SEEK_SET) != 0) return C_ERR;
+    ssize_t nread = pread(fd, hdr, sizeof(hdr), pos);
+    if (nread < 0) return C_ERR;
+    size_t n = (size_t)nread;
     if (n < 7) return C_ERR; /* min LZ4 frame header size */
 
     uint32_t magic = ((uint32_t)hdr[0]) |
