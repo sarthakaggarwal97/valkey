@@ -179,11 +179,15 @@ void streamDecompressorDestroy(stream_decompressor_t *sd) {
     sd->algo = ALGO_NONE;
 }
 
-/* Shared LZ4F preferences — used by both streamCompressOutputBound() and
- * streamCompressFeed() to ensure the bound calculation matches the actual
- * compression parameters. Without this, LZ4F_compressBound(0, NULL) assumes
- * the default 64KB block size while the compressor may use different blocks,
- * producing a bound that doesn't match actual compression parameters. */
+/* Shared LZ4F preferences template.
+ * - Used by streamCompressOutputBound() for conservative bounds.
+ * - Copied and selectively overridden in streamCompressFeed() before
+ *   LZ4F_compressBegin() (compression level, checksum mode).
+ *
+ * Keep this template conservative for bound calculations:
+ * block checksums enabled and 64KB blocks. Note that this does NOT force
+ * checksums at runtime: streamCompressFeed() overrides blockChecksumFlag from
+ * sc->block_checksum per stream. */
 static const LZ4F_preferences_t lz4f_prefs = {
     .frameInfo = {
         .blockChecksumFlag = LZ4F_blockChecksumEnabled,
@@ -205,11 +209,8 @@ size_t streamCompressOutputBound(compression_algo_t algo, size_t input_len, int 
         if (!frame_started) {
             bound += LZ4F_HEADER_SIZE_MAX;
         }
-        if (flush_mode == FLUSH_SYNC) {
-            /* LZ4F_flush bound for buffered data. */
-            bound += LZ4F_compressBound(0, &lz4f_prefs);
-        } else if (flush_mode == FLUSH_END) {
-            /* LZ4F_compressBound(0) already covers flush/end footer. */
+        if (flush_mode != FLUSH_CONTINUE) {
+            /* LZ4F_compressBound(0) covers buffered flush bytes and frame end. */
             bound += LZ4F_compressBound(0, &lz4f_prefs);
         }
         return bound;

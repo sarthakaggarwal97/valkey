@@ -11,6 +11,55 @@
 #include "zmalloc.h"
 #include <string.h>
 
+/* Shared initializer for sync compression contexts.
+ * Used by both heap-allocated sync_compress_ctx_t and embedded
+ * compress_rio_t::compressor to keep behavior identical. */
+static int syncCompressInitContext(sync_compress_ctx_t *t,
+                                   const sync_compress_config_t *cfg,
+                                   vkcsEmitFn emit_cb,
+                                   void *emit_ctx,
+                                   int block_checksum) {
+    if (!t || !cfg || !emit_cb) return -1;
+    /* Only LZ4 is supported for now. */
+    if (cfg->algo != ALGO_LZ4) return -1;
+
+    memset(t, 0, sizeof(*t));
+    t->algo = cfg->algo;
+    t->compression_level = cfg->level;
+    t->emit_cb = emit_cb;
+    t->emit_ctx = emit_ctx;
+    t->stream_kind = cfg->stream_kind;
+
+    if (streamCompressorInit(&t->compressor, cfg->algo, cfg->level) != 0) {
+        return -1;
+    }
+    t->compressor.block_checksum = block_checksum != 0;
+    return 0;
+}
+
+/* Emit envelope lazily on first write/finish.
+ * Returns 0 on success, -1 on error (and sets t->errored). */
+static int syncCompressEnsureEnvelope(sync_compress_ctx_t *t) {
+    if (t->envelope_written) return 0;
+    if (writeVkcsEnvelope(t->emit_cb, t->emit_ctx, t->algo, t->stream_kind) != 0) {
+        t->errored = 1;
+        return -1;
+    }
+    t->envelope_written = 1;
+    return 0;
+}
+
+/* Emit compressed bytes to the output sink.
+ * Returns 0 on success, -1 on error (and sets t->errored). */
+static int syncCompressEmit(sync_compress_ctx_t *t, const uint8_t *buf, size_t len) {
+    if (len == 0) return 0;
+    if (t->emit_cb(t->emit_ctx, buf, len) != 0) {
+        t->errored = 1;
+        return -1;
+    }
+    return 0;
+}
+
 /* ===================================================================
  * Sync Compress API
  * Used internally by compress_rio_t. Fork-safe by design.
@@ -22,29 +71,11 @@
 sync_compress_ctx_t *sync_compress_create(const sync_compress_config_t *cfg,
                                           vkcsEmitFn emit_cb,
                                           void *emit_ctx) {
-    if (!cfg || !emit_cb) return NULL;
-    /* Only LZ4 is supported for now. */
-    if (cfg->algo != ALGO_LZ4) return NULL;
-
     sync_compress_ctx_t *t = zmalloc(sizeof(*t));
-    memset(t, 0, sizeof(*t));
-    t->algo = cfg->algo;
-    t->compression_level = cfg->level;
-    t->emit_cb = emit_cb;
-    t->emit_ctx = emit_ctx;
-    t->stream_kind = cfg->stream_kind;
-    t->envelope_written = 0;
-    t->errored = 0;
-
-    if (streamCompressorInit(&t->compressor, cfg->algo, cfg->level) != 0) {
+    if (syncCompressInitContext(t, cfg, emit_cb, emit_ctx, 0) != 0) {
         zfree(t);
         return NULL;
     }
-    /* Pre-allocate output buffer for typical writes. Will be resized
-     * as needed in sync_compress_write. */
-    t->out_buf_size = 0;
-    t->out_buf = NULL;
-
     return t;
 }
 
@@ -76,8 +107,7 @@ static void syncCompressEnsureOutBuf(sync_compress_ctx_t *t, size_t input_len, c
         return;
     }
     if (needed > t->out_buf_size) {
-        zfree(t->out_buf);
-        t->out_buf = zmalloc(needed);
+        t->out_buf = zrealloc(t->out_buf, needed);
         t->out_buf_size = needed;
     }
 }
@@ -92,13 +122,7 @@ void sync_compress_write(sync_compress_ctx_t *t, const void *buf, size_t len) {
     if (len == 0) return;
 
     /* Emit envelope on first write */
-    if (!t->envelope_written) {
-        if (writeVkcsEnvelope(t->emit_cb, t->emit_ctx, t->algo, t->stream_kind) != 0) {
-            t->errored = 1;
-            return;
-        }
-        t->envelope_written = 1;
-    }
+    if (syncCompressEnsureEnvelope(t) != 0) return;
 
     /* Ensure output buffer is large enough */
     syncCompressEnsureOutBuf(t, len, FLUSH_CONTINUE);
@@ -114,12 +138,7 @@ void sync_compress_write(sync_compress_ctx_t *t, const void *buf, size_t len) {
     }
 
     /* Emit compressed output if any was produced */
-    if (compressed > 0) {
-        if (t->emit_cb(t->emit_ctx, out_ptr, (size_t)compressed) != 0) {
-            t->errored = 1;
-            return;
-        }
-    }
+    if (syncCompressEmit(t, out_ptr, (size_t)compressed) != 0) return;
 }
 
 /* Finalize the compression frame (flush_mode=FLUSH_END).
@@ -130,13 +149,7 @@ void sync_compress_finish(sync_compress_ctx_t *t) {
     t->finished = 1;
 
     /* If nothing was ever written, emit envelope + empty frame end */
-    if (!t->envelope_written) {
-        if (writeVkcsEnvelope(t->emit_cb, t->emit_ctx, t->algo, t->stream_kind) != 0) {
-            t->errored = 1;
-            return;
-        }
-        t->envelope_written = 1;
-    }
+    if (syncCompressEnsureEnvelope(t) != 0) return;
 
     /* Ensure output buffer is large enough for finalization */
     syncCompressEnsureOutBuf(t, 0, FLUSH_END);
@@ -150,12 +163,7 @@ void sync_compress_finish(sync_compress_ctx_t *t) {
         return;
     }
 
-    if (compressed > 0) {
-        if (t->emit_cb(t->emit_ctx, out_ptr, (size_t)compressed) != 0) {
-            t->errored = 1;
-            return;
-        }
-    }
+    if (syncCompressEmit(t, out_ptr, (size_t)compressed) != 0) return;
 }
 
 /* ===================================================================
@@ -272,25 +280,7 @@ int rioInitWithCompress(compress_rio_t *cr, rio *inner, const sync_compress_conf
     cr->inner = inner;
     cr->finalized = 0;
 
-    /* Initialize the sync compressor inline (not heap-allocated).
-     * We initialize the compressor fields directly since the struct
-     * is embedded, not heap-allocated via sync_compress_create. */
-    cr->compressor.algo = cfg->algo;
-    cr->compressor.compression_level = cfg->level;
-    cr->compressor.emit_cb = compressRioEmit;
-    cr->compressor.emit_ctx = cr;
-    cr->compressor.stream_kind = cfg->stream_kind;
-    cr->compressor.envelope_written = 0;
-    cr->compressor.errored = 0;
-    cr->compressor.out_buf = NULL;
-    cr->compressor.out_buf_size = 0;
-
-    if (streamCompressorInit(&cr->compressor.compressor, cfg->algo, cfg->level) != 0) {
-        cr->compressor.errored = 1;
-        return -1;
-    }
-    cr->compressor.compressor.block_checksum = codec_checksum != 0;
-    return 0;
+    return syncCompressInitContext(&cr->compressor, cfg, compressRioEmit, cr, codec_checksum);
 }
 
 /* Finalize the compression frame and flush inner rio.
@@ -370,7 +360,7 @@ int vkcsDetectFormat(rio *inner,
 /* Decompression buffer sizing: one base constant drives everything.
  * DECOMPRESS_BATCH_SIZE controls the decode window, compressed read chunk,
  * and initial buffer sizes. */
-#define DECOMPRESS_BATCH_SIZE (64 * 1024)           /* 64KB: one LZ4 block per window fill */
+#define DECOMPRESS_BATCH_SIZE (256 * 1024)          /* 256KB: ~4x 64KB LZ4 blocks per window fill */
 #define DECOMPRESS_MAX_BUF_SIZE (256 * 1024 * 1024) /* 256MB safety limit for read_buf growth */
 
 /* Read up to `len` bytes from the inner rio.
@@ -568,7 +558,7 @@ static int decompressRioFlush(rio *r) {
 
 /* Initialize a decompression rio decorator wrapping an inner rio.
  * The VKCS envelope must already be consumed by the caller.
- * Both read_buf and decomp_buf are sized to DECOMPRESS_BATCH_SIZE (64KB).
+ * Both read_buf and decomp_buf are sized to DECOMPRESS_BATCH_SIZE (256KB).
  * The decode window (decomp_buf) is the key performance structure: LZ4F
  * decodes full blocks into it, and multiple rioRead calls are served via
  * memcpy. At 10KB values, ~25 reads per window fill. */
