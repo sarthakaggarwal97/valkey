@@ -48,21 +48,21 @@ typedef struct {
         void *lz4f; /* LZ4F_cctx* */
     } ctx;
     bool frame_started;
-    bool errored;          /* Permanently failed — algorithm state is undefined after
-                            * an error. All subsequent streamCompressFeed calls return
-                            * -1 immediately. The caller must tear down the stream
-                            * (disconnect replica / abort RDB save). No mid-stream
-                            * retry is possible because already-emitted frame bytes
-                            * cannot be unsent. */
-    bool stable_src;       /* LZ4F optimization: set to true only when the caller
-                            * guarantees the input buffer remains valid and
-                            * unmodified until the next streamCompressFeed call.
-                            * Default false (safe). The async replication path sets
-                            * this to true because the accumulator sds is swapped
-                            * out before submission, giving exclusive ownership. */
-    bool content_checksum; /* LZ4F frame content checksum toggle.
-                            * When true, one checksum is appended at frame end
-                            * and validated during decompression. */
+    bool errored;        /* Permanently failed — algorithm state is undefined after
+                          * an error. All subsequent streamCompressFeed calls return
+                          * -1 immediately. The caller must tear down the stream
+                          * (disconnect replica / abort RDB save). No mid-stream
+                          * retry is possible because already-emitted frame bytes
+                          * cannot be unsent. */
+    bool stable_src;     /* LZ4F optimization: set to true only when the caller
+                          * guarantees the input buffer remains valid and
+                          * unmodified until the next streamCompressFeed call.
+                          * Default false (safe). The async replication path sets
+                          * this to true because the accumulator sds is swapped
+                          * out before submission, giving exclusive ownership. */
+    bool block_checksum; /* Codec integrity checksum toggle.
+                          * For LZ4 streams this enables per-block checksums
+                          * (checksumming compressed block payloads). */
 } stream_compressor_t;
 
 /* --- Streaming decompressor context --- */

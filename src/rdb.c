@@ -1617,7 +1617,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
             .algo = (compression_algo_t)server.rdb_compression_algo,
             .level = server.rdb_streaming_compression_level,
             .stream_kind = STREAM_KIND_RDB,
-            .content_checksum = server.rdb_checksum != 0,
+            .block_checksum = server.rdb_checksum != 0,
             .raw_frame = 0,
         };
         if (rioInitWithCompress(&cr, &rdb, &cfg) != 0) {
@@ -3105,13 +3105,15 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
 
     /* For streaming-compressed load paths, processed_bytes counts bytes
      * returned by the decompressor (logical/uncompressed). Progress and
-     * event throttling should be based on source-stream position instead
-     * (compressed bytes), which keeps pacing comparable to non-streaming
-     * paths and avoids excessive processEventsWhileBlocked() calls. */
+     * event throttling should be based on source-stream progress
+     * (compressed bytes) instead.
+     *
+     * Use the wrapped inner rio's processed_bytes (already tracked by the
+     * decompressor read path) to avoid calling rioTell() on every chunk. */
     off_t progress_pos = (off_t)(r->processed_bytes + len);
     if (r->flags & RIO_FLAG_STREAMING_COMPRESSION) {
-        off_t source_pos = rioTell(r);
-        if (source_pos >= 0) progress_pos = source_pos;
+        decompress_rio_t *dr = (decompress_rio_t *)r;
+        progress_pos = (off_t)dr->inner->processed_bytes;
     }
 
     if (server.loading_process_events_interval_bytes &&

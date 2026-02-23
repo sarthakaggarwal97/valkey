@@ -11,14 +11,14 @@
 
 /* Generic caller-agnostic streaming writer config.
  * Defaults:
- * - content_checksum: 0 (off)
+ * - block_checksum: 0 (off)
  * - raw_frame: 0 (emit VKCS envelope before compressed frame) */
 typedef struct {
     compression_algo_t algo;
     int level;
-    uint8_t stream_kind;  /* STREAM_KIND_RDB or STREAM_KIND_REPL */
-    int content_checksum; /* LZ4 frame content checksum toggle */
-    int raw_frame;        /* 1 => emit raw codec frame (no VKCS envelope) */
+    uint8_t stream_kind; /* STREAM_KIND_RDB or STREAM_KIND_REPL */
+    int block_checksum;  /* Codec checksum toggle (LZ4 block checksum) */
+    int raw_frame;       /* 1 => emit raw codec frame (no VKCS envelope) */
 } stream_writer_config_t;
 
 /* Opaque writer context owned by the streaming writer API. */

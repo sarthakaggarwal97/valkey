@@ -170,13 +170,13 @@ void streamDecompressorDestroy(stream_decompressor_t *sd) {
 /* Shared LZ4F preferences template.
  * - Used by streamCompressOutputBound() for bounds.
  * - Copied and selectively overridden in streamCompressFeed() before
- *   LZ4F_compressBegin() (compression level, content checksum mode).
+ *   LZ4F_compressBegin() (compression level, checksum mode).
  *
- * Runtime streams always use content checksum mode only. */
+ * Bounds are computed with block checksum enabled (worst-case). */
 static const LZ4F_preferences_t lz4f_prefs = {
     .frameInfo = {
-        .blockChecksumFlag = LZ4F_noBlockChecksum,
-        .contentChecksumFlag = LZ4F_contentChecksumEnabled,
+        .blockChecksumFlag = LZ4F_blockChecksumEnabled,
+        .contentChecksumFlag = LZ4F_noContentChecksum,
         .blockSizeID = LZ4F_max64KB,
         .blockMode = LZ4F_blockLinked,
     },
@@ -228,12 +228,12 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
         /* Begin frame on first call */
         if (!sc->frame_started) {
             /* Local copy of shared prefs so we can set the actual level
-             * and content checksum mode per-stream. */
+             * and checksum mode per-stream. */
             LZ4F_preferences_t prefs = lz4f_prefs;
             prefs.compressionLevel = sc->level;
-            prefs.frameInfo.contentChecksumFlag = sc->content_checksum
-                                                      ? LZ4F_contentChecksumEnabled
-                                                      : LZ4F_noContentChecksum;
+            prefs.frameInfo.blockChecksumFlag = sc->block_checksum
+                                                    ? LZ4F_blockChecksumEnabled
+                                                    : LZ4F_noBlockChecksum;
             size_t r = LZ4F_compressBegin((LZ4F_cctx *)sc->ctx.lz4f,
                                           output, output_capacity, &prefs);
             if (LZ4F_isError(r)) {

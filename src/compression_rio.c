@@ -63,14 +63,12 @@ static void rioInitBase(rio *base,
  * Wraps an inner rio for transparent compression on write.
  * Used by BGSAVE (fork child) and diskless sync.
  *
- * RDB CHECKSUM SEMANTICS: When streaming compression is active, the
- * RDB CRC64 is NOT computed on uncompressed bytes. Instead, integrity
- * is provided by codec-native frame checksums (for LZ4, content checksum
- * in current RDB config),
- * validated automatically during decompression.
- * The RDB footer CRC64 will be 0, which the loader treats as
- * "checksum disabled". This avoids hashing ~1GB of decompressed data
- * on load.
+ * RDB CHECKSUM SEMANTICS: When streaming compression is active, integrity
+ * may come from either:
+ * - codec-native frame checksums (RIO_FLAG_STREAMING_CODEC_CHECKSUM), or
+ * - the standard RDB CRC64 footer.
+ *
+ * The save/load paths decide which checksum source to use based on flags.
  * =================================================================== */
 
 /* Emit callback for compress_rio: writes compressed bytes to inner rio.
@@ -124,10 +122,11 @@ int rioInitWithCompress(compress_rio_t *cr, rio *inner, const stream_writer_conf
 
     memset(cr, 0, sizeof(*cr));
 
-    /* Checksum strategy: streaming-compressed paths use codec-native
-     * frame checksums, so we do not compute RDB CRC64 on this wrapper. */
+    uint64_t flags = RIO_FLAG_STREAMING_COMPRESSION;
+    if (cfg->block_checksum) flags |= RIO_FLAG_STREAMING_CODEC_CHECKSUM;
+
     rioInitBase(&cr->base, rioReadUnsupported, compressRioWrite, compressRioTell,
-                compressRioFlush, RIO_FLAG_STREAMING_COMPRESSION);
+                compressRioFlush, flags);
 
     cr->inner = inner;
     cr->finalized = 0;
