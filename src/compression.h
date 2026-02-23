@@ -17,7 +17,6 @@ typedef enum {
     ALGO_NONE = 0x00, /* Disabled */
     ALGO_LZF = 0x01,  /* Per-string LZF (RDB only, existing behavior) */
     ALGO_LZ4 = 0x02,
-    ALGO_ZSTD = 0x03,
 } compression_algo_t;
 
 /* --- VKCS Stream Envelope --- */
@@ -47,7 +46,6 @@ typedef struct {
     int level;
     union {
         void *lz4f; /* LZ4F_cctx* */
-        void *zstd; /* ZSTD_CCtx* */
     } ctx;
     bool frame_started;
     bool errored;        /* Permanently failed — algorithm state is undefined after
@@ -72,7 +70,6 @@ typedef struct {
     compression_algo_t algo;
     union {
         void *lz4f; /* LZ4F_dctx* */
-        void *zstd; /* ZSTD_DCtx* */
     } ctx;
 } stream_decompressor_t;
 

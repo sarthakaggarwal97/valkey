@@ -82,9 +82,9 @@ start_server {overrides {save "" enable-debug-command local}} {
         assert {$digest eq $newdigest}
     }
 
-    test {ZSTD config is rejected} {
-        catch {r config set rdb-compression-algo zstd} err
-        assert_match "*ZSTD compression is not yet supported*" $err
+    test {Invalid compression algo config is rejected} {
+        catch {r config set rdb-compression-algo snappy} err
+        assert_match "*argument(s) must be one of the following: lzf, lz4*" $err
     }
 
     test {LZ4 compressed RDB with rdb-checksum yes uses codec checksum} {

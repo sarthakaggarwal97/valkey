@@ -72,9 +72,11 @@
 /* Returns 1 if streaming compression is enabled for RDB saves. */
 static inline int isRdbStreamingCompressionEnabled(void) {
     return server.rdb_compression &&
-           (server.rdb_compression_algo == ALGO_LZ4 ||
-            server.rdb_compression_algo == ALGO_ZSTD);
+           (server.rdb_compression_algo == ALGO_LZ4);
 }
+
+/* Default streaming-compression level for RDB saves. */
+#define RDB_STREAMING_COMPRESSION_DEFAULT_LEVEL (-9)
 
 /* Parse LZ4 frame header flags at current FILE position (start of frame).
  * Leaves file position unchanged. On success, sets *has_checksum to 1 when
@@ -1629,7 +1631,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
     if (use_streaming_compression) {
         sync_compress_config_t cfg = {
             .algo = (compression_algo_t)server.rdb_compression_algo,
-            .level = -9, /* default level */
+            .level = RDB_STREAMING_COMPRESSION_DEFAULT_LEVEL,
             .stream_kind = STREAM_KIND_RDB,
         };
         if (rioInitWithCompress(&cr, &rdb, &cfg, server.rdb_checksum) != 0) {
@@ -1744,9 +1746,7 @@ int rdbSave(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
 
     serverLog(LL_NOTICE, "DB saved on disk");
     if (isRdbStreamingCompressionEnabled()) {
-        serverLog(LL_VERBOSE,
-                  "RDB saved with %s streaming compression",
-                  server.rdb_compression_algo == ALGO_LZ4 ? "LZ4" : "ZSTD");
+        serverLog(LL_VERBOSE, "RDB saved with LZ4 streaming compression");
     }
     server.dirty = 0;
     server.lastsave = time(NULL);

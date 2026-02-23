@@ -32,7 +32,7 @@ int writeVkcsEnvelope(vkcsEmitFn emit_cb,
                       uint8_t stream_kind) {
     /* Only streaming algorithms are valid in the envelope. */
     if (!emit_cb) return -1;
-    if (algo != ALGO_LZ4 && algo != ALGO_ZSTD) return -1;
+    if (algo != ALGO_LZ4) return -1;
     if (stream_kind != STREAM_KIND_RDB && stream_kind != STREAM_KIND_REPL) return -1;
 
     uint8_t envelope[VKCS_ENVELOPE_SIZE];
@@ -70,7 +70,7 @@ int readVkcsEnvelope(const uint8_t *buf, size_t len, compression_algo_t *algo, u
 
     /* Extract and validate algorithm */
     uint8_t algo_id = buf[5];
-    if (algo_id != ALGO_LZ4 && algo_id != ALGO_ZSTD) return -1;
+    if (algo_id != ALGO_LZ4) return -1;
 
     /* Reject envelopes with reserved bits/bytes set (strict reader pattern) */
     uint8_t flags = buf[6];
@@ -94,22 +94,16 @@ int streamCompressorInit(stream_compressor_t *sc, compression_algo_t algo, int l
     if (!sc) return -1;
     memset(sc, 0, sizeof(*sc));
 
-    switch (algo) {
-    case ALGO_LZ4: {
-        LZ4F_cctx *cctx = NULL;
-        LZ4F_errorCode_t err = LZ4F_createCompressionContext(&cctx, LZ4F_VERSION);
-        if (LZ4F_isError(err)) return -1;
-        sc->algo = algo;
-        sc->level = level;
-        sc->ctx.lz4f = cctx;
-        return 0;
-    }
-    case ALGO_ZSTD:
-        /* Not yet implemented */
-        return -1;
-    default:
-        return -1;
-    }
+    if (algo != ALGO_LZ4) return -1; /* Not yet implemented for other codecs */
+
+    LZ4F_cctx *cctx = NULL;
+    LZ4F_errorCode_t err = LZ4F_createCompressionContext(&cctx, LZ4F_VERSION);
+    if (LZ4F_isError(err)) return -1;
+
+    sc->algo = algo;
+    sc->level = level;
+    sc->ctx.lz4f = cctx;
+    return 0;
 }
 
 /* Destroy a streaming compressor, freeing the algorithm context.
@@ -117,18 +111,9 @@ int streamCompressorInit(stream_compressor_t *sc, compression_algo_t algo, int l
 void streamCompressorDestroy(stream_compressor_t *sc) {
     if (!sc) return;
 
-    switch (sc->algo) {
-    case ALGO_LZ4:
-        if (sc->ctx.lz4f) {
-            LZ4F_freeCompressionContext((LZ4F_cctx *)sc->ctx.lz4f);
-            sc->ctx.lz4f = NULL;
-        }
-        break;
-    case ALGO_ZSTD:
-        /* Not yet implemented */
-        break;
-    default:
-        break;
+    if (sc->algo == ALGO_LZ4 && sc->ctx.lz4f) {
+        LZ4F_freeCompressionContext((LZ4F_cctx *)sc->ctx.lz4f);
+        sc->ctx.lz4f = NULL;
     }
     sc->algo = ALGO_NONE;
     sc->frame_started = false;
@@ -141,21 +126,15 @@ int streamDecompressorInit(stream_decompressor_t *sd, compression_algo_t algo) {
     if (!sd) return -1;
     memset(sd, 0, sizeof(*sd));
 
-    switch (algo) {
-    case ALGO_LZ4: {
-        LZ4F_dctx *dctx = NULL;
-        LZ4F_errorCode_t err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
-        if (LZ4F_isError(err)) return -1;
-        sd->algo = algo;
-        sd->ctx.lz4f = dctx;
-        return 0;
-    }
-    case ALGO_ZSTD:
-        /* Not yet implemented */
-        return -1;
-    default:
-        return -1;
-    }
+    if (algo != ALGO_LZ4) return -1; /* Not yet implemented for other codecs */
+
+    LZ4F_dctx *dctx = NULL;
+    LZ4F_errorCode_t err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
+    if (LZ4F_isError(err)) return -1;
+
+    sd->algo = algo;
+    sd->ctx.lz4f = dctx;
+    return 0;
 }
 
 /* Destroy a streaming decompressor, freeing the algorithm context and buffers.
@@ -163,18 +142,9 @@ int streamDecompressorInit(stream_decompressor_t *sd, compression_algo_t algo) {
 void streamDecompressorDestroy(stream_decompressor_t *sd) {
     if (!sd) return;
 
-    switch (sd->algo) {
-    case ALGO_LZ4:
-        if (sd->ctx.lz4f) {
-            LZ4F_freeDecompressionContext((LZ4F_dctx *)sd->ctx.lz4f);
-            sd->ctx.lz4f = NULL;
-        }
-        break;
-    case ALGO_ZSTD:
-        /* Not yet implemented */
-        break;
-    default:
-        break;
+    if (sd->algo == ALGO_LZ4 && sd->ctx.lz4f) {
+        LZ4F_freeDecompressionContext((LZ4F_dctx *)sd->ctx.lz4f);
+        sd->ctx.lz4f = NULL;
     }
     sd->algo = ALGO_NONE;
 }
@@ -215,10 +185,6 @@ size_t streamCompressOutputBound(compression_algo_t algo, size_t input_len, int 
         }
         return bound;
     }
-    case ALGO_ZSTD:
-        /* Not yet implemented — return 0 so callers get a zero-size buffer
-         * and streamCompressFeed will fail cleanly. */
-        return 0;
     default:
         return 0;
     }
@@ -310,9 +276,6 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
         sc->errored = true;
         return -1;
     }
-    case ALGO_ZSTD:
-        /* Not yet implemented */
-        return -1;
     default:
         return -1;
     }
@@ -346,9 +309,6 @@ ssize_t streamDecompressFeed(stream_decompressor_t *sd,
         if (dst_size > (size_t)SSIZE_MAX) return -1;
         return (ssize_t)dst_size;
     }
-    case ALGO_ZSTD:
-        /* Not yet implemented */
-        return -1;
     default:
         return -1;
     }

@@ -24,8 +24,6 @@ typedef struct {
  * Used internally by compress_rio_t. Fork-safe by design: each child
  * creates a fresh context with its own algorithm state. No shared state. */
 typedef struct {
-    compression_algo_t algo;
-    int compression_level;
     stream_compressor_t compressor;
     uint8_t *out_buf;    /* Reusable output buffer, sized via streamCompressOutputBound */
     size_t out_buf_size; /* Current allocation size of out_buf */
@@ -97,7 +95,6 @@ struct async_compress_ctx_t {
     atomic_int refcount;
     atomic_int closed;
     compression_algo_t algo;
-    int compression_level;
     size_t accumulator_size;
     accumulator_t acc;
     stream_compressor_t compressor;
