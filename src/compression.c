@@ -206,11 +206,11 @@ size_t streamCompressOutputBound(compression_algo_t algo, size_t input_len, int 
             bound += LZ4F_HEADER_SIZE_MAX;
         }
         if (flush_mode == FLUSH_SYNC) {
-            /* LZ4F_flush may emit up to one full block of buffered data */
+            /* LZ4F_flush bound for buffered data. */
             bound += LZ4F_compressBound(0, &lz4f_prefs);
         } else if (flush_mode == FLUSH_END) {
-            /* LZ4F_compressEnd: end mark (4 bytes), no content checksum in v1 */
-            bound += LZ4F_compressBound(0, &lz4f_prefs) + 4;
+            /* LZ4F_compressBound(0) already covers flush/end footer. */
+            bound += LZ4F_compressBound(0, &lz4f_prefs);
         }
         return bound;
     }
@@ -325,11 +325,9 @@ ssize_t streamDecompressFeed(stream_decompressor_t *sd,
                              size_t output_capacity,
                              const uint8_t *input,
                              size_t input_len,
-                             size_t *input_consumed,
-                             size_t *next_input_hint) {
+                             size_t *input_consumed) {
     if (!sd || !input_consumed) return -1;
     *input_consumed = 0;
-    if (next_input_hint) *next_input_hint = 0;
     /* Zero output capacity is a caller bug — returning 0 with no progress
      * would cause streaming loops to spin forever. */
     if (!output || output_capacity == 0) return -1;
@@ -344,7 +342,6 @@ ssize_t streamDecompressFeed(stream_decompressor_t *sd,
                                      input, &src_size, NULL);
         if (LZ4F_isError(ret)) return -1;
         *input_consumed = src_size;
-        if (next_input_hint) *next_input_hint = ret;
         if (dst_size > (size_t)SSIZE_MAX) return -1;
         return (ssize_t)dst_size;
     }

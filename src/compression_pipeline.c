@@ -40,10 +40,6 @@ sync_compress_ctx_t *sync_compress_create(const sync_compress_config_t *cfg,
         zfree(t);
         return NULL;
     }
-    /* sync_compress_create is a generic helper path (mainly unit tests).
-     * RDB production path sets checksum policy explicitly via rioInitWithCompress. */
-    t->compressor.block_checksum = 0;
-
     /* Pre-allocate output buffer for typical writes. Will be resized
      * as needed in sync_compress_write. */
     t->out_buf_size = 0;
@@ -217,7 +213,8 @@ static off_t compressRioTell(rio *r) {
  * This is critical because some call sites flush mid-stream. */
 static int compressRioFlush(rio *r) {
     compress_rio_t *cr = (compress_rio_t *)r;
-    if (cr->finalized || cr->compressor.errored) return 0;
+    if (cr->compressor.errored) return 0;
+    if (cr->finalized) return 1;
 
     /* Only flush if we've started writing (envelope + frame exist) */
     if (cr->compressor.envelope_written && cr->compressor.compressor.frame_started) {
@@ -242,7 +239,10 @@ static int compressRioFlush(rio *r) {
 
     /* Flush inner rio */
     if (cr->inner->flush) {
-        return cr->inner->flush(cr->inner);
+        if (cr->inner->flush(cr->inner) == 0) {
+            cr->compressor.errored = 1;
+            return 0;
+        }
     }
     return 1;
 }
@@ -412,7 +412,7 @@ static int decompressDrainReadBuf(decompress_rio_t *dr,
             &dr->decompressor,
             out + *out_written, out_size - *out_written,
             dr->read_buf + dr->read_buf_pos,
-            dr->read_buf_fill, &consumed, NULL);
+            dr->read_buf_fill, &consumed);
         if (produced < 0) return -1;
         *out_written += (size_t)produced;
         dr->read_buf_pos += consumed;
