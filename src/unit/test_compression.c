@@ -79,8 +79,8 @@ static ssize_t flakyReaderRead(void *ctx, void *buf, size_t len) {
 }
 
 /* --- Property: Envelope round-trip ---
- * For every valid (algo, stream_kind) pair, writeVkcsEnvelope followed by
- * readVkcsEnvelope must recover the original algo and stream_kind. */
+ * For every valid (algo, stream_kind, checksum flag) tuple, writeVkcsEnvelope
+ * followed by readVkcsEnvelope must recover the original fields. */
 int test_envelopeRoundTrip(int argc, char **argv, int flags) {
     UNUSED(argc);
     UNUSED(argv);
@@ -92,17 +92,21 @@ int test_envelopeRoundTrip(int argc, char **argv, int flags) {
 
     for (size_t a = 0; a < algo_count; a++) {
         for (int k = 0; k < 2; k++) {
-            emit_buf_t eb = {.pos = 0};
-            int wret = writeVkcsEnvelope(emitToBuf, &eb, algos[a], kinds[k]);
-            TEST_ASSERT_MESSAGE("writeVkcsEnvelope should succeed for valid params", wret == 0);
-            TEST_ASSERT_MESSAGE("envelope should be exactly 8 bytes", eb.pos == VKCS_ENVELOPE_SIZE);
+            for (int checksum_enabled = 0; checksum_enabled <= 1; checksum_enabled++) {
+                emit_buf_t eb = {.pos = 0};
+                int wret = writeVkcsEnvelope(emitToBuf, &eb, algos[a], kinds[k], checksum_enabled);
+                TEST_ASSERT_MESSAGE("writeVkcsEnvelope should succeed for valid params", wret == 0);
+                TEST_ASSERT_MESSAGE("envelope should be exactly 8 bytes", eb.pos == VKCS_ENVELOPE_SIZE);
 
-            compression_algo_t got_algo = ALGO_NONE;
-            uint8_t got_kind = 0xFF;
-            int rret = readVkcsEnvelope(eb.buf, eb.pos, &got_algo, &got_kind);
-            TEST_ASSERT_MESSAGE("readVkcsEnvelope should succeed", rret == 0);
-            TEST_ASSERT_MESSAGE("round-trip algo must match", got_algo == algos[a]);
-            TEST_ASSERT_MESSAGE("round-trip stream_kind must match", got_kind == kinds[k]);
+                compression_algo_t got_algo = ALGO_NONE;
+                uint8_t got_kind = 0xFF;
+                int got_checksum_enabled = -1;
+                int rret = readVkcsEnvelope(eb.buf, eb.pos, &got_algo, &got_kind, &got_checksum_enabled);
+                TEST_ASSERT_MESSAGE("readVkcsEnvelope should succeed", rret == 0);
+                TEST_ASSERT_MESSAGE("round-trip algo must match", got_algo == algos[a]);
+                TEST_ASSERT_MESSAGE("round-trip stream_kind must match", got_kind == kinds[k]);
+                TEST_ASSERT_MESSAGE("round-trip checksum flag must match", got_checksum_enabled == checksum_enabled);
+            }
         }
     }
     return 0;
@@ -115,7 +119,7 @@ int test_envelopeMagicBytes(int argc, char **argv, int flags) {
     UNUSED(flags);
 
     emit_buf_t eb = {.pos = 0};
-    int ret = writeVkcsEnvelope(emitToBuf, &eb, ALGO_LZ4, STREAM_KIND_RDB);
+    int ret = writeVkcsEnvelope(emitToBuf, &eb, ALGO_LZ4, STREAM_KIND_RDB, 0);
     TEST_ASSERT_MESSAGE("write must succeed", ret == 0);
 
     TEST_ASSERT_MESSAGE("magic[0] == 'V'", eb.buf[0] == 0x56);
@@ -135,15 +139,17 @@ int test_envelopeStreamKindFlag(int argc, char **argv, int flags) {
 
     /* RDB: bit 0 = 0 */
     emit_buf_t eb_rdb = {.pos = 0};
-    int ret = writeVkcsEnvelope(emitToBuf, &eb_rdb, ALGO_LZ4, STREAM_KIND_RDB);
+    int ret = writeVkcsEnvelope(emitToBuf, &eb_rdb, ALGO_LZ4, STREAM_KIND_RDB, 0);
     TEST_ASSERT_MESSAGE("write RDB must succeed", ret == 0);
     TEST_ASSERT_MESSAGE("RDB stream_kind: flags bit 0 == 0", (eb_rdb.buf[6] & 0x01) == 0);
+    TEST_ASSERT_MESSAGE("RDB stream_kind: no extra bits set", (eb_rdb.buf[6] & (uint8_t)~VKCS_FLAG_STREAM_KIND) == 0);
 
     /* REPL: bit 0 = 1 */
     emit_buf_t eb_repl = {.pos = 0};
-    ret = writeVkcsEnvelope(emitToBuf, &eb_repl, ALGO_LZ4, STREAM_KIND_REPL);
+    ret = writeVkcsEnvelope(emitToBuf, &eb_repl, ALGO_LZ4, STREAM_KIND_REPL, 0);
     TEST_ASSERT_MESSAGE("write REPL must succeed", ret == 0);
     TEST_ASSERT_MESSAGE("REPL stream_kind: flags bit 0 == 1", (eb_repl.buf[6] & 0x01) == 1);
+    TEST_ASSERT_MESSAGE("REPL stream_kind: no extra bits set", (eb_repl.buf[6] & (uint8_t)~VKCS_FLAG_STREAM_KIND) == 0);
     return 0;
 }
 
@@ -155,7 +161,7 @@ int test_envelopeRejectsUnknownAlgo(int argc, char **argv, int flags) {
 
     /* Build a valid envelope, then corrupt the algo_id byte */
     emit_buf_t eb = {.pos = 0};
-    int wret = writeVkcsEnvelope(emitToBuf, &eb, ALGO_LZ4, STREAM_KIND_RDB);
+    int wret = writeVkcsEnvelope(emitToBuf, &eb, ALGO_LZ4, STREAM_KIND_RDB, 0);
     TEST_ASSERT_MESSAGE("write must succeed", wret == 0);
 
     /* Try every invalid algo_id value 0..255 except ALGO_LZ4 */
@@ -164,7 +170,7 @@ int test_envelopeRejectsUnknownAlgo(int argc, char **argv, int flags) {
         eb.buf[5] = (uint8_t)i;
         compression_algo_t a;
         uint8_t k;
-        int ret = readVkcsEnvelope(eb.buf, eb.pos, &a, &k);
+        int ret = readVkcsEnvelope(eb.buf, eb.pos, &a, &k, NULL);
         TEST_ASSERT_MESSAGE("readVkcsEnvelope must reject unknown algo_id", ret == -1);
     }
     return 0;
@@ -177,8 +183,8 @@ int test_envelopeRejectsNonStreamingAlgo(int argc, char **argv, int flags) {
     UNUSED(flags);
 
     emit_buf_t eb = {.pos = 0};
-    TEST_ASSERT_MESSAGE("ALGO_NONE rejected", writeVkcsEnvelope(emitToBuf, &eb, ALGO_NONE, STREAM_KIND_RDB) == -1);
-    TEST_ASSERT_MESSAGE("ALGO_LZF rejected", writeVkcsEnvelope(emitToBuf, &eb, ALGO_LZF, STREAM_KIND_RDB) == -1);
+    TEST_ASSERT_MESSAGE("ALGO_NONE rejected", writeVkcsEnvelope(emitToBuf, &eb, ALGO_NONE, STREAM_KIND_RDB, 0) == -1);
+    TEST_ASSERT_MESSAGE("ALGO_LZF rejected", writeVkcsEnvelope(emitToBuf, &eb, ALGO_LZF, STREAM_KIND_RDB, 0) == -1);
     return 0;
 }
 
@@ -189,14 +195,14 @@ int test_envelopeRejectsTruncated(int argc, char **argv, int flags) {
     UNUSED(flags);
 
     emit_buf_t eb = {.pos = 0};
-    int wret = writeVkcsEnvelope(emitToBuf, &eb, ALGO_LZ4, STREAM_KIND_RDB);
+    int wret = writeVkcsEnvelope(emitToBuf, &eb, ALGO_LZ4, STREAM_KIND_RDB, 0);
     TEST_ASSERT_MESSAGE("write must succeed", wret == 0);
 
     /* Every length < 8 must fail */
     for (size_t l = 0; l < VKCS_ENVELOPE_SIZE; l++) {
         compression_algo_t a;
         uint8_t k;
-        int ret = readVkcsEnvelope(eb.buf, l, &a, &k);
+        int ret = readVkcsEnvelope(eb.buf, l, &a, &k, NULL);
         TEST_ASSERT_MESSAGE("truncated envelope must be rejected", ret == -1);
     }
     return 0;
@@ -209,7 +215,7 @@ int test_envelopeRejectsBadMagic(int argc, char **argv, int flags) {
     UNUSED(flags);
 
     emit_buf_t eb = {.pos = 0};
-    int wret = writeVkcsEnvelope(emitToBuf, &eb, ALGO_LZ4, STREAM_KIND_RDB);
+    int wret = writeVkcsEnvelope(emitToBuf, &eb, ALGO_LZ4, STREAM_KIND_RDB, 0);
     TEST_ASSERT_MESSAGE("write must succeed", wret == 0);
 
     /* Flip each magic byte and verify rejection */
@@ -218,7 +224,7 @@ int test_envelopeRejectsBadMagic(int argc, char **argv, int flags) {
         eb.buf[i] = ~orig;
         compression_algo_t a;
         uint8_t k;
-        int ret = readVkcsEnvelope(eb.buf, eb.pos, &a, &k);
+        int ret = readVkcsEnvelope(eb.buf, eb.pos, &a, &k, NULL);
         TEST_ASSERT_MESSAGE("bad magic must be rejected", ret == -1);
         eb.buf[i] = orig;
     }
@@ -232,16 +238,16 @@ int test_envelopeRejectsReservedBits(int argc, char **argv, int flags) {
     UNUSED(flags);
 
     emit_buf_t eb = {.pos = 0};
-    int wret = writeVkcsEnvelope(emitToBuf, &eb, ALGO_LZ4, STREAM_KIND_RDB);
+    int wret = writeVkcsEnvelope(emitToBuf, &eb, ALGO_LZ4, STREAM_KIND_RDB, 0);
     TEST_ASSERT_MESSAGE("write must succeed", wret == 0);
 
-    /* Setting any reserved flag bit (1-7) must cause rejection */
-    for (int bit = 1; bit < 8; bit++) {
+    /* Setting any reserved flag bit (2-7) must cause rejection */
+    for (int bit = 2; bit < 8; bit++) {
         uint8_t orig = eb.buf[6];
         eb.buf[6] = orig | (1 << bit);
         compression_algo_t a;
         uint8_t k;
-        int ret = readVkcsEnvelope(eb.buf, eb.pos, &a, &k);
+        int ret = readVkcsEnvelope(eb.buf, eb.pos, &a, &k, NULL);
         TEST_ASSERT_MESSAGE("reserved flag bits must be rejected", ret == -1);
         eb.buf[6] = orig;
     }
@@ -251,7 +257,7 @@ int test_envelopeRejectsReservedBits(int argc, char **argv, int flags) {
         eb.buf[7] = (uint8_t)val;
         compression_algo_t a;
         uint8_t k;
-        int ret = readVkcsEnvelope(eb.buf, eb.pos, &a, &k);
+        int ret = readVkcsEnvelope(eb.buf, eb.pos, &a, &k, NULL);
         TEST_ASSERT_MESSAGE("non-zero reserved byte must be rejected", ret == -1);
     }
     eb.buf[7] = 0;
@@ -278,7 +284,7 @@ int test_envelopeBitFlipFuzz(int argc, char **argv, int flags) {
         uint8_t kind = kinds[random() % 2];
 
         emit_buf_t eb = {.pos = 0};
-        int wret = writeVkcsEnvelope(emitToBuf, &eb, algo, kind);
+        int wret = writeVkcsEnvelope(emitToBuf, &eb, algo, kind, 0);
         TEST_ASSERT_MESSAGE("write must succeed", wret == 0);
         TEST_ASSERT_MESSAGE("size must be 8", eb.pos == VKCS_ENVELOPE_SIZE);
 
@@ -291,7 +297,7 @@ int test_envelopeBitFlipFuzz(int argc, char **argv, int flags) {
         /* Most flips should cause rejection; some may land on don't-care
          * bits and still parse. When parse succeeds, validate the returned
          * values are valid enum members. */
-        int ret = readVkcsEnvelope(eb.buf, eb.pos, &got_algo, &got_kind);
+        int ret = readVkcsEnvelope(eb.buf, eb.pos, &got_algo, &got_kind, NULL);
         if (ret == 0) {
             TEST_ASSERT_MESSAGE("parsed algo must be LZ4", got_algo == ALGO_LZ4);
             TEST_ASSERT_MESSAGE("parsed kind must be RDB or REPL",
@@ -314,7 +320,7 @@ int test_envelopeEmitFailure(int argc, char **argv, int flags) {
     UNUSED(argv);
     UNUSED(flags);
 
-    int ret = writeVkcsEnvelope(emitAlwaysFail, NULL, ALGO_LZ4, STREAM_KIND_RDB);
+    int ret = writeVkcsEnvelope(emitAlwaysFail, NULL, ALGO_LZ4, STREAM_KIND_RDB, 0);
     TEST_ASSERT_MESSAGE("writeVkcsEnvelope must propagate emit_cb failure", ret == -1);
     return 0;
 }
@@ -1061,29 +1067,49 @@ int test_streamWriterContentChecksumToggle(int argc, char **argv, int flags) {
     size_t payload_len = strlen(payload);
 
     for (int checksum_on = 0; checksum_on <= 1; checksum_on++) {
-        dynamic_buf_t db;
-        dynamicBufInit(&db);
+        dynamic_buf_t raw_db;
+        dynamicBufInit(&raw_db);
 
-        stream_writer_config_t cfg = {
+        stream_writer_config_t raw_cfg = {
             .algo = ALGO_LZ4,
             .level = 0,
             .stream_kind = STREAM_KIND_RDB,
             .raw_frame = 1, /* make frame start at byte 0 for parser helper */
             .block_checksum = checksum_on,
         };
-        stream_writer_t *t = stream_writer_create(&cfg, emitToDynamicBuf, &db);
+        stream_writer_t *t = stream_writer_create(&raw_cfg, emitToDynamicBuf, &raw_db);
         TEST_ASSERT(t != NULL);
         TEST_ASSERT(stream_writer_write(t, payload, payload_len) == 0);
         TEST_ASSERT(stream_writer_finish(t) == 0);
 
         int has_checksum = -1;
         TEST_ASSERT_MESSAGE("frame parser should succeed",
-                            lz4FrameIntegrityChecksumFlagFromBlob(db.data, db.len, &has_checksum) == 0);
+                            lz4FrameIntegrityChecksumFlagFromBlob(raw_db.data, raw_db.len, &has_checksum) == 0);
         TEST_ASSERT_MESSAGE("frame integrity checksum flag should match config",
                             has_checksum == checksum_on);
 
         stream_writer_destroy(t);
-        dynamicBufFree(&db);
+        dynamicBufFree(&raw_db);
+
+        dynamic_buf_t env_db;
+        dynamicBufInit(&env_db);
+        stream_writer_config_t env_cfg = {
+            .algo = ALGO_LZ4,
+            .level = 0,
+            .stream_kind = STREAM_KIND_RDB,
+            .raw_frame = 0,
+            .block_checksum = checksum_on,
+        };
+        stream_writer_t *env_t = stream_writer_create(&env_cfg, emitToDynamicBuf, &env_db);
+        TEST_ASSERT(env_t != NULL);
+        TEST_ASSERT(stream_writer_write(env_t, payload, payload_len) == 0);
+        TEST_ASSERT(stream_writer_finish(env_t) == 0);
+        TEST_ASSERT(env_db.len > VKCS_ENVELOPE_SIZE);
+        int envelope_checksum = (env_db.data[6] & VKCS_FLAG_CODEC_CHECKSUM) != 0;
+        TEST_ASSERT_MESSAGE("VKCS checksum flag should match config",
+                            envelope_checksum == checksum_on);
+        stream_writer_destroy(env_t);
+        dynamicBufFree(&env_db);
     }
 
     return 0;

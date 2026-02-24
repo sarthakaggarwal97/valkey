@@ -40,14 +40,16 @@ const char *compressionAlgoName(compression_algo_t algo) {
  *   [0..3] magic  "VKCS" (0x56 0x4B 0x43 0x53)
  *   [4]    version (VKCS_VERSION, currently 1)
  *   [5]    algo_id (compression_algo_t value)
- *   [6]    flags   (bit 0 = stream_kind: 0=RDB, 1=REPL; bits 1-7 reserved)
+ *   [6]    flags   (bit 0 = stream_kind: 0=RDB, 1=REPL;
+ *                   bit 1 = codec checksum enabled; bits 2-7 reserved)
  *   [7]    reserved (must be 0)
  *
  * Returns 0 on success, -1 on error (invalid algo or emit_cb failure). */
 int writeVkcsEnvelope(vkcsEmitFn emit_cb,
                       void *ctx,
                       compression_algo_t algo,
-                      uint8_t stream_kind) {
+                      uint8_t stream_kind,
+                      int codec_checksum_enabled) {
     /* Only streaming algorithms are valid in the envelope. */
     if (!emit_cb) return -1;
     if (!compressionAlgoSupportsStreaming(algo)) return -1;
@@ -60,8 +62,9 @@ int writeVkcsEnvelope(vkcsEmitFn emit_cb,
     envelope[3] = VKCS_MAGIC_3;
     envelope[4] = VKCS_VERSION;
     envelope[5] = (uint8_t)algo;
-    envelope[6] = stream_kind; /* already validated to be 0 or 1 */
-    envelope[7] = 0;           /* reserved */
+    envelope[6] = (uint8_t)(stream_kind & VKCS_FLAG_STREAM_KIND);
+    if (codec_checksum_enabled) envelope[6] |= VKCS_FLAG_CODEC_CHECKSUM;
+    envelope[7] = 0; /* reserved */
 
     int rc = emit_cb(ctx, envelope, VKCS_ENVELOPE_SIZE);
     return rc == 0 ? 0 : -1;
@@ -71,10 +74,15 @@ int writeVkcsEnvelope(vkcsEmitFn emit_cb,
  * Validates magic bytes, version, algorithm, and reserved fields.
  * Rejects envelopes with non-zero reserved bits so future versions are
  * detected early rather than causing silent data corruption.
- * On success populates *algo and *stream_kind and returns 0.
+ * On success populates *algo, *stream_kind, and *codec_checksum_enabled and
+ * returns 0.
  * Returns -1 on error (bad magic, unsupported version, unknown algo,
  * reserved bits set). */
-int readVkcsEnvelope(const uint8_t *buf, size_t len, compression_algo_t *algo, uint8_t *stream_kind) {
+int readVkcsEnvelope(const uint8_t *buf,
+                     size_t len,
+                     compression_algo_t *algo,
+                     uint8_t *stream_kind,
+                     int *codec_checksum_enabled) {
     if (!buf || len < VKCS_ENVELOPE_SIZE) return -1;
 
     /* Validate magic */
@@ -92,13 +100,15 @@ int readVkcsEnvelope(const uint8_t *buf, size_t len, compression_algo_t *algo, u
 
     /* Reject envelopes with reserved bits/bytes set (strict reader pattern) */
     uint8_t flags = buf[6];
-    if (flags & 0xFE) return -1; /* reserved flag bits 1-7 must be 0 */
+    if (flags & 0xFC) return -1; /* reserved flag bits 2-7 must be 0 */
     if (buf[7] != 0) return -1;  /* reserved byte must be 0 */
 
-    uint8_t kind = flags & 0x01;
+    uint8_t kind = flags & VKCS_FLAG_STREAM_KIND;
+    int checksum_enabled = (flags & VKCS_FLAG_CODEC_CHECKSUM) != 0;
 
     if (algo) *algo = (compression_algo_t)algo_id;
     if (stream_kind) *stream_kind = kind;
+    if (codec_checksum_enabled) *codec_checksum_enabled = checksum_enabled;
 
     return 0;
 }

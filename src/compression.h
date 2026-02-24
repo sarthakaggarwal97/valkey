@@ -26,6 +26,8 @@ typedef enum {
 #define VKCS_MAGIC_3 0x53 /* 'S' */
 #define VKCS_ENVELOPE_SIZE 8
 #define VKCS_VERSION 1
+#define VKCS_FLAG_STREAM_KIND 0x01
+#define VKCS_FLAG_CODEC_CHECKSUM 0x02
 
 #define STREAM_KIND_RDB 0x00
 #define STREAM_KIND_REPL 0x01
@@ -90,11 +92,17 @@ const char *compressionAlgoName(compression_algo_t algo);
 int writeVkcsEnvelope(vkcsEmitFn emit_cb,
                       void *ctx,
                       compression_algo_t algo,
-                      uint8_t stream_kind);
+                      uint8_t stream_kind,
+                      int codec_checksum_enabled);
 
 /* Parse VKCS envelope from buffer.  Returns 0 on success, -1 on error.
- * On success, *algo and *stream_kind are populated. */
-int readVkcsEnvelope(const uint8_t *buf, size_t len, compression_algo_t *algo, uint8_t *stream_kind);
+ * On success, *algo, *stream_kind, and *codec_checksum_enabled are populated
+ * when corresponding pointers are non-NULL. */
+int readVkcsEnvelope(const uint8_t *buf,
+                     size_t len,
+                     compression_algo_t *algo,
+                     uint8_t *stream_kind,
+                     int *codec_checksum_enabled);
 
 /* --- Streaming compression API --- */
 

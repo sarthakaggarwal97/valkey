@@ -63,7 +63,8 @@ static int streamWriterEnsureEnvelope(stream_writer_t *t) {
         t->envelope_written = true;
         return 0;
     }
-    if (writeVkcsEnvelope(t->emit_cb, t->emit_ctx, t->compressor.algo, t->stream_kind) != 0) {
+    if (writeVkcsEnvelope(t->emit_cb, t->emit_ctx, t->compressor.algo, t->stream_kind,
+                          t->compressor.block_checksum) != 0) {
         t->errored = true;
         return -1;
     }
@@ -218,6 +219,7 @@ struct stream_reader {
 
     compression_algo_t algo;
     uint8_t stream_kind;
+    bool codec_checksum_enabled;
 
     stream_decompressor_t decompressor;
     bool decompressor_initialized;
@@ -260,6 +262,7 @@ static void streamReaderSetError(stream_reader_t *t) {
 static int streamReaderInitCompressedState(stream_reader_t *t,
                                            compression_algo_t algo,
                                            uint8_t stream_kind,
+                                           bool codec_checksum_enabled,
                                            size_t batch_size) {
     if (!t) return -1;
     if (!compressionAlgoSupportsStreaming(algo)) return -1;
@@ -280,6 +283,7 @@ static int streamReaderInitCompressedState(stream_reader_t *t,
 
     t->algo = algo;
     t->stream_kind = stream_kind;
+    t->codec_checksum_enabled = codec_checksum_enabled;
     t->compressed = true;
     return 0;
 }
@@ -305,6 +309,7 @@ static void streamReaderResetCompressedState(stream_reader_t *t) {
     t->window_size = 0;
     t->window_pos = 0;
     t->window_len = 0;
+    t->codec_checksum_enabled = false;
 }
 
 stream_reader_t *stream_reader_create(const stream_reader_config_t *cfg,
@@ -327,7 +332,7 @@ stream_reader_t *stream_reader_create(const stream_reader_config_t *cfg,
         uint8_t stream_kind = t->expected_stream_kind == STREAM_KIND_ANY
                                   ? STREAM_KIND_ANY
                                   : t->expected_stream_kind;
-        if (streamReaderInitCompressedState(t, cfg->algo, stream_kind, t->batch_size) != 0) {
+        if (streamReaderInitCompressedState(t, cfg->algo, stream_kind, false, t->batch_size) != 0) {
             streamReaderResetCompressedState(t);
             zfree(t);
             return NULL;
@@ -360,6 +365,7 @@ static void streamReaderInitPassthroughState(stream_reader_t *t,
     t->compressed = false;
     t->algo = ALGO_NONE;
     t->stream_kind = STREAM_KIND_ANY;
+    t->codec_checksum_enabled = false;
     t->probed = true;
 }
 
@@ -400,7 +406,8 @@ int stream_reader_probe(stream_reader_t *t) {
 
     compression_algo_t algo = ALGO_NONE;
     uint8_t stream_kind = STREAM_KIND_ANY;
-    if (readVkcsEnvelope(header, VKCS_ENVELOPE_SIZE, &algo, &stream_kind) != 0) {
+    int codec_checksum_enabled = 0;
+    if (readVkcsEnvelope(header, VKCS_ENVELOPE_SIZE, &algo, &stream_kind, &codec_checksum_enabled) != 0) {
         streamReaderSetError(t);
         return -1;
     }
@@ -410,7 +417,7 @@ int stream_reader_probe(stream_reader_t *t) {
         return -1;
     }
 
-    if (streamReaderInitCompressedState(t, algo, stream_kind, t->batch_size) != 0) {
+    if (streamReaderInitCompressedState(t, algo, stream_kind, codec_checksum_enabled != 0, t->batch_size) != 0) {
         streamReaderSetError(t);
         return -1;
     }
@@ -617,6 +624,7 @@ int stream_reader_get_info(stream_reader_t *t, stream_reader_info_t *info) {
     info->compressed = t->compressed;
     info->algo = t->compressed ? t->algo : ALGO_NONE;
     info->stream_kind = t->compressed ? t->stream_kind : STREAM_KIND_ANY;
+    info->codec_checksum_enabled = t->compressed ? t->codec_checksum_enabled : false;
     return 0;
 }
 

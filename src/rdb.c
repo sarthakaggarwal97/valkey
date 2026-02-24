@@ -60,7 +60,6 @@
 #include <arpa/inet.h>
 #include <sys/stat.h>
 #include <sys/param.h>
-#include <unistd.h>
 
 /* Size of the static buffer used for rdbcompression */
 #define LZF_STATIC_BUFFER_SIZE (8 * 1024)
@@ -74,60 +73,6 @@
 static inline int isRdbStreamingCompressionEnabled(void) {
     return server.rdb_compression &&
            (server.rdb_compression_algo == ALGO_LZ4);
-}
-
-/* Parse LZ4 frame checksum flags at `frame_offset` (frame start) using pread
- * so FILE/rio cursor state is unchanged. */
-static int rdbLz4FrameHasIntegrityChecksum(FILE *fp, int *has_checksum) {
-    if (!fp || !has_checksum) return C_ERR;
-
-    int fd = fileno(fp);
-    off_t frame_offset = ftello(fp);
-    if (fd == -1 || frame_offset == (off_t)-1) return C_ERR;
-
-    unsigned char hdr[19]; /* LZ4 frame header max size */
-    ssize_t nread = pread(fd, hdr, sizeof(hdr), frame_offset);
-    if (nread < 0) return C_ERR;
-
-    size_t n = (size_t)nread;
-    if (n < 7) return C_ERR; /* min LZ4 frame header size */
-
-    uint32_t magic = ((uint32_t)hdr[0]) |
-                     ((uint32_t)hdr[1] << 8) |
-                     ((uint32_t)hdr[2] << 16) |
-                     ((uint32_t)hdr[3] << 24);
-    if (magic != 0x184D2204U) return C_ERR;
-
-    uint8_t flg = hdr[4];
-    size_t header_len = 7;                /* magic + FLG + BD + HC */
-    if (flg & (1u << 3)) header_len += 8; /* content size */
-    if (flg & 1u) header_len += 4;        /* dict ID */
-    if (n < header_len) return C_ERR;
-
-    *has_checksum = ((flg & (1u << 4)) != 0) || /* FLG bit 4: content checksum */
-                    ((flg & (1u << 2)) != 0);   /* FLG bit 2: block checksum */
-    return C_OK;
-}
-
-/* Probe compressed frame checksum flags at current FILE position without
- * changing the stream position. */
-static int rdbInspectCompressedFrameChecksum(FILE *fp, compression_algo_t algo, int *has_checksum) {
-    if (!fp || !has_checksum) return C_ERR;
-    *has_checksum = 0;
-
-    switch (algo) {
-    case ALGO_LZ4:
-        return rdbLz4FrameHasIntegrityChecksum(fp, has_checksum);
-    default:
-        return C_ERR;
-    }
-}
-
-static void rdbLogCompressedFrameChecksumInspectFailure(const char *filename, compression_algo_t algo) {
-    serverLog(LL_WARNING,
-              "Unable to inspect compressed frame checksum flags in %s (algo=%s); "
-              "codec integrity cannot be assumed.",
-              filename, compressionAlgoName(algo));
 }
 
 /* This macro tells if we are in the context of a RESTORE command, and not loading an RDB or AOF. */
@@ -3745,19 +3690,7 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     serverAssert(stream_info_rc == 0);
 
     if (stream_info.compressed) {
-        int codec_checksum_verified = 0;
-        if (server.rdb_checksum && !server.skip_checksum_validation) {
-            int has_codec_checksum = 0;
-            if (rdbInspectCompressedFrameChecksum(fp, stream_info.algo, &has_codec_checksum) == C_OK) {
-                codec_checksum_verified = has_codec_checksum;
-            } else {
-                rdbLogCompressedFrameChecksumInspectFailure(filename, stream_info.algo);
-                /* Inspection failure means checksum mode could not be
-                 * determined; keep loading with conservative behavior
-                 * (do not mark codec checksum verified). */
-            }
-        }
-        if (codec_checksum_verified) {
+        if (stream_info.codec_checksum_enabled) {
             dr.base.flags |= RIO_FLAG_STREAMING_CODEC_CHECKSUM;
         }
         serverLog(LL_NOTICE, "Loading compressed RDB (algo=%s) from %s",

@@ -43,7 +43,9 @@ typedef struct stream_reader stream_reader_t;
 typedef struct {
     bool compressed; /* true => stream is VKCS+codec compressed, false => passthrough */
     compression_algo_t algo;
-    uint8_t stream_kind; /* STREAM_KIND_RDB/REPL when compressed, STREAM_KIND_ANY otherwise */
+    uint8_t stream_kind;         /* STREAM_KIND_RDB/REPL when compressed, STREAM_KIND_ANY otherwise */
+    bool codec_checksum_enabled; /* Parsed from VKCS flags when compressed.
+                                  * For LZ4 this tracks block checksum mode. */
 } stream_reader_info_t;
 
 /* Caller-provided input callback.
@@ -88,7 +90,8 @@ int stream_reader_probe(stream_reader_t *t);
  * - -1: error */
 ssize_t stream_reader_read(stream_reader_t *t, void *buf, size_t len);
 /* Populate stream metadata after probing.
- * For passthrough streams: compressed=0, algo=ALGO_NONE, stream_kind=STREAM_KIND_ANY.
+ * For passthrough streams: compressed=0, algo=ALGO_NONE,
+ * stream_kind=STREAM_KIND_ANY, codec_checksum_enabled=false.
  * Returns 0 on success, -1 on error. */
 int stream_reader_get_info(stream_reader_t *t, stream_reader_info_t *info);
 void stream_reader_destroy(stream_reader_t *t);
