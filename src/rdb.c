@@ -3111,7 +3111,8 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
      * Use the wrapped inner rio's processed_bytes (already tracked by the
      * decompressor read path) to avoid calling rioTell() on every chunk. */
     off_t progress_pos = (off_t)(r->processed_bytes + len);
-    if (r->flags & RIO_FLAG_STREAMING_COMPRESSION) {
+    if ((r->flags & RIO_FLAG_STREAMING_COMPRESSION) &&
+        (r->flags & RIO_FLAG_STREAMING_DECOMPRESSION)) {
         decompress_rio_t *dr = (decompress_rio_t *)r;
         progress_pos = (off_t)dr->inner->processed_bytes;
     }
@@ -3683,53 +3684,46 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     startLoadingFile(sb.st_size, filename, rdbflags);
     rioInitWithFile(&rdb, fp);
 
-    /* Format detection: check for VKCS envelope, fall back to RDB magic. */
-    uint8_t header[VKCS_ENVELOPE_SIZE];
-    compression_algo_t algo;
-    uint8_t stream_kind;
     decompress_rio_t dr;
-    prefix_replay_rio_t pr;
     int dr_initialized = 0;
-    int codec_checksum_verified = 0;
+    stream_reader_info_t stream_info;
     rio *load_rio = &rdb;
 
-    int vkcs = vkcsDetectFormat(&rdb, header, &algo, &stream_kind);
-    if (vkcs < 0) {
-        serverLog(LL_WARNING, "Short read loading RDB header from %s", filename);
+    stream_reader_config_t reader_cfg = {
+        .algo = ALGO_NONE,
+        .expected_stream_kind = STREAM_KIND_RDB,
+        .raw_frame = 0,
+        .allow_passthrough = 1,
+        .batch_size = 0,
+    };
+    if (decompress_rio_init_with_config(&dr, &rdb, &reader_cfg) != 0) {
+        serverLog(LL_WARNING, "Failed to initialize RDB stream reader for %s", filename);
         goto done;
-    } else if (vkcs == 1) {
-        /* VKCS compressed stream */
-        if (stream_kind != STREAM_KIND_RDB) {
-            serverLog(LL_WARNING, "VKCS stream_kind is not RDB in file %s", filename);
-            goto done;
-        }
+    }
+    dr_initialized = 1;
+    load_rio = (rio *)&dr;
+
+    if (decompress_rio_get_info(&dr, &stream_info) != 0) {
+        serverLog(LL_WARNING, "Failed to probe RDB stream metadata for %s", filename);
+        goto done;
+    }
+
+    if (stream_info.compressed) {
+        int codec_checksum_verified = 0;
         if (server.rdb_checksum && !server.skip_checksum_validation) {
             int has_codec_checksum = 0;
-            if (rdbInspectCompressedFrameChecksum(fp, algo, &has_codec_checksum) == C_OK) {
+            if (rdbInspectCompressedFrameChecksum(fp, stream_info.algo, &has_codec_checksum) == C_OK) {
                 codec_checksum_verified = has_codec_checksum;
             } else {
-                rdbLogCompressedFrameChecksumInspectFailure(filename, algo);
+                rdbLogCompressedFrameChecksumInspectFailure(filename, stream_info.algo);
                 goto done;
             }
-        }
-        decompress_rio_init(&dr, &rdb, algo);
-        dr_initialized = 1;
-        if (dr.base.flags & RIO_FLAG_READ_ERROR) {
-            serverLog(LL_WARNING, "Failed to initialize decompressor for %s", filename);
-            goto done;
         }
         if (codec_checksum_verified) {
             dr.base.flags |= RIO_FLAG_STREAMING_CODEC_CHECKSUM;
         }
-        load_rio = (rio *)&dr;
-        serverLog(LL_NOTICE, "Loading compressed RDB (algo=%d) from %s", (int)algo, filename);
-    } else if (rdbIsValidMagic(header, VKCS_ENVELOPE_SIZE)) {
-        /* Uncompressed RDB — replay the consumed header bytes */
-        prefix_replay_rio_init(&pr, &rdb, (const char *)header, VKCS_ENVELOPE_SIZE);
-        load_rio = (rio *)&pr;
-    } else {
-        serverLog(LL_WARNING, "Unrecognized format loading RDB from %s", filename);
-        goto done;
+        serverLog(LL_NOTICE, "Loading compressed RDB (algo=%s) from %s",
+                  compressionAlgoName(stream_info.algo), filename);
     }
 
     retval = rdbLoadRio(load_rio, rdbflags, rsi);

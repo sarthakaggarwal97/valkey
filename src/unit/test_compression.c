@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../compression.h"
+#include "../compression_stream.h"
 #include "../zmalloc.h"
 #include "test_help.h"
 
@@ -23,12 +24,33 @@ typedef struct {
     size_t pos;
 } emit_buf_t;
 
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+    size_t pos;
+    size_t max_chunk; /* 0 => unbounded */
+} mem_reader_t;
+
 static int emitToBuf(void *ctx, const uint8_t *data, size_t len) {
     emit_buf_t *eb = (emit_buf_t *)ctx;
     assert(eb->pos + len <= sizeof(eb->buf)); /* crash loudly in tests */
     memcpy(eb->buf + eb->pos, data, len);
     eb->pos += len;
     return 0;
+}
+
+static ssize_t memReaderRead(void *ctx, void *buf, size_t len) {
+    mem_reader_t *r = (mem_reader_t *)ctx;
+    if (!r || !buf) return -1;
+    if (r->pos >= r->len) return 0;
+
+    size_t avail = r->len - r->pos;
+    size_t n = len < avail ? len : avail;
+    if (r->max_chunk && n > r->max_chunk) n = r->max_chunk;
+
+    memcpy(buf, r->data + r->pos, n);
+    r->pos += n;
+    return (ssize_t)n;
 }
 
 /* --- Property: Envelope round-trip ---
@@ -529,11 +551,112 @@ int test_streamCompressFeedErrorRecovery(int argc, char **argv, int flags) {
     return 0;
 }
 
+/* --- Test: stream_reader passes through truncated non-VKCS input. --- */
+int test_streamReaderTruncatedPassthrough(int argc, char **argv, int flags) {
+    UNUSED(argc);
+    UNUSED(argv);
+    UNUSED(flags);
+
+    const uint8_t input[] = {'H', 'E', 'L', 'L', 'O'};
+    mem_reader_t mr = {.data = input, .len = sizeof(input), .pos = 0, .max_chunk = 2};
+    stream_reader_config_t cfg = {
+        .algo = ALGO_NONE,
+        .expected_stream_kind = STREAM_KIND_ANY,
+        .raw_frame = 0,
+        .allow_passthrough = 1,
+        .batch_size = 0,
+    };
+
+    stream_reader_t *t = stream_reader_create(&cfg, memReaderRead, &mr);
+    TEST_ASSERT_MESSAGE("stream_reader_create should succeed", t != NULL);
+
+    stream_reader_info_t info;
+    TEST_ASSERT_MESSAGE("stream_reader_get_info should succeed", stream_reader_get_info(t, &info) == 0);
+    TEST_ASSERT_MESSAGE("truncated input should be treated as passthrough", info.compressed == 0);
+
+    uint8_t out[16];
+    size_t out_len = 0;
+    while (out_len < sizeof(input)) {
+        ssize_t n = stream_reader_read(t, out + out_len, sizeof(out) - out_len);
+        TEST_ASSERT_MESSAGE("stream_reader_read should produce bytes", n > 0);
+        out_len += (size_t)n;
+    }
+    TEST_ASSERT_MESSAGE("passthrough bytes should match",
+                        out_len == sizeof(input) &&
+                            memcmp(out, input, sizeof(input)) == 0);
+    TEST_ASSERT_MESSAGE("stream_reader_read should return EOF after payload",
+                        stream_reader_read(t, out, sizeof(out)) == 0);
+
+    stream_reader_destroy(t);
+    return 0;
+}
+
+/* --- Test: stream_reader rejects malformed VKCS envelope. --- */
+int test_streamReaderRejectsInvalidVkcs(int argc, char **argv, int flags) {
+    UNUSED(argc);
+    UNUSED(argv);
+    UNUSED(flags);
+
+    /* Valid magic + invalid version (0) */
+    const uint8_t input[VKCS_ENVELOPE_SIZE] = {
+        VKCS_MAGIC_0, VKCS_MAGIC_1, VKCS_MAGIC_2, VKCS_MAGIC_3,
+        0,           ALGO_LZ4,     STREAM_KIND_RDB, 0};
+    mem_reader_t mr = {.data = input, .len = sizeof(input), .pos = 0, .max_chunk = 0};
+    stream_reader_config_t cfg = {
+        .algo = ALGO_NONE,
+        .expected_stream_kind = STREAM_KIND_ANY,
+        .raw_frame = 0,
+        .allow_passthrough = 1,
+        .batch_size = 0,
+    };
+
+    stream_reader_t *t = stream_reader_create(&cfg, memReaderRead, &mr);
+    TEST_ASSERT_MESSAGE("stream_reader_create should succeed", t != NULL);
+
+    TEST_ASSERT_MESSAGE("stream_reader_probe should fail on malformed VKCS",
+                        stream_reader_probe(t) == -1);
+    TEST_ASSERT_MESSAGE("reader should enter errored state", stream_reader_is_errored(t) != 0);
+    stream_reader_info_t info;
+    TEST_ASSERT_MESSAGE("stream_reader_get_info should fail after malformed VKCS",
+                        stream_reader_get_info(t, &info) == -1);
+
+    stream_reader_destroy(t);
+    return 0;
+}
+
+/* --- Test: stream_reader rejects non-VKCS input when passthrough is disabled. --- */
+int test_streamReaderRejectsNonVkcsWhenPassthroughDisabled(int argc, char **argv, int flags) {
+    UNUSED(argc);
+    UNUSED(argv);
+    UNUSED(flags);
+
+    const uint8_t input[VKCS_ENVELOPE_SIZE] = {'R', 'E', 'D', 'I', 'S', '0', '0', '1'};
+    mem_reader_t mr = {.data = input, .len = sizeof(input), .pos = 0, .max_chunk = 0};
+    stream_reader_config_t cfg = {
+        .algo = ALGO_NONE,
+        .expected_stream_kind = STREAM_KIND_RDB,
+        .raw_frame = 0,
+        .allow_passthrough = 0,
+        .batch_size = 0,
+    };
+
+    stream_reader_t *t = stream_reader_create(&cfg, memReaderRead, &mr);
+    TEST_ASSERT_MESSAGE("stream_reader_create should succeed", t != NULL);
+
+    TEST_ASSERT_MESSAGE("stream_reader_probe should reject non-VKCS when passthrough disabled",
+                        stream_reader_probe(t) == -1);
+    TEST_ASSERT_MESSAGE("reader should enter errored state", stream_reader_is_errored(t) != 0);
+
+    stream_reader_destroy(t);
+    return 0;
+}
+
 /* ===================================================================
  * Tests for stream writer API and rio decorators (Tasks 3.1-3.6)
  * =================================================================== */
 
 #include "../compression_rio.h"
+void rdbLoadProgressCallback(rio *r, const void *buf, size_t len);
 
 /* --- Emit callback that appends to a dynamically growing buffer --- */
 typedef struct {
@@ -971,37 +1094,40 @@ int test_decompressRioRoundTrip(int argc, char **argv, int flags) {
     return 0;
 }
 
-/* --- Test: prefix_replay_rio_t (Task 3.6) --- */
+/* --- Test: passthrough stream mode (non-VKCS input) --- */
 int test_prefixReplayRio(int argc, char **argv, int flags) {
     UNUSED(argc);
     UNUSED(argv);
     UNUSED(flags);
 
-    /* Create a buffer rio with some data */
-    const char *remaining = "remaining data after prefix";
-    sds buf = sdsnewlen(remaining, strlen(remaining));
+    const char *payload = "REDIS001remaining data after prefix";
+    size_t payload_len = strlen(payload);
+    sds buf = sdsnewlen(payload, payload_len);
     rio buffer_rio;
     rioInitWithBuffer(&buffer_rio, buf);
 
-    /* Create prefix replay rio with a prefix */
-    const char *prefix = "REDIS001";
-    prefix_replay_rio_t pr;
-    prefix_replay_rio_init(&pr, &buffer_rio, prefix, 8);
+    stream_reader_config_t cfg = {
+        .algo = ALGO_NONE,
+        .expected_stream_kind = STREAM_KIND_ANY,
+        .raw_frame = 0,
+        .allow_passthrough = 1,
+        .batch_size = 0,
+    };
+    decompress_rio_t dr;
+    TEST_ASSERT(decompress_rio_init_with_config(&dr, &buffer_rio, &cfg) == 0);
 
-    /* Read should serve prefix first, then inner rio data */
+    stream_reader_info_t info;
+    TEST_ASSERT(decompress_rio_get_info(&dr, &info) == 0);
+    TEST_ASSERT_MESSAGE("passthrough stream should not be compressed", info.compressed == 0);
+
     char result[64];
     memset(result, 0, sizeof(result));
-    size_t total_len = 8 + strlen(remaining);
     TEST_ASSERT_MESSAGE("rioRead should succeed",
-                        rioRead((rio *)&pr, result, total_len) != 0);
+                        rioRead((rio *)&dr, result, payload_len) != 0);
+    TEST_ASSERT_MESSAGE("payload should be replayed exactly",
+                        memcmp(result, payload, payload_len) == 0);
 
-    /* Verify prefix bytes */
-    TEST_ASSERT_MESSAGE("prefix should match",
-                        memcmp(result, prefix, 8) == 0);
-    /* Verify remaining data */
-    TEST_ASSERT_MESSAGE("remaining data should match",
-                        memcmp(result + 8, remaining, strlen(remaining)) == 0);
-
+    decompress_rio_destroy(&dr);
     sdsfree(buf);
     return 0;
 }
@@ -1097,6 +1223,33 @@ int test_compressRioFlushMidStream(int argc, char **argv, int flags) {
     streamDecompressorDestroy(&sd);
     compress_rio_destroy(&cr);
     sdsfree(compressed);
+    return 0;
+}
+
+/* --- Test: rdbLoadProgressCallback does not cast write-side streaming rios
+ * to decompress_rio_t. This protects save/async paths that also use
+ * RIO_FLAG_STREAMING_COMPRESSION. --- */
+int test_rdbLoadProgressCallbackStreamingGuard(int argc, char **argv, int flags) {
+    UNUSED(argc);
+    UNUSED(argv);
+    UNUSED(flags);
+
+    sds buf = sdsempty();
+    rio inner;
+    rioInitWithBuffer(&inner, buf);
+
+    stream_writer_config_t cfg = {.algo = ALGO_LZ4, .level = 0, .stream_kind = STREAM_KIND_RDB};
+    compress_rio_t cr;
+    TEST_ASSERT(rioInitWithCompress(&cr, &inner, &cfg) == 0);
+
+    const char sample[] = "progress-guard";
+    rdbLoadProgressCallback((rio *)&cr, sample, sizeof(sample) - 1);
+
+    TEST_ASSERT_MESSAGE("write-side streaming rio must not set read error",
+                        (cr.base.flags & RIO_FLAG_READ_ERROR) == 0);
+
+    compress_rio_destroy(&cr);
+    sdsfree(inner.io.buffer.ptr);
     return 0;
 }
 

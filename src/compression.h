@@ -29,6 +29,7 @@ typedef enum {
 
 #define STREAM_KIND_RDB 0x00
 #define STREAM_KIND_REPL 0x01
+#define STREAM_KIND_ANY 0xFF
 
 /* --- Emit callback type --- */
 typedef int (*vkcsEmitFn)(void *ctx, const uint8_t *data, size_t len);
