@@ -165,6 +165,7 @@ void streamDecompressorDestroy(stream_decompressor_t *sd) {
         sd->ctx.lz4f = NULL;
     }
     sd->algo = ALGO_NONE;
+    sd->errored = false;
 }
 
 /* Shared LZ4F preferences template.
@@ -299,7 +300,8 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
 
 /* Feed compressed data through the streaming decompressor.
  * Returns bytes written to output, 0 for no output, -1 on error.
- * *input_consumed is set to the number of input bytes consumed. */
+ * *input_consumed is set to the number of input bytes consumed.
+ * On fatal errors, sd->errored is latched and subsequent calls return -1. */
 ssize_t streamDecompressFeed(stream_decompressor_t *sd,
                              uint8_t *output,
                              size_t output_capacity,
@@ -307,70 +309,39 @@ ssize_t streamDecompressFeed(stream_decompressor_t *sd,
                              size_t input_len,
                              size_t *input_consumed) {
     if (!sd || !input_consumed) return -1;
+    if (sd->errored) return -1;
     *input_consumed = 0;
     /* Zero output capacity is a caller bug — returning 0 with no progress
      * would cause streaming loops to spin forever. */
-    if (!output || output_capacity == 0) return -1;
+    if (!output || output_capacity == 0) {
+        sd->errored = true;
+        return -1;
+    }
 
     switch (sd->algo) {
     case ALGO_LZ4: {
-        if (!sd->ctx.lz4f) return -1;
+        if (!sd->ctx.lz4f) {
+            sd->errored = true;
+            return -1;
+        }
         size_t dst_size = output_capacity;
         size_t src_size = input_len;
         size_t ret = LZ4F_decompress((LZ4F_dctx *)sd->ctx.lz4f,
                                      output, &dst_size,
                                      input, &src_size, NULL);
-        if (LZ4F_isError(ret)) return -1;
+        if (LZ4F_isError(ret)) {
+            sd->errored = true;
+            return -1;
+        }
         *input_consumed = src_size;
-        if (dst_size > (size_t)SSIZE_MAX) return -1;
+        if (dst_size > (size_t)SSIZE_MAX) {
+            sd->errored = true;
+            return -1;
+        }
         return (ssize_t)dst_size;
     }
     default:
-        return -1;
-    }
-}
-
-/* Parse LZ4 frame flags at `frame_offset` (frame start) without
- * advancing stream state.
- * Requires a seekable fd (regular file); returns -1 for pipes/sockets.
- * On success, sets *has_checksum to 1 when an integrity checksum flag is
- * enabled, else 0. */
-static int lz4FrameHasIntegrityChecksum(int fd, off_t frame_offset, int *has_checksum) {
-    if (fd < 0 || frame_offset < 0 || !has_checksum) return -1;
-
-    unsigned char hdr[19]; /* LZ4 frame header max size */
-    ssize_t nread = pread(fd, hdr, sizeof(hdr), frame_offset);
-    if (nread < 0) return -1;
-
-    size_t n = (size_t)nread;
-    if (n < 7) return -1; /* min LZ4 frame header size */
-
-    uint32_t magic = ((uint32_t)hdr[0]) |
-                     ((uint32_t)hdr[1] << 8) |
-                     ((uint32_t)hdr[2] << 16) |
-                     ((uint32_t)hdr[3] << 24);
-    if (magic != 0x184D2204U) return -1;
-
-    uint8_t flg = hdr[4];
-    size_t header_len = 7;                /* magic + FLG + BD + HC */
-    if (flg & (1u << 3)) header_len += 8; /* content size */
-    if (flg & 1u) header_len += 4;        /* dict ID */
-    if (n < header_len) return -1;
-
-    int has_integrity_checksum = ((flg & (1u << 4)) != 0) || /* FLG bit 4 */
-                                 ((flg & (1u << 2)) != 0);   /* FLG bit 2 */
-    *has_checksum = has_integrity_checksum;
-    return 0;
-}
-
-int compressionFrameHasIntegrityChecksum(compression_algo_t algo, int fd, off_t frame_offset, int *has_checksum) {
-    if (!has_checksum) return -1;
-    *has_checksum = 0;
-
-    switch (algo) {
-    case ALGO_LZ4:
-        return lz4FrameHasIntegrityChecksum(fd, frame_offset, has_checksum);
-    default:
+        sd->errored = true;
         return -1;
     }
 }

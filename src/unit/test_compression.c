@@ -484,7 +484,9 @@ int test_streamDecompressFeedErrors(int argc, char **argv, int flags) {
     UNUSED(argv);
     UNUSED(flags);
 
+    const char *payload = "decompress sticky error";
     uint8_t buf[64];
+    uint8_t out[128];
     size_t consumed = 0;
 
     /* NULL decompressor */
@@ -498,11 +500,34 @@ int test_streamDecompressFeedErrors(int argc, char **argv, int flags) {
     TEST_ASSERT_MESSAGE("NULL input_consumed should return -1",
                         streamDecompressFeed(&sd, buf, sizeof(buf),
                                              (const uint8_t *)"x", 1, NULL) == -1);
+    TEST_ASSERT_MESSAGE("decompressor should not be errored by NULL bookkeeping arg",
+                        sd.errored == false);
 
     /* Zero output capacity should return -1 (no-progress prevention) */
     TEST_ASSERT_MESSAGE("zero output capacity should return -1",
                         streamDecompressFeed(&sd, buf, 0,
                                              (const uint8_t *)"x", 1, &consumed) == -1);
+    TEST_ASSERT_MESSAGE("decompressor should enter sticky errored state",
+                        sd.errored == true);
+
+    /* Once errored, all subsequent feeds fail immediately. */
+    stream_compressor_t sc;
+    TEST_ASSERT(streamCompressorInit(&sc, ALGO_LZ4, 0) == 0);
+    size_t bound = streamCompressOutputBound(ALGO_LZ4, strlen(payload), 0, FLUSH_END);
+    uint8_t *compressed = zmalloc(bound);
+    TEST_ASSERT(compressed != NULL);
+    uint8_t *out_ptr = compressed;
+    ssize_t compressed_len = streamCompressFeed(&sc, &out_ptr, bound,
+                                                (const uint8_t *)payload, strlen(payload),
+                                                FLUSH_END);
+    TEST_ASSERT(compressed_len > 0);
+    streamCompressorDestroy(&sc);
+
+    TEST_ASSERT_MESSAGE("errored decompressor should fail even with valid input",
+                        streamDecompressFeed(&sd, out, sizeof(out),
+                                             compressed, (size_t)compressed_len,
+                                             &consumed) == -1);
+    zfree(compressed);
 
     streamDecompressorDestroy(&sd);
     return 0;
@@ -1007,25 +1032,23 @@ int test_streamWriterRawFrameRoundTrip(int argc, char **argv, int flags) {
 
 static int lz4FrameIntegrityChecksumFlagFromBlob(const uint8_t *data, size_t len, int *has_checksum) {
     if (!data || !has_checksum) return -1;
-    FILE *fp = tmpfile();
-    if (!fp) return -1;
-    if (fwrite(data, 1, len, fp) != len) {
-        fclose(fp);
-        return -1;
-    }
-    fflush(fp);
-    if (fseeko(fp, 0, SEEK_SET) != 0) {
-        fclose(fp);
-        return -1;
-    }
-    int fd = fileno(fp);
-    off_t frame_offset = ftello(fp);
-    int rc = -1;
-    if (fd != -1 && frame_offset != (off_t)-1) {
-        rc = compressionFrameHasIntegrityChecksum(ALGO_LZ4, fd, frame_offset, has_checksum);
-    }
-    fclose(fp);
-    return rc;
+    if (len < 7) return -1;
+
+    uint32_t magic = ((uint32_t)data[0]) |
+                     ((uint32_t)data[1] << 8) |
+                     ((uint32_t)data[2] << 16) |
+                     ((uint32_t)data[3] << 24);
+    if (magic != 0x184D2204U) return -1;
+
+    uint8_t flg = data[4];
+    size_t header_len = 7;                /* magic + FLG + BD + HC */
+    if (flg & (1u << 3)) header_len += 8; /* content size */
+    if (flg & 1u) header_len += 4;        /* dict ID */
+    if (len < header_len) return -1;
+
+    *has_checksum = ((flg & (1u << 4)) != 0) || /* FLG bit 4 */
+                    ((flg & (1u << 2)) != 0);   /* FLG bit 2 */
+    return 0;
 }
 
 /* --- Test: block_checksum config toggles integrity flag in LZ4 frame. --- */

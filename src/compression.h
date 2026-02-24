@@ -72,6 +72,9 @@ typedef struct {
     union {
         void *lz4f; /* LZ4F_dctx* */
     } ctx;
+    bool errored; /* Permanently failed — algorithm state is undefined after
+                   * an error. All subsequent streamDecompressFeed calls
+                   * return -1 immediately until reinitialized. */
 } stream_decompressor_t;
 
 /* --- Envelope API --- */
@@ -120,18 +123,13 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
 
 /* Feed compressed data through streaming decompressor.
  * Returns bytes written to output, 0 for no output, -1 on error.
- * *input_consumed is set to the number of compressed bytes consumed. */
+ * *input_consumed is set to the number of compressed bytes consumed.
+ * Fatal errors latch stream_decompressor_t.errored until reinit. */
 ssize_t streamDecompressFeed(stream_decompressor_t *sd,
                              uint8_t *output,
                              size_t output_capacity,
                              const uint8_t *input,
                              size_t input_len,
                              size_t *input_consumed);
-
-/* Parse codec frame flags at file offset `frame_offset` (frame start)
- * without changing stream state. On success, sets *has_checksum to 1 when
- * integrity checksums are enabled for the frame, else 0.
- * Returns 0 on success, -1 when unsupported/invalid/error. */
-int compressionFrameHasIntegrityChecksum(compression_algo_t algo, int fd, off_t frame_offset, int *has_checksum);
 
 #endif /* COMPRESSION_H */
