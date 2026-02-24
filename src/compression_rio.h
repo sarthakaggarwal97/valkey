@@ -32,9 +32,6 @@ void compress_rio_destroy(compress_rio_t *cr);
 
 /* Initialize with explicit reader config (auto-detect or raw frame). */
 int decompress_rio_init_with_config(decompress_rio_t *dr, rio *inner, const stream_reader_config_t *cfg);
-/* Backward-compatible raw-frame initializer:
- * expects VKCS envelope to be consumed by the caller. */
-void decompress_rio_init(decompress_rio_t *dr, rio *inner, compression_algo_t algo);
 /* Retrieve probed stream metadata (compressed/algo/kind). */
 int decompress_rio_get_info(decompress_rio_t *dr, stream_reader_info_t *info);
 void decompress_rio_destroy(decompress_rio_t *dr);

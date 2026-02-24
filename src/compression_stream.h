@@ -9,6 +9,9 @@
 
 #include "compression.h"
 
+/* Default decode/read window for stream_reader when cfg->batch_size == 0. */
+#define STREAM_READER_BATCH_SIZE_DEFAULT (1024 * 1024)
+
 /* Generic caller-agnostic streaming writer config.
  * - raw_frame=0: emits VKCS envelope + codec frame
  * - raw_frame=1: emits codec frame only (no envelope)
@@ -17,8 +20,8 @@ typedef struct {
     compression_algo_t algo;
     int level;
     uint8_t stream_kind; /* STREAM_KIND_RDB or STREAM_KIND_REPL */
-    int block_checksum;  /* Codec checksum toggle (LZ4 block checksum) */
-    int raw_frame;       /* 1 => emit raw codec frame (no VKCS envelope) */
+    bool block_checksum; /* Codec checksum toggle (LZ4 block checksum) */
+    bool raw_frame;      /* true => emit raw codec frame (no VKCS envelope) */
 } stream_writer_config_t;
 
 /* Generic caller-agnostic streaming reader config.
@@ -30,8 +33,8 @@ typedef struct {
 typedef struct {
     compression_algo_t algo;      /* Required only when raw_frame=1 */
     uint8_t expected_stream_kind; /* STREAM_KIND_RDB/REPL or STREAM_KIND_ANY */
-    int raw_frame;                /* 1 => input is raw codec frame (no VKCS envelope) */
-    int allow_passthrough;        /* 1 => non-VKCS input is passed through */
+    bool raw_frame;               /* true => input is raw codec frame (no VKCS envelope) */
+    bool allow_passthrough;       /* true => non-VKCS input is passed through */
     size_t batch_size;            /* Decode/read batch size; 0 => internal default */
 } stream_reader_config_t;
 
@@ -71,7 +74,6 @@ int stream_writer_flush(stream_writer_t *t);
 int stream_writer_finish(stream_writer_t *t);
 void stream_writer_destroy(stream_writer_t *t);
 int stream_writer_is_errored(const stream_writer_t *t);
-int stream_writer_is_finished(const stream_writer_t *t);
 void stream_writer_set_error(stream_writer_t *t);
 
 /* Generic streaming reader API.
@@ -95,6 +97,5 @@ ssize_t stream_reader_read(stream_reader_t *t, void *buf, size_t len);
  * Returns 0 on success, -1 on error. */
 int stream_reader_get_info(stream_reader_t *t, stream_reader_info_t *info);
 void stream_reader_destroy(stream_reader_t *t);
-int stream_reader_is_errored(const stream_reader_t *t);
 
 #endif /* COMPRESSION_STREAM_H */

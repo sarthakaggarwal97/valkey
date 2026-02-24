@@ -258,19 +258,6 @@ int decompress_rio_init_with_config(decompress_rio_t *dr, rio *inner, const stre
     return 0;
 }
 
-void decompress_rio_init(decompress_rio_t *dr, rio *inner, compression_algo_t algo) {
-    stream_reader_config_t cfg = {
-        .algo = algo,
-        .expected_stream_kind = STREAM_KIND_ANY,
-        .raw_frame = 1,
-        .allow_passthrough = 0,
-        .batch_size = 0,
-    };
-    if (decompress_rio_init_with_config(dr, inner, &cfg) != 0) {
-        if (dr) dr->base.flags |= RIO_FLAG_READ_ERROR;
-    }
-}
-
 int decompress_rio_get_info(decompress_rio_t *dr, stream_reader_info_t *info) {
     if (!dr || !dr->reader || !info) return -1;
     return stream_reader_get_info(dr->reader, info);

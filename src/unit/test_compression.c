@@ -671,7 +671,6 @@ int test_streamReaderRejectsInvalidVkcs(int argc, char **argv, int flags) {
 
     TEST_ASSERT_MESSAGE("stream_reader_probe should fail on malformed VKCS",
                         stream_reader_probe(t) == -1);
-    TEST_ASSERT_MESSAGE("reader should enter errored state", stream_reader_is_errored(t) != 0);
     stream_reader_info_t info;
     TEST_ASSERT_MESSAGE("stream_reader_get_info should fail after malformed VKCS",
                         stream_reader_get_info(t, &info) == -1);
@@ -701,7 +700,8 @@ int test_streamReaderRejectsNonVkcsWhenPassthroughDisabled(int argc, char **argv
 
     TEST_ASSERT_MESSAGE("stream_reader_probe should reject non-VKCS when passthrough disabled",
                         stream_reader_probe(t) == -1);
-    TEST_ASSERT_MESSAGE("reader should enter errored state", stream_reader_is_errored(t) != 0);
+    TEST_ASSERT_MESSAGE("stream_reader_read should fail after probe error",
+                        stream_reader_read(t, (uint8_t[8]){0}, 8) == -1);
 
     stream_reader_destroy(t);
     return 0;
@@ -743,6 +743,17 @@ static int emitToDynamicBuf(void *ctx, const uint8_t *data, size_t len) {
     memcpy(db->data + db->len, data, len);
     db->len += len;
     return 0;
+}
+
+static int initRawLz4DecompressRio(decompress_rio_t *dr, rio *inner) {
+    stream_reader_config_t cfg = {
+        .algo = ALGO_LZ4,
+        .expected_stream_kind = STREAM_KIND_ANY,
+        .raw_frame = 1,
+        .allow_passthrough = 0,
+        .batch_size = 0,
+    };
+    return decompress_rio_init_with_config(dr, inner, &cfg);
 }
 
 /* --- Test: stream_reader marks errored on partial output + read error.
@@ -797,9 +808,6 @@ int test_streamReaderPartialThenErrorSetsErrored(int argc, char **argv, int flag
     uint8_t out[128 * 1024];
     ssize_t n1 = stream_reader_read(r, out, sizeof(out));
     TEST_ASSERT_MESSAGE("first read should return partial output", n1 > 0);
-    TEST_ASSERT_MESSAGE("reader must enter errored state after partial+error",
-                        stream_reader_is_errored(r) != 0);
-
     TEST_ASSERT_MESSAGE("second read should fail immediately",
                         stream_reader_read(r, out, sizeof(out)) == -1);
 
@@ -822,7 +830,6 @@ int test_streamWriterCreateDestroy(int argc, char **argv, int flags) {
     stream_writer_t *t = stream_writer_create(&cfg, emitToDynamicBuf, &db);
     TEST_ASSERT_MESSAGE("create should succeed for LZ4", t != NULL);
     TEST_ASSERT_MESSAGE("should not be errored", stream_writer_is_errored(t) == 0);
-    TEST_ASSERT_MESSAGE("should not be finished", stream_writer_is_finished(t) == 0);
 
     stream_writer_destroy(t);
     dynamicBufFree(&db);
@@ -1216,7 +1223,7 @@ int test_decompressRioRoundTrip(int argc, char **argv, int flags) {
 
     /* Create decompress rio */
     decompress_rio_t dr;
-    decompress_rio_init(&dr, &buffer_rio, ALGO_LZ4);
+    TEST_ASSERT(initRawLz4DecompressRio(&dr, &buffer_rio) == 0);
 
     /* Read decompressed data */
     char result[256];
@@ -1432,7 +1439,7 @@ int test_decompressRioLargePayload(int argc, char **argv, int flags) {
     rioInitWithBuffer(&buffer_rio, comp_sds);
 
     decompress_rio_t dr;
-    decompress_rio_init(&dr, &buffer_rio, ALGO_LZ4);
+    TEST_ASSERT(initRawLz4DecompressRio(&dr, &buffer_rio) == 0);
 
     /* Read in small chunks (4KB) to force multiple iterations through
      * the decompression state machine. */
@@ -1494,7 +1501,7 @@ int test_decompressRioDirectPath(int argc, char **argv, int flags) {
     rioInitWithBuffer(&buffer_rio, comp_sds);
 
     decompress_rio_t dr;
-    decompress_rio_init(&dr, &buffer_rio, ALGO_LZ4);
+    TEST_ASSERT(initRawLz4DecompressRio(&dr, &buffer_rio) == 0);
 
     uint8_t *result = zmalloc(payload_len);
     size_t ret = rioRead((rio *)&dr, result, payload_len);
@@ -1610,7 +1617,7 @@ int test_independentStreamsCoexist(int argc, char **argv, int flags) {
         rioInitWithBuffer(&buf_rio, comp);
 
         decompress_rio_t dr;
-        decompress_rio_init(&dr, &buf_rio, ALGO_LZ4);
+        TEST_ASSERT(initRawLz4DecompressRio(&dr, &buf_rio) == 0);
 
         char result[256];
         memset(result, 0, sizeof(result));

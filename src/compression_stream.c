@@ -46,12 +46,12 @@ static int streamWriterInitContext(stream_writer_t *t,
     t->emit_cb = emit_cb;
     t->emit_ctx = emit_ctx;
     t->stream_kind = cfg->stream_kind;
-    t->raw_frame = cfg->raw_frame != 0;
+    t->raw_frame = cfg->raw_frame;
 
     if (streamCompressorInit(&t->compressor, cfg->algo, cfg->level) != 0) {
         return -1;
     }
-    t->compressor.block_checksum = cfg->block_checksum != 0;
+    t->compressor.block_checksum = cfg->block_checksum;
     return 0;
 }
 
@@ -191,18 +191,10 @@ int stream_writer_is_errored(const stream_writer_t *t) {
     return t && t->errored;
 }
 
-int stream_writer_is_finished(const stream_writer_t *t) {
-    return t && t->finished;
-}
-
 void stream_writer_set_error(stream_writer_t *t) {
     if (!t) return;
     t->errored = true;
 }
-
-/* Stream reader decode/read batch size.
- * Matches the previous rio decompression defaults. */
-#define STREAM_READER_DEFAULT_BATCH_SIZE (1024 * 1024)
 
 struct stream_reader {
     stream_reader_read_fn read_cb; /* Returns >0 bytes, 0 EOF, -1 error */
@@ -257,6 +249,12 @@ static int streamReaderValidateConfig(const stream_reader_config_t *cfg) {
 static void streamReaderSetError(stream_reader_t *t) {
     if (!t) return;
     t->errored = true;
+}
+
+/* Preserve partial output on read errors while latching sticky error state. */
+static ssize_t streamReaderFail(stream_reader_t *t, size_t partial_bytes) {
+    streamReaderSetError(t);
+    return partial_bytes > 0 ? (ssize_t)partial_bytes : -1;
 }
 
 static int streamReaderInitCompressedState(stream_reader_t *t,
@@ -322,11 +320,11 @@ stream_reader_t *stream_reader_create(const stream_reader_config_t *cfg,
     memset(t, 0, sizeof(*t));
     t->read_cb = read_cb;
     t->read_ctx = read_ctx;
-    t->raw_frame = cfg->raw_frame != 0;
-    t->allow_passthrough = cfg->allow_passthrough != 0;
+    t->raw_frame = cfg->raw_frame;
+    t->allow_passthrough = cfg->allow_passthrough;
     t->expected_stream_kind = cfg->expected_stream_kind;
     if (t->raw_frame) t->allow_passthrough = false;
-    t->batch_size = cfg->batch_size ? cfg->batch_size : STREAM_READER_DEFAULT_BATCH_SIZE;
+    t->batch_size = cfg->batch_size ? cfg->batch_size : STREAM_READER_BATCH_SIZE_DEFAULT;
 
     if (t->raw_frame) {
         uint8_t stream_kind = t->expected_stream_kind == STREAM_KIND_ANY
@@ -566,8 +564,7 @@ static ssize_t streamReaderReadCompressed(stream_reader_t *t, uint8_t *dst, size
             size_t direct_written = 0;
             if (streamReaderPump(t, dst, remaining, &direct_written) != 0) {
                 total += direct_written;
-                streamReaderSetError(t);
-                return total > 0 ? (ssize_t)total : -1;
+                return streamReaderFail(t, total);
             }
             if (direct_written == 0) break; /* EOF */
             dst += direct_written;
@@ -579,8 +576,7 @@ static ssize_t streamReaderReadCompressed(stream_reader_t *t, uint8_t *dst, size
         if (streamReaderWindowAvail(t) == 0) {
             ssize_t filled = streamReaderFillWindow(t);
             if (filled < 0) {
-                streamReaderSetError(t);
-                return total > 0 ? (ssize_t)total : -1;
+                return streamReaderFail(t, total);
             }
             if (filled == 0) break; /* EOF */
         }
@@ -602,16 +598,12 @@ ssize_t stream_reader_read(stream_reader_t *t, void *buf, size_t len) {
     if (!t->compressed) {
         size_t got = streamReaderReadPassthrough(t, (uint8_t *)buf, len);
         if (got == (size_t)-1) {
-            streamReaderSetError(t);
-            return -1;
+            return streamReaderFail(t, 0);
         }
         nread = (ssize_t)got;
     } else {
         nread = streamReaderReadCompressed(t, (uint8_t *)buf, len);
-        if (nread < 0) {
-            streamReaderSetError(t);
-            return -1;
-        }
+        if (nread < 0) return streamReaderFail(t, 0);
     }
 
     return nread;
@@ -632,8 +624,4 @@ void stream_reader_destroy(stream_reader_t *t) {
     if (!t) return;
     streamReaderResetCompressedState(t);
     zfree(t);
-}
-
-int stream_reader_is_errored(const stream_reader_t *t) {
-    return t && t->errored;
 }
