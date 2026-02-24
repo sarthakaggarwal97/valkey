@@ -351,6 +351,18 @@ static int streamReaderReadProbeHeader(stream_reader_t *t, uint8_t *header, size
     return 0;
 }
 
+static void streamReaderInitPassthroughState(stream_reader_t *t,
+                                             const uint8_t *prefix,
+                                             size_t prefix_len) {
+    if (prefix_len > 0) memcpy(t->prefix, prefix, prefix_len);
+    t->prefix_len = prefix_len;
+    t->prefix_pos = 0;
+    t->compressed = false;
+    t->algo = ALGO_NONE;
+    t->stream_kind = STREAM_KIND_ANY;
+    t->probed = true;
+}
+
 int stream_reader_probe(stream_reader_t *t) {
     if (!t) return -1;
     if (t->errored) return -1;
@@ -369,13 +381,7 @@ int stream_reader_probe(stream_reader_t *t) {
             streamReaderSetError(t);
             return -1;
         }
-        if (header_len > 0) memcpy(t->prefix, header, header_len);
-        t->prefix_len = header_len;
-        t->prefix_pos = 0;
-        t->compressed = false;
-        t->algo = ALGO_NONE;
-        t->stream_kind = STREAM_KIND_ANY;
-        t->probed = true;
+        streamReaderInitPassthroughState(t, header, header_len);
         return 0;
     }
 
@@ -388,13 +394,7 @@ int stream_reader_probe(stream_reader_t *t) {
             streamReaderSetError(t);
             return -1;
         }
-        memcpy(t->prefix, header, VKCS_ENVELOPE_SIZE);
-        t->prefix_len = VKCS_ENVELOPE_SIZE;
-        t->prefix_pos = 0;
-        t->compressed = false;
-        t->algo = ALGO_NONE;
-        t->stream_kind = STREAM_KIND_ANY;
-        t->probed = true;
+        streamReaderInitPassthroughState(t, header, VKCS_ENVELOPE_SIZE);
         return 0;
     }
 
@@ -557,8 +557,11 @@ static ssize_t streamReaderReadCompressed(stream_reader_t *t, uint8_t *dst, size
             t->window_size > 0 &&
             remaining >= t->window_size) {
             size_t direct_written = 0;
-            if (streamReaderPump(t, dst, remaining, &direct_written) != 0)
+            if (streamReaderPump(t, dst, remaining, &direct_written) != 0) {
+                total += direct_written;
+                streamReaderSetError(t);
                 return total > 0 ? (ssize_t)total : -1;
+            }
             if (direct_written == 0) break; /* EOF */
             dst += direct_written;
             remaining -= direct_written;
@@ -568,7 +571,10 @@ static ssize_t streamReaderReadCompressed(stream_reader_t *t, uint8_t *dst, size
 
         if (streamReaderWindowAvail(t) == 0) {
             ssize_t filled = streamReaderFillWindow(t);
-            if (filled < 0) return total > 0 ? (ssize_t)total : -1;
+            if (filled < 0) {
+                streamReaderSetError(t);
+                return total > 0 ? (ssize_t)total : -1;
+            }
             if (filled == 0) break; /* EOF */
         }
 

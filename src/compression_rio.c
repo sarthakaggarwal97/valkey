@@ -174,13 +174,14 @@ void compress_rio_destroy(compress_rio_t *cr) {
 static ssize_t decompressRioReadPartial(void *ctx, void *buf, size_t len) {
     decompress_rio_t *dr = (decompress_rio_t *)ctx;
     rio *inner = dr->inner;
+    uint8_t inner_type = rioCheckType(inner);
 
-    if (rioCheckType(inner) == RIO_TYPE_FILE) {
+    if (inner_type == RIO_TYPE_FILE) {
         size_t got = fread(buf, 1, len, inner->io.file.fp);
         if (got > 0) inner->processed_bytes += got;
         return (ssize_t)got;
     }
-    if (rioCheckType(inner) == RIO_TYPE_BUFFER) {
+    if (inner_type == RIO_TYPE_BUFFER) {
         size_t avail = sdslen(inner->io.buffer.ptr) - inner->io.buffer.pos;
         if (avail == 0) return 0;
         size_t n = avail < len ? avail : len;

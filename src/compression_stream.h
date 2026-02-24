@@ -41,7 +41,7 @@ typedef struct stream_writer stream_writer_t;
 typedef struct stream_reader stream_reader_t;
 
 typedef struct {
-    int compressed; /* 1 => stream is VKCS+codec compressed, 0 => passthrough */
+    bool compressed; /* true => stream is VKCS+codec compressed, false => passthrough */
     compression_algo_t algo;
     uint8_t stream_kind; /* STREAM_KIND_RDB/REPL when compressed, STREAM_KIND_ANY otherwise */
 } stream_reader_info_t;

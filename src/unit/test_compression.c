@@ -31,6 +31,15 @@ typedef struct {
     size_t max_chunk; /* 0 => unbounded */
 } mem_reader_t;
 
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+    size_t pos;
+    size_t max_chunk;
+    int fail_after_success_reads;
+    int success_reads;
+} flaky_reader_t;
+
 static int emitToBuf(void *ctx, const uint8_t *data, size_t len) {
     emit_buf_t *eb = (emit_buf_t *)ctx;
     assert(eb->pos + len <= sizeof(eb->buf)); /* crash loudly in tests */
@@ -50,6 +59,22 @@ static ssize_t memReaderRead(void *ctx, void *buf, size_t len) {
 
     memcpy(buf, r->data + r->pos, n);
     r->pos += n;
+    return (ssize_t)n;
+}
+
+static ssize_t flakyReaderRead(void *ctx, void *buf, size_t len) {
+    flaky_reader_t *r = (flaky_reader_t *)ctx;
+    if (!r || !buf) return -1;
+    if (r->success_reads >= r->fail_after_success_reads) return -1;
+    if (r->pos >= r->len) return 0;
+
+    size_t avail = r->len - r->pos;
+    size_t n = len < avail ? len : avail;
+    if (r->max_chunk && n > r->max_chunk) n = r->max_chunk;
+
+    memcpy(buf, r->data + r->pos, n);
+    r->pos += n;
+    r->success_reads++;
     return (ssize_t)n;
 }
 
@@ -600,7 +625,7 @@ int test_streamReaderRejectsInvalidVkcs(int argc, char **argv, int flags) {
     /* Valid magic + invalid version (0) */
     const uint8_t input[VKCS_ENVELOPE_SIZE] = {
         VKCS_MAGIC_0, VKCS_MAGIC_1, VKCS_MAGIC_2, VKCS_MAGIC_3,
-        0,           ALGO_LZ4,     STREAM_KIND_RDB, 0};
+        0, ALGO_LZ4, STREAM_KIND_RDB, 0};
     mem_reader_t mr = {.data = input, .len = sizeof(input), .pos = 0, .max_chunk = 0};
     stream_reader_config_t cfg = {
         .algo = ALGO_NONE,
@@ -686,6 +711,70 @@ static int emitToDynamicBuf(void *ctx, const uint8_t *data, size_t len) {
     }
     memcpy(db->data + db->len, data, len);
     db->len += len;
+    return 0;
+}
+
+/* --- Test: stream_reader marks errored on partial output + read error.
+ * Regression for direct-path error accounting (partial bytes were returned
+ * without sticky errored state). */
+int test_streamReaderPartialThenErrorSetsErrored(int argc, char **argv, int flags) {
+    UNUSED(argc);
+    UNUSED(argv);
+    UNUSED(flags);
+
+    const size_t payload_len = 256 * 1024;
+    uint8_t *payload = zmalloc(payload_len);
+    uint32_t x = 0x12345678u;
+    for (size_t i = 0; i < payload_len; i++) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        payload[i] = (uint8_t)(x & 0xFF);
+    }
+
+    dynamic_buf_t db;
+    dynamicBufInit(&db);
+    stream_writer_config_t wcfg = {
+        .algo = ALGO_LZ4,
+        .level = 0,
+        .stream_kind = STREAM_KIND_RDB,
+    };
+    stream_writer_t *w = stream_writer_create(&wcfg, emitToDynamicBuf, &db);
+    TEST_ASSERT_MESSAGE("stream_writer_create should succeed", w != NULL);
+    TEST_ASSERT(stream_writer_write(w, payload, payload_len) == 0);
+    TEST_ASSERT(stream_writer_finish(w) == 0);
+    stream_writer_destroy(w);
+
+    flaky_reader_t fr = {
+        .data = db.data,
+        .len = db.len,
+        .pos = 0,
+        .max_chunk = 4096,
+        .fail_after_success_reads = 2, /* probe + one payload read, then error */
+        .success_reads = 0,
+    };
+    stream_reader_config_t rcfg = {
+        .algo = ALGO_NONE,
+        .expected_stream_kind = STREAM_KIND_RDB,
+        .raw_frame = 0,
+        .allow_passthrough = 0,
+        .batch_size = 64 * 1024,
+    };
+    stream_reader_t *r = stream_reader_create(&rcfg, flakyReaderRead, &fr);
+    TEST_ASSERT_MESSAGE("stream_reader_create should succeed", r != NULL);
+
+    uint8_t out[128 * 1024];
+    ssize_t n1 = stream_reader_read(r, out, sizeof(out));
+    TEST_ASSERT_MESSAGE("first read should return partial output", n1 > 0);
+    TEST_ASSERT_MESSAGE("reader must enter errored state after partial+error",
+                        stream_reader_is_errored(r) != 0);
+
+    TEST_ASSERT_MESSAGE("second read should fail immediately",
+                        stream_reader_read(r, out, sizeof(out)) == -1);
+
+    stream_reader_destroy(r);
+    dynamicBufFree(&db);
+    zfree(payload);
     return 0;
 }
 

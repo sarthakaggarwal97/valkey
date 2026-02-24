@@ -3703,10 +3703,10 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     dr_initialized = 1;
     load_rio = (rio *)&dr;
 
-    if (decompress_rio_get_info(&dr, &stream_info) != 0) {
-        serverLog(LL_WARNING, "Failed to probe RDB stream metadata for %s", filename);
-        goto done;
-    }
+    /* Metadata probe already happened in decompress_rio_init_with_config().
+     * This call only fetches cached info and should not fail. */
+    int stream_info_rc = decompress_rio_get_info(&dr, &stream_info);
+    serverAssert(stream_info_rc == 0);
 
     if (stream_info.compressed) {
         int codec_checksum_verified = 0;
@@ -3716,7 +3716,9 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
                 codec_checksum_verified = has_codec_checksum;
             } else {
                 rdbLogCompressedFrameChecksumInspectFailure(filename, stream_info.algo);
-                goto done;
+                /* Inspection failure means checksum mode could not be
+                 * determined; keep loading with conservative behavior
+                 * (do not mark codec checksum verified). */
             }
         }
         if (codec_checksum_verified) {
