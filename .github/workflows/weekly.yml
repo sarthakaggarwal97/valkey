@@ -12,7 +12,6 @@ concurrency:
   cancel-in-progress: false
 jobs:
   determine-release-branches:
-    if: github.repository == 'valkey-io/valkey'
     runs-on: ubuntu-latest
     outputs:
       branches: ${{ steps.release-branches.outputs.branches }}
@@ -44,12 +43,13 @@ jobs:
                   (major > MIN_MAJOR || (major === MIN_MAJOR && minor >= MIN_MINOR));
               })
               .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-            core.info(`Weekly release branches: ${releaseBranches.join(', ') || '(none)'}`);
-            core.setOutput('branches', JSON.stringify(releaseBranches));
-            core.setOutput('has-branches', releaseBranches.length > 0 ? 'true' : 'false');
+            const finalBranches = releaseBranches.length > 0 ? releaseBranches : ['7.2'];
+            core.info(`Weekly release branches: ${finalBranches.join(', ') || '(none)'}`);
+            core.setOutput('branches', JSON.stringify(finalBranches));
+            core.setOutput('has-branches', finalBranches.length > 0 ? 'true' : 'false');
   run-daily-for-release-branches:
     needs: determine-release-branches
-    if: needs.determine-release-branches.outputs.has-branches == 'true' && github.repository == 'valkey-io/valkey'
+    if: needs.determine-release-branches.outputs.has-branches == 'true'
     permissions:
       actions: read
       contents: read
