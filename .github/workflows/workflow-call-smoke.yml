@@ -1,0 +1,13 @@
+name: Workflow Call Smoke
+on:
+  workflow_dispatch: {}
+
+jobs:
+  call-daily:
+    uses: ./.github/workflows/daily.yml
+    with:
+      use_repo: valkey-io/valkey
+      use_git_ref: "7.2"
+      skipjobs: "valgrind,sanitizer,tls,macos,alpine,32bit,iothreads,ubuntu,rpm-distros,malloc,specific,fortify,reply-schema,arm,lttng"
+      skiptests: "valkey,modules,sentinel,cluster,unittest,large-memory"
+    secrets: inherit
