@@ -3341,7 +3341,7 @@ int streamReplDataBufToDb(client *c) {
         c->querybuf = sdscatlen(c->querybuf, o->buf, used);
         c->repl_data->read_reploff += used;
         processInputBuffer(c);
-        server.pending_repl_data.mem -= (used + sizeof(replDataBufBlock) + sizeof(listNode));
+        server.pending_repl_data.mem -= (zmalloc_size(o) + sizeof(listNode));
         server.pending_repl_data.len -= used;
         offset += used;
         listDelNode(server.pending_repl_data.blocks, cur);
