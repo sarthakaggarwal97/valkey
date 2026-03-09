@@ -6378,6 +6378,10 @@ int processIOThreadsReadDone(void) {
     if (listLength(server.clients_pending_io_read) == 0) return 0;
     int processed = 0;
     listNode *ln;
+    /* Collect clients handled in this iteration to continue parsing any
+     * residual buffered data synchronously after batch execution (important
+     * for edge-triggered transports like RDMA). */
+    list *handled_clients = listCreate();
 
     listNode *next = listFirst(server.clients_pending_io_read);
     while (next) {
@@ -6412,7 +6416,6 @@ int processIOThreadsReadDone(void) {
         /* Save the current conn state, as connUpdateState may modify it */
         int in_accept_state = (connGetState(c->conn) == CONN_STATE_ACCEPTING);
         connSetPostponeUpdateState(c->conn, 0);
-        connUpdateState(c->conn);
 
         /* In accept state, no client's data was read - stop here. */
         if (in_accept_state) continue;
@@ -6448,9 +6451,31 @@ int processIOThreadsReadDone(void) {
             /* A client was unlink from the list possibly making the next node invalid */
             next = listFirst(server.clients_pending_io_read);
         }
+
+        /* Track the client so we can drain any leftover buffered data even if no
+         * further network events arrive. */
+        listAddNodeTail(handled_clients, c);
     }
 
     processClientsCommandsBatch();
+
+    /* For clients handled in this iteration, if residual data remains in
+     * querybuf, queue them for further processing in the main thread event
+     * loop to avoid edge-triggered lost wakeups, without risking a busy loop
+     * on partial commands. Command queues were drained by the batch above. */
+    listIter handled_li;
+    listNode *handled_ln;
+    listRewind(handled_clients, &handled_li);
+    while ((handled_ln = listNext(&handled_li))) {
+        client *c = listNodeValue(handled_ln);
+        if (c->querybuf && c->qb_pos < sdslen(c->querybuf)) {
+            processPendingCommandAndInputBuffer(c);
+        }
+        /* Command queue should be empty after batch; update connection state
+         * after queuing residual work to avoid re-entrancy while queue non-empty. */
+        connUpdateState(c->conn);
+    }
+    listRelease(handled_clients);
 
     return processed;
 }
