@@ -1088,6 +1088,26 @@ start_server {tags {"zset"}} {
             assert_equal {a 1 e 5} [r zrange zsete{t} 0 -1 withscores]
         }
 
+        test "ZDIFF algorithm 2 empty result early - $encoding" {
+            r del zseta{t} zsetb{t} zsetc{t} zsetd{t} zsete{t} zsetf{t}
+            foreach {score member} {
+                1 a
+                2 b
+                3 c
+                4 d
+                5 e
+                6 f
+                7 g
+                8 h
+                9 i
+            } {
+                r zadd zseta{t} $score $member
+                r zadd zsetb{t} $score $member
+            }
+            assert_equal 0 [r zdiffstore zsetf{t} 5 zseta{t} zsetb{t} zsetc{t} zsetd{t} zsete{t}]
+            assert_equal {} [r zrange zsetf{t} 0 -1 withscores]
+        }
+
         test "ZDIFF fuzzing - $encoding" {
             for {set j 0} {$j < 100} {incr j} {
                 unset -nocomplain s
