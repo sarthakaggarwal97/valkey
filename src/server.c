@@ -6957,7 +6957,10 @@ static void sigKillChildHandler(int sig) {
     UNUSED(sig);
     int level = server.in_fork_child == CHILD_TYPE_MODULE ? LL_VERBOSE : LL_WARNING;
     serverLogRawFromHandler(level, "Received SIGUSR1 in child, exiting now.");
-    exitFromChild(SERVER_CHILD_NOERROR_RETVAL);
+    /* This runs in signal context, so we must avoid exit().
+     * Under COVERAGE_TEST exitFromChild() would use exit() and may deadlock
+     * while flushing gcov data from a forcibly terminated child. */
+    _exit(SERVER_CHILD_NOERROR_RETVAL);
 }
 
 void setupChildSignalHandlers(void) {
