@@ -6468,12 +6468,9 @@ int processIOThreadsReadDone(void) {
     listRewind(handled_clients, &handled_li);
     while ((handled_ln = listNext(&handled_li))) {
         client *c = listNodeValue(handled_ln);
-        if (c->querybuf && c->qb_pos < sdslen(c->querybuf)) {
-            processPendingCommandAndInputBuffer(c);
+        if (connUpdateState(c->conn)) {
+            processPendingCommandAndInputBuffer(c); /* try to handle new arrival data if possible */
         }
-        /* Command queue should be empty after batch; update connection state
-         * after queuing residual work to avoid re-entrancy while queue non-empty. */
-        connUpdateState(c->conn);
     }
     listRelease(handled_clients);
 
