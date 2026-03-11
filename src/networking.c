@@ -40,6 +40,7 @@
 #include "module.h"
 #include "connection.h"
 #include "zmalloc.h"
+#include <stdint.h>
 #include <strings.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
@@ -6377,11 +6378,12 @@ int processIOThreadsReadDone(void) {
 
     if (listLength(server.clients_pending_io_read) == 0) return 0;
     int processed = 0;
-    listNode *ln;
     /* Collect clients handled in this iteration to continue parsing any
      * residual buffered data synchronously after batch execution (important
-     * for edge-triggered transports like RDMA). */
-    list *handled_clients = listCreate();
+     * for edge-triggered transports like RDMA). Use IDs instead of raw client
+     * pointers to avoid UAF if a client is freed while executing the batch. */
+    list *handled_clients_ids = listCreate();
+    listNode *ln;
 
     listNode *next = listFirst(server.clients_pending_io_read);
     while (next) {
@@ -6452,27 +6454,29 @@ int processIOThreadsReadDone(void) {
             next = listFirst(server.clients_pending_io_read);
         }
 
-        /* Track the client so we can drain any leftover buffered data even if no
+        /* Track the client by ID so we can drain any leftover buffered data even if no
          * further network events arrive. */
-        listAddNodeTail(handled_clients, c);
+        listAddNodeTail(handled_clients_ids, (void *)(uintptr_t)c->id);
     }
 
     processClientsCommandsBatch();
 
     /* For clients handled in this iteration, if residual data remains in
-     * querybuf, queue them for further processing in the main thread event
-     * loop to avoid edge-triggered lost wakeups, without risking a busy loop
-     * on partial commands. Command queues were drained by the batch above. */
+     * querybuf,  handle it now to avoid edge-triggered lost wakeups. Clients may
+     * have been freed while executing the batch, so re-lookup by ID. */
     listIter handled_li;
     listNode *handled_ln;
-    listRewind(handled_clients, &handled_li);
+    listRewind(handled_clients_ids, &handled_li);
     while ((handled_ln = listNext(&handled_li))) {
-        client *c = listNodeValue(handled_ln);
+        uint64_t id = (uint64_t)(uintptr_t)listNodeValue(handled_ln);
+        client *c = lookupClientByID(id);
+        if (!c) continue;
+
         if (connUpdateState(c->conn)) {
             processPendingCommandAndInputBuffer(c); /* try to handle new arrival data if possible */
         }
     }
-    listRelease(handled_clients);
+    listRelease(handled_clients_ids);
 
     return processed;
 }
