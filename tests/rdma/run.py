@@ -15,6 +15,31 @@ import netifaces
 import time
 import argparse
 
+
+def run_cmd(cmd, timeout, desc):
+    start = time.time()
+    proc = subprocess.Popen(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        outs, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        outs, _ = proc.communicate()
+        print("Valkey Over RDMA " + desc + " [FAILED]")
+        print("---------------\n" + outs.decode() + "---------------\n")
+        return 1
+
+    if proc.returncode:
+        print("Valkey Over RDMA " + desc + " [FAILED]")
+        print("---------------\n" + outs.decode() + "---------------\n")
+        return 1
+
+    elapsed = time.time() - start
+    print("Valkey Over RDMA " + desc + " in " + str(round(elapsed, 2)) + "s [OK]")
+    if outs:
+        print(outs.decode())
+    return 0
+
+
 def build_program():
     valkeydir = os.path.dirname(os.path.abspath(__file__)) + "/../.."
     cmd = "make -C " + valkeydir + "/tests/rdma"
@@ -67,7 +92,7 @@ def test_rdma(ipaddr):
              "--appendonly", "no", "--daemonize", "no", "--dir", valkeydir + "/tests/rdma/tmp",
              "--rdma-port", "6379", "--rdma-bind", ipaddr]
 
-    svr = subprocess.Popen(svrcmd, shell=False, stdout=subprocess.PIPE)
+    svr = subprocess.Popen(svrcmd, shell=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         if svr.wait(1):
              print("Valkey Over RDMA valkey-server runs less than 1s [FAILED]")
@@ -77,21 +102,21 @@ def test_rdma(ipaddr):
         pass
 
     # step 3, run test client
-    start = time.time()
     clipath = valkeydir + "/tests/rdma/rdma-test"
     clicmd = [clipath, "--thread", "4", "-h", ipaddr]
-    cli = subprocess.Popen(clicmd, shell=False, stdout=subprocess.PIPE)
-    if cli.wait(60):
-        outs, _ = cli.communicate()
-        print("Valkey Over RDMA test [FAILED]")
-        print("---------------\n" + outs.decode() + "---------------\n")
-        retval = 1
-    else:
-        elapsed = time.time() - start
-        outs, _ = cli.communicate()
-        print("Valkey Over RDMA test in " + str(round(elapsed, 2)) + "s [OK]")
-        print(outs.decode())
-        retval = 0
+    retval = run_cmd(clicmd, 60, "test")
+
+    if retval == 0:
+        benchpath = valkeydir + "/src/valkey-benchmark"
+        setcmd = [benchpath, "--rdma", "-h", ipaddr,
+                  "-r", "64", "--sequential", "-c", "1", "-n", "64",
+                  "-d", "262144", "-t", "set", "-q"]
+        retval = run_cmd(setcmd, 60, "benchmark(set)")
+
+    if retval == 0:
+        getcmd = [benchpath, "--rdma", "-h", ipaddr,
+                  "-r", "64", "-c", "16", "-n", "512", "-t", "get", "-q"]
+        retval = run_cmd(getcmd, 60, "benchmark(get)")
 
     # step 4, cleanup
     svr.kill()

@@ -556,6 +556,14 @@ static void freeAllClients(void) {
     }
 }
 
+#ifdef USE_RDMA
+static void setRdmaReadableHandler(aeEventLoop *el, client c, aeFileProc *handler) {
+    aeDeleteFileEvent(el, c->context->fd, AE_WRITABLE);
+    aeDeleteFileEvent(el, c->context->fd, AE_READABLE);
+    aeCreateFileEvent(el, c->context->fd, AE_READABLE, handler, c);
+}
+#endif
+
 static void resetClient(client c) {
     aeEventLoop *el = CLIENT_GET_EVENTLOOP(c);
     aeDeleteFileEvent(el, c->context->fd, AE_WRITABLE);
@@ -888,11 +896,31 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
                     return;
                 } else if (nwritten > 0) {
                     c->written += nwritten;
+#ifdef USE_RDMA
+                    if (config.ct == VALKEY_CONN_RDMA) {
+                        setRdmaReadableHandler(el, c, writeHandler);
+                    }
+#endif
                     return;
                 }
+#ifdef USE_RDMA
+                if (config.ct == VALKEY_CONN_RDMA) {
+                    /* RDMA progress is driven by CQ readability, so retry the
+                     * remaining write when the completion channel becomes readable. */
+                    setRdmaReadableHandler(el, c, writeHandler);
+                    return;
+                }
+#endif
             } else {
-                aeDeleteFileEvent(el, c->context->fd, AE_WRITABLE);
-                aeCreateFileEvent(el, c->context->fd, AE_READABLE, readHandler, c);
+#ifdef USE_RDMA
+                if (config.ct == VALKEY_CONN_RDMA) {
+                    setRdmaReadableHandler(el, c, readHandler);
+                } else
+#endif
+                {
+                    aeDeleteFileEvent(el, c->context->fd, AE_WRITABLE);
+                    aeCreateFileEvent(el, c->context->fd, AE_READABLE, readHandler, c);
+                }
                 return;
             }
         }

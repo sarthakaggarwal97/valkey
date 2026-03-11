@@ -681,6 +681,10 @@ pollcq:
         return remained;
     }
 
+    if (!(c->flags & VALKEY_BLOCK)) {
+        return 0;
+    }
+
     if (valkeyRdmaPollCqCm(c, end) == VALKEY_OK) {
         goto pollcq;
     } else {
@@ -753,6 +757,9 @@ pollcq:
     assert(ctx->tx_offset <= ctx->tx_length);
     if (ctx->tx_offset == ctx->tx_length) {
         /* wait a new TX buffer */
+        if (!(c->flags & VALKEY_BLOCK)) {
+            return wrote;
+        }
         goto waitcq;
     }
 
@@ -765,6 +772,10 @@ pollcq:
     wrote += ret;
     if (wrote == data_len) {
         return data_len;
+    }
+
+    if (!(c->flags & VALKEY_BLOCK)) {
+        return wrote;
     }
 
 waitcq:
