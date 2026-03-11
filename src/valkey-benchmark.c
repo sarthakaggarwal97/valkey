@@ -891,9 +891,20 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
                     return;
                 } else if (nwritten > 0) {
                     c->written += nwritten;
+#ifndef USE_RDMA
+                    return;
+#endif
                 }
 #ifdef USE_RDMA
-                if (config.ct == VALKEY_CONN_RDMA) rdmaReadableHandler = writeHandler;
+                if (config.ct == VALKEY_CONN_RDMA) {
+                    rdmaReadableHandler = writeHandler;
+                } else if (nwritten > 0) {
+                    return;
+                } else {
+                    continue;
+                }
+#else
+                continue;
 #endif
             } else {
 #ifdef USE_RDMA
