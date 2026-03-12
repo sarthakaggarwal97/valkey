@@ -10,10 +10,10 @@ permissions:
 jobs:
   fuzzer:
     if: ${{ github.event.label.name == 'run-fuzzer' }}
-    uses: sarthakaggarwal97/valkey-fuzzer/.github/workflows/valkey-pr-fuzzer.yml@bcbd010e594be5d8299ae916cbb10b3818142bfe
+    uses: valkey-io/valkey-fuzzer/.github/workflows/valkey-pr-fuzzer.yml@main
     with:
-      fuzzer_repository: sarthakaggarwal97/valkey-fuzzer
-      fuzzer_ref: bcbd010e594be5d8299ae916cbb10b3818142bfe
+      fuzzer_repository: valkey-io/valkey-fuzzer
+      fuzzer_ref: main
       valkey_ref: refs/pull/${{ github.event.pull_request.number }}/merge
       pr_number: ${{ github.event.pull_request.number }}
       run_count: 10
