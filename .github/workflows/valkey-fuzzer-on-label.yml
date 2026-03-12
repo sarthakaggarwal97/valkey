@@ -11,6 +11,7 @@ jobs:
   fuzzer:
     permissions:
       contents: read
+      issues: write
       pull-requests: write
     if: ${{ github.event.label.name == 'run-cluster-fuzzer' }}
     uses: valkey-io/valkey-fuzzer/.github/workflows/valkey-pr-fuzzer.yml@main
@@ -23,3 +24,25 @@ jobs:
       pr_url: ${{ github.event.pull_request.html_url }}
       label_name: ${{ github.event.label.name }}
       run_count: 10
+
+  cleanup-label:
+    name: Remove run-cluster-fuzzer label
+    needs:
+      - fuzzer
+    if: ${{ always() && github.event.label.name == 'run-cluster-fuzzer' }}
+    permissions:
+      issues: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove label
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.removeLabel({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'run-cluster-fuzzer'
+            }).catch(err => console.log('label not present', err.message));
