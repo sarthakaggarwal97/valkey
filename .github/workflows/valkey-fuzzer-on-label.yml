@@ -9,19 +9,11 @@ permissions:
 
 jobs:
   fuzzer:
-    if: |
-      github.event.action == 'labeled' &&
-      github.event.label.name == 'run-fuzzer' &&
-      github.repository == 'valkey-io/valkey'
-    # Switch both the repository and SHA to valkey-io/valkey-fuzzer once the upstream
-    # reusable workflow changes are merged there.
+    if: ${{ github.event.label.name == 'run-fuzzer' }}
     uses: sarthakaggarwal97/valkey-fuzzer/.github/workflows/valkey-pr-fuzzer.yml@bcbd010e594be5d8299ae916cbb10b3818142bfe
     with:
       fuzzer_repository: sarthakaggarwal97/valkey-fuzzer
       fuzzer_ref: bcbd010e594be5d8299ae916cbb10b3818142bfe
-      valkey_repository: ${{ github.repository }}
       valkey_ref: refs/pull/${{ github.event.pull_request.number }}/merge
       pr_number: ${{ github.event.pull_request.number }}
-      pr_url: ${{ github.event.pull_request.html_url }}
-      label_name: ${{ github.event.label.name }}
       run_count: 10
