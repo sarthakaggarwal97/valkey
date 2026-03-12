@@ -1,4 +1,4 @@
-name: On-Demand Labeled Valkey Fuzzer
+name: On-Demand Labeled Valkey Cluster Fuzzer
 
 on:
   pull_request_target:
@@ -9,11 +9,17 @@ permissions:
 
 jobs:
   fuzzer:
-    if: ${{ github.event.label.name == 'run-fuzzer' }}
+    permissions:
+      contents: read
+      pull-requests: write
+    if: ${{ github.event.label.name == 'run-cluster-fuzzer' }}
     uses: valkey-io/valkey-fuzzer/.github/workflows/valkey-pr-fuzzer.yml@main
     with:
       fuzzer_repository: valkey-io/valkey-fuzzer
       fuzzer_ref: main
+      valkey_repository: ${{ github.repository }}
       valkey_ref: refs/pull/${{ github.event.pull_request.number }}/merge
       pr_number: ${{ github.event.pull_request.number }}
+      pr_url: ${{ github.event.pull_request.html_url }}
+      label_name: ${{ github.event.label.name }}
       run_count: 10
