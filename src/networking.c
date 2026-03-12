@@ -27,6 +27,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "adlist.h"
 #include "server.h"
 #include "cluster.h"
 #include "cluster_slot_stats.h"
@@ -6373,16 +6374,15 @@ int processIOThreadsReadDone(void) {
     if (ProcessingEventsWhileBlocked) {
         /* When ProcessingEventsWhileBlocked we may call processIOThreadsReadDone recursively.
          * In this case, there may be some clients left in the batch waiting to be processed. */
-        processClientsCommandsBatch();
+        processClientsCommandsBatch(NULL);
     }
 
     if (listLength(server.clients_pending_io_read) == 0) return 0;
     int processed = 0;
     /* Collect clients handled in this iteration to continue parsing any
      * residual buffered data synchronously after batch execution (important
-     * for edge-triggered transports like RDMA). Use IDs instead of raw client
-     * pointers to avoid UAF if a client is freed while executing the batch. */
-    list *handled_clients_ids = listCreate();
+     * for edge-triggered transports like RDMA). */
+    list *handled_clients = listCreate();
     listNode *ln;
 
     listNode *next = listFirst(server.clients_pending_io_read);
@@ -6444,39 +6444,30 @@ int processIOThreadsReadDone(void) {
 
         size_t list_length_before_command_execute = listLength(server.clients_pending_io_read);
         /* try to add the command to the batch */
-        int ret = addCommandToBatchAndProcessIfFull(c);
+        int ret = addCommandToBatchAndProcessIfFull(c, handled_clients);
         /* If the command was not added to the commands batch, process it immediately */
         if (ret == C_ERR) {
-            if (processPendingCommandAndInputBuffer(c) == C_OK) beforeNextClient(c);
+            if (processPendingCommandAndInputBuffer(c) == C_OK) {
+                beforeNextClient(c);
+                listAddNodeTail(handled_clients, c);
+            }
         }
         if (list_length_before_command_execute != listLength(server.clients_pending_io_read)) {
             /* A client was unlink from the list possibly making the next node invalid */
             next = listFirst(server.clients_pending_io_read);
         }
-
-        /* Track the client by ID so we can drain any leftover buffered data even if no
-         * further network events arrive. */
-        listAddNodeTail(handled_clients_ids, (void *)(uintptr_t)c->id);
     }
 
-    processClientsCommandsBatch();
+    processClientsCommandsBatch(handled_clients);
 
-    /* For clients handled in this iteration, if residual data remains in
-     * querybuf,  handle it now to avoid edge-triggered lost wakeups. Clients may
-     * have been freed while executing the batch, so re-lookup by ID. */
     listIter handled_li;
     listNode *handled_ln;
-    listRewind(handled_clients_ids, &handled_li);
+    listRewind(handled_clients, &handled_li);
     while ((handled_ln = listNext(&handled_li))) {
-        uint64_t id = (uint64_t)(uintptr_t)listNodeValue(handled_ln);
-        client *c = lookupClientByID(id);
-        if (!c) continue;
-
-        if (connUpdateState(c->conn)) {
-            processPendingCommandAndInputBuffer(c); /* try to handle new arrival data if possible */
-        }
+        client *c = listNodeValue(handled_ln);
+        connUpdateState(c->conn);
     }
-    listRelease(handled_clients_ids);
+    listRelease(handled_clients);
 
     return processed;
 }

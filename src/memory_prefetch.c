@@ -9,8 +9,10 @@
  */
 
 #include "memory_prefetch.h"
+#include "adlist.h"
 #include "server.h"
 #include "io_threads.h"
+#include <stdlib.h>
 
 typedef enum {
     PREFETCH_ENTRY, /* Initial state, prefetch entries associated with the given key's hash */
@@ -214,7 +216,7 @@ static void prefetchCommands(void) {
 }
 
 /* Processes all the prefetched commands in the current batch. */
-void processClientsCommandsBatch(void) {
+void processClientsCommandsBatch(list *handled_clients) {
     if (!batch || batch->client_count == 0) return;
 
     /* If executed_commands is not 0,
@@ -231,7 +233,10 @@ void processClientsCommandsBatch(void) {
         /* Set the client to null immediately to avoid accessing it again recursively when ProcessingEventsWhileBlocked */
         batch->clients[i] = NULL;
         batch->executed_commands++;
-        if (processPendingCommandAndInputBuffer(c) != C_ERR) beforeNextClient(c);
+        if (processPendingCommandAndInputBuffer(c) != C_ERR) {
+            beforeNextClient(c);
+            if (handled_clients) listAddNodeTail(handled_clients, c);
+        }
     }
 
     resetCommandsBatch();
@@ -260,7 +265,7 @@ static void addCommandToBatch(struct serverCommand *cmd, robj **argv, int argc, 
  * if it becomes full.
  *
  * Returns C_OK if the command was added successfully, C_ERR otherwise. */
-int addCommandToBatchAndProcessIfFull(client *c) {
+int addCommandToBatchAndProcessIfFull(client *c, list *handled_clients) {
     if (!batch) return C_ERR;
 
     batch->clients[batch->client_count++] = c;
@@ -283,7 +288,7 @@ int addCommandToBatchAndProcessIfFull(client *c) {
      * We also check the client count to handle cases where
      * no keys exist for the clients' commands. */
     if (batch->client_count == batch->max_prefetch_size || batch->key_count == batch->max_prefetch_size) {
-        processClientsCommandsBatch();
+        processClientsCommandsBatch(handled_clients);
     }
 
     return C_OK;

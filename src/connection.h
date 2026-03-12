@@ -511,13 +511,10 @@ static inline int connIsTLS(connection *conn) {
     return conn && conn->type == connectionTypeTls();
 }
 
-/* Return 1 on state updated, 0 if otherwise. */
-static inline int connUpdateState(connection *conn) {
+static inline void connUpdateState(connection *conn) {
     if (conn->type->update_state) {
         conn->type->update_state(conn);
-        return 1;
     }
-    return 0;
 }
 
 static inline void connSetPostponeUpdateState(connection *conn, int on) {
