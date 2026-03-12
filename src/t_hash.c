@@ -322,7 +322,7 @@ bool hashTypeHasStringRef(robj *o, sds field) {
     if (o->encoding == OBJ_ENCODING_LISTPACK) return false;
     hashtable *ht = objectGetVal(o);
     void **entry_ref = hashtableFindRef(ht, field);
-    return (entryHasStringRef(*entry_ref));
+    return entry_ref ? entryHasStringRef(*entry_ref) : false;
 }
 
 /* Update a hash field value with a string reference value.

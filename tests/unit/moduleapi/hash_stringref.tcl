@@ -14,6 +14,12 @@ start_server {tags {"modules"}} {
         assert_equal "1" [r hash.has_stringref k f]
     }
 
+    test {Module hash missing field does not crash on hashtable encoding} {
+        r del k
+        r hset k [string repeat f 65] hello1
+        assert_equal "0" [r hash.has_stringref k missing]
+    }
+
     test "Unload the module - hash" {
         assert_equal {OK} [r module unload hash.stringref]
     }
