@@ -1,5 +1,11 @@
 /* adlist.h - A generic doubly linked list implementation
  *
+<<<<<<< HEAD
+=======
+ * This module provides O(1) push/pop operations on both ends of the list.
+ * Iteration is O(n). Thread-safety is not guaranteed.
+ *
+>>>>>>> 37552cc8f (Merge pull request #83 from sarthakaggarwal97/test-backport-e2e)
  * Copyright (c) 2006-2012, Redis Ltd.
  * All rights reserved.
  *
