@@ -1,4 +1,4 @@
-/* adlist.h - A generic doubly linked list implementation
+/* adlist.h - Updated - A generic doubly linked list implementation
  *
  * This module provides O(1) push/pop operations on both ends of the list.
  * Iteration is O(n). Thread-safety is not guaranteed.
