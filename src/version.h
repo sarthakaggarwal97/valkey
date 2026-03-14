@@ -5,6 +5,7 @@
 #define SERVER_NAME "valkey"
 #define SERVER_TITLE "Valkey"
 #define VALKEY_VERSION "255.255.255"
+/* Backport conflict test: this comment will cause a merge conflict */
 #define VALKEY_VERSION_NUM 0x00ffffff
 /* The release stage is used in order to provide release status information.
  * In unstable branch the status is always "dev".
