@@ -7,12 +7,9 @@
 # missing. Remove or comment out any section you don't need to customize.
 
 # ---------------------------------------------------------------------------
-# Amazon Bedrock settings
-# ---------------------------------------------------------------------------
 
 # Foundation model to use for LLM-based conflict resolution.
 # Must be available in the configured AWS region.
-bedrock_model_id: "anthropic.claude-sonnet-4-20250514"
 
 # ---------------------------------------------------------------------------
 # Conflict resolution settings
