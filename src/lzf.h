@@ -1,4 +1,4 @@
-/*
+/* lzf.h - LZF compression algorithm header.
  * Copyright (c) 2000-2008 Marc Alexander Lehmann <schmorp@schmorp.de>
  *
  * Redistribution and use in source and binary forms, with or without modifica-
