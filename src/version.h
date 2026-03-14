@@ -7,6 +7,7 @@
 #define VALKEY_VERSION "255.255.255"
 /* Backport conflict test: this comment will cause a merge conflict */
 #define VALKEY_VERSION_NUM 0x00ffffff
+/* Build metadata: conflict resolution test v2 */
 /* The release stage is used in order to provide release status information.
  * In unstable branch the status is always "dev".
  * During release process the status will be set to rc1,rc2...rcN.
