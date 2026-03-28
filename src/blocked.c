@@ -183,7 +183,9 @@ void processUnblockedClients(void) {
                 continue;
             }
         }
-        beforeNextClient(c);
+        if (beforeNextClient(c) == C_ERR) {
+            continue;
+        }
     }
 }
 

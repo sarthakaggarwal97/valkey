@@ -234,8 +234,9 @@ void processClientsCommandsBatch(list *handled_clients) {
         batch->clients[i] = NULL;
         batch->executed_commands++;
         if (processPendingCommandAndInputBuffer(c) != C_ERR) {
-            beforeNextClient(c);
-            if (handled_clients) listAddNodeTail(handled_clients, c);
+            if (beforeNextClient(c) == C_OK) {
+                if (handled_clients) listAddNodeTail(handled_clients, c);
+            }
         }
     }
 

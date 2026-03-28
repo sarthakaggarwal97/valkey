@@ -2251,7 +2251,7 @@ void trimClientQueryBuffer(client *c) {
  * This is useful for performing operations that affect the global state but can't
  * wait until we're done with all clients. In other words, it can't wait until beforeSleep().
  * With IO threads enabled, this function offloads the write to the IO threads if possible. */
-void beforeNextClient(client *c) {
+int beforeNextClient(client *c) {
     /* Notice, this code is also called from 'processUnblockedClients'.
      * But in case of a module blocked client (see RM_Call 'K' flag) we do not reach this code path.
      * So whenever we change the code here we need to consider if we need this change on module
@@ -2286,7 +2286,7 @@ void beforeNextClient(client *c) {
      * users (see ACL LOAD). */
     if (c->flag.close_asap) {
         freeClient(c);
-        return;
+        return C_ERR;
     }
 
     updateClientMemUsageAndBucket(c);
@@ -2295,6 +2295,7 @@ void beforeNextClient(client *c) {
     if (server.aof_fsync != AOF_FSYNC_ALWAYS) {
         trySendWriteToIOThreads(c);
     }
+    return C_OK;
 }
 
 /* Free the clients marked as CLOSE_ASAP, return the number of clients
@@ -4220,7 +4221,7 @@ void readQueryFromClient(connection *conn) {
                   !c->flag.close_asap &&
                   ++iter < REPL_MAX_READS_PER_IO_EVENT &&
                   full_read);
-        beforeNextClient(c);
+        if (beforeNextClient(c) == C_ERR) return;
     } while (repeat);
 }
 
@@ -6448,8 +6449,9 @@ int processIOThreadsReadDone(void) {
         /* If the command was not added to the commands batch, process it immediately */
         if (ret == C_ERR) {
             if (processPendingCommandAndInputBuffer(c) == C_OK) {
-                beforeNextClient(c);
-                listAddNodeTail(handled_clients, c);
+                if (beforeNextClient(c) == C_OK) {
+                    listAddNodeTail(handled_clients, c);
+                }
             }
         }
         if (list_length_before_command_execute != listLength(server.clients_pending_io_read)) {
@@ -6465,6 +6467,7 @@ int processIOThreadsReadDone(void) {
     listRewind(handled_clients, &handled_li);
     while ((handled_ln = listNext(&handled_li))) {
         client *c = listNodeValue(handled_ln);
+        if (!c || !c->conn) continue;
         connUpdateState(c->conn);
     }
     listRelease(handled_clients);
