@@ -6424,7 +6424,7 @@ int processIOThreadsReadDone(void) {
         if (in_accept_state) {
             if (connIsTLS(c->conn)) {
                 connUpdateState(c->conn);
-            } 
+            }
             continue;
         }
 
