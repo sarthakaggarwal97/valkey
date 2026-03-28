@@ -6421,7 +6421,12 @@ int processIOThreadsReadDone(void) {
         connSetPostponeUpdateState(c->conn, 0);
 
         /* In accept state, no client's data was read - stop here. */
-        if (in_accept_state) continue;
+        if (in_accept_state) {
+            if (connIsTLS(c->conn)) {
+                connUpdateState(c->conn);
+            } 
+            continue;
+        }
 
         /* On read error - stop here. */
         if (handleReadResult(c) == C_ERR) {
