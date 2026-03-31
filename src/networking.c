@@ -2249,38 +2249,29 @@ void trimClientQueryBuffer(client *c) {
 }
 
 /* Perform processing of the client before moving on to processing the next client.
- *
- * This stage handles per-client cleanup and bookkeeping that cannot wait
- * until beforeSleep(). In particular, it trims the query buffer state,
- * updates client memory accounting, and may try to offload pending writes.
- *
- * Important:
- * This helper may free the client when CLOSE_ASAP is set. Most call sites
- * only need the side effects of this processing and should use
- * beforeNextClient(). Only call sites that must retain and use the client
- * pointer afterwards (for example, deferred I/O-thread post-processing
- * paths) should use beforeNextClientKeepAlive() and check the return value. */
-static int beforeNextClientInternal(client *c) {
+ * This is useful for performing operations that affect the global state but can't
+ * wait until we're done with all clients. In other words, it can't wait until beforeSleep().
+ * With IO threads enabled, this function offloads the write to the IO threads if possible. */
+int beforeNextClient(client *c) {
     /* Notice, this code is also called from 'processUnblockedClients'.
-     * But in case of a module blocked client (see RM_Call 'K' flag) we do not
-     * reach this code path. So whenever we change the code here we need to
-     * consider if we need this change on module blocked client as well. */
+     * But in case of a module blocked client (see RM_Call 'K' flag) we do not reach this code path.
+     * So whenever we change the code here we need to consider if we need this change on module
+     * blocked client as well */
 
     /* Trim the query buffer to the current position. */
     if (isReplicatedClient(c)) {
         /* If the client is replicated, trim the querybuf to repl_applied,
-         * since primary client is very special, its querybuf is used not only
-         * to parse commands, but also to proxy data to sub-replicas.
+         * since primary client is very special, its querybuf not only
+         * used to parse command, but also proxy to sub-replicas.
          *
-         * Here are some scenarios where we cannot trim to qb_pos:
-         * 1. we don't receive a complete command from primary
-         * 2. primary client is blocked because of client pause
-         * 3. I/O threads operate on read, and the primary client is flagged
-         *    with CLIENT_PENDING_COMMAND
+         * Here are some scenarios we cannot trim to qb_pos:
+         * 1. we don't receive complete command from primary
+         * 2. primary client blocked cause of client pause
+         * 3. io threads operate read, primary client flagged with CLIENT_PENDING_COMMAND
          *
-         * In these scenarios, qb_pos points to part of the current command or
-         * the beginning of the next command, while the current command is not
-         * fully applied yet, so repl_applied is not equal to qb_pos. */
+         * In these scenarios, qb_pos points to the part of the current command
+         * or the beginning of next command, and the current command is not applied yet,
+         * so the repl_applied is not equal to qb_pos. */
         if (c->repl_data->repl_applied) {
             sdsrange(c->querybuf, c->repl_data->repl_applied, -1);
             c->qb_pos -= c->repl_data->repl_applied;
@@ -2289,38 +2280,23 @@ static int beforeNextClientInternal(client *c) {
     } else {
         trimClientQueryBuffer(c);
     }
-
-    /* Handle async frees.
-     * Note: this doesn't make the server.clients_to_close list redundant
-     * because there are cases where we want an async free of another client.
-     * For example, ACL modifications may disconnect clients authenticated to
-     * non-existent users (see ACL LOAD). */
+    /* Handle async frees */
+    /* Note: this doesn't make the server.clients_to_close list redundant because of
+     * cases where we want an async free of a client other than myself. For example
+     * in ACL modifications we disconnect clients authenticated to non-existent
+     * users (see ACL LOAD). */
     if (c->flag.close_asap) {
         freeClient(c);
         return C_ERR;
     }
 
     updateClientMemUsageAndBucket(c);
-    /* If IO threads are enabled try to write immediately the reply instead of
-     * waiting until beforeSleep(), unless aof_fsync is set to always, in which
-     * case we need to wait for beforeSleep() after writing the AOF buffer. */
+    /* If IO threads are enabled try to write immediately the reply instead of waiting to beforeSleep,
+     * unless aof_fsync is set to always in which case we need to wait for beforeSleep after writing the aof buffer. */
     if (server.aof_fsync != AOF_FSYNC_ALWAYS) {
         trySendWriteToIOThreads(c);
     }
     return C_OK;
-}
-
-/* Common wrapper for normal call sites.
- * The caller only needs the side effects of beforeNextClientInternal() and
- * does not depend on whether the client survives the call. */
-void beforeNextClient(client *c) {
-    (void)beforeNextClientInternal(c);
-}
-
-/* Variant for call sites that must keep using the client pointer after this
- * step. Returns C_ERR if the client was freed during post-processing. */
-int beforeNextClientKeepAlive(client *c) {
-    return beforeNextClientInternal(c);
 }
 
 /* Free the clients marked as CLOSE_ASAP, return the number of clients
@@ -6479,7 +6455,7 @@ int processIOThreadsReadDone(void) {
         /* If the command was not added to the commands batch, process it immediately */
         if (ret == C_ERR) {
             if (processPendingCommandAndInputBuffer(c) == C_OK) {
-                if (beforeNextClientKeepAlive(c) == C_OK) {
+                if (beforeNextClient(c) == C_OK) {
                     listAddNodeTail(handled_clients, c);
                 }
             }
