@@ -6423,9 +6423,7 @@ int processIOThreadsReadDone(void) {
 
         /* In accept state, no client's data was read - stop here. */
         if (in_accept_state) {
-            if (connIsTLS(c->conn)) {
-                connUpdateState(c->conn);
-            }
+            connUpdateState(c->conn);
             continue;
         }
 
