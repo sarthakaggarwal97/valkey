@@ -215,7 +215,19 @@ static void prefetchCommands(void) {
     }
 }
 
-/* Processes all the prefetched commands in the current batch. */
+/* Process all prefetched commands in the current batch.
+ *
+ * When handled_clients is non-NULL, each client that successfully finishes
+ * processPendingCommandAndInputBuffer() and survives beforeNextClient()
+ * (i.e. was not freed, e.g. CLOSE_ASAP) is appended to that list.  The
+ * caller uses the list after batch processing to run deferred work such as
+ * connUpdateState() only on still-live connections—avoiding use-after-free
+ * when beforeNextClient frees the client, and allowing transports that
+ * need a post-command state refresh (e.g. RDMA) to continue correctly.
+ *
+ * When handled_clients is NULL (e.g. recursive ProcessingEventsWhileBlocked
+ * paths), callers only need the side effects of beforeNextClient() and do
+ * not collect clients for a follow-up pass. */
 void processClientsCommandsBatch(list *handled_clients) {
     if (!batch || batch->client_count == 0) return;
 
@@ -238,8 +250,6 @@ void processClientsCommandsBatch(list *handled_clients) {
                 if (beforeNextClient(c) == C_OK) {
                     listAddNodeTail(handled_clients, c);
                 }
-            } else {
-                beforeNextClient(c);
             }
         }
     }

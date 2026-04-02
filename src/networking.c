@@ -2251,7 +2251,11 @@ void trimClientQueryBuffer(client *c) {
 /* Perform processing of the client before moving on to processing the next client.
  * This is useful for performing operations that affect the global state but can't
  * wait until we're done with all clients. In other words, it can't wait until beforeSleep().
- * With IO threads enabled, this function offloads the write to the IO threads if possible. */
+ * With IO threads enabled, this function offloads the write to the IO threads if possible.
+ *
+ * Returns:
+ *   - C_OK if the client is still valid after this step; the caller may keep using `c`.
+ *   - C_ERR if the client was freed (e.g. CLOSE_ASAP); the caller must not dereference `c`. */
 int beforeNextClient(client *c) {
     /* Notice, this code is also called from 'processUnblockedClients'.
      * But in case of a module blocked client (see RM_Call 'K' flag) we do not reach this code path.
@@ -6452,7 +6456,7 @@ int processIOThreadsReadDone(void) {
     listRewind(handled_clients, &handled_li);
     while ((handled_ln = listNext(&handled_li))) {
         client *c = listNodeValue(handled_ln);
-        if (!c || !c->conn) continue;
+        if (!c->conn) continue;
         connUpdateState(c->conn);
     }
     listRelease(handled_clients);
