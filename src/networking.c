@@ -28,7 +28,6 @@
  */
 
 #include "adlist.h"
-#include "expire.h"
 #include "server.h"
 #include "cluster.h"
 #include "cluster_slot_stats.h"
