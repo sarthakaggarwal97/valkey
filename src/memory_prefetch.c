@@ -250,6 +250,8 @@ void processClientsCommandsBatch(list *handled_clients) {
                 if (beforeNextClient(c) == C_OK) {
                     listAddNodeTail(handled_clients, c);
                 }
+            } else {
+                beforeNextClient(c);
             }
         }
     }
