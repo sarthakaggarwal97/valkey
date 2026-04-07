@@ -17,7 +17,7 @@ typedef struct {
     void (*compressor_destroy)(stream_compressor_t *sc);
     int (*decompressor_init)(stream_decompressor_t *sd);
     void (*decompressor_destroy)(stream_decompressor_t *sd);
-    size_t (*compress_output_bound)(size_t input_len, bool frame_started, compress_flush_mode_t flush_mode);
+    size_t (*compress_output_bound)(size_t input_len);
     ssize_t (*compress_feed)(stream_compressor_t *sc,
                              uint8_t *output,
                              size_t output_capacity,
@@ -139,11 +139,11 @@ void streamDecompressorDestroy(stream_decompressor_t *sd) {
     memset(sd, 0, sizeof(*sd));
 }
 
-size_t streamCompressOutputBound(const stream_compressor_t *sc, size_t input_len, compress_flush_mode_t flush_mode) {
+size_t streamCompressOutputBound(const stream_compressor_t *sc, size_t input_len) {
     if (!sc) return 0;
     const compression_codec_impl_t *codec_impl = compressionCodecImplForAlgo(sc->algo);
     if (!codec_impl || !codec_impl->compress_output_bound) return 0;
-    return codec_impl->compress_output_bound(input_len, sc->frame_started, flush_mode);
+    return codec_impl->compress_output_bound(input_len);
 }
 
 ssize_t streamCompressFeed(stream_compressor_t *sc,

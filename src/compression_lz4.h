@@ -13,7 +13,7 @@ int compressionLz4CompressorInit(stream_compressor_t *sc);
 void compressionLz4CompressorDestroy(stream_compressor_t *sc);
 int compressionLz4DecompressorInit(stream_decompressor_t *sd);
 void compressionLz4DecompressorDestroy(stream_decompressor_t *sd);
-size_t compressionLz4OutputBound(size_t input_len, bool frame_started, compress_flush_mode_t flush_mode);
+size_t compressionLz4OutputBound(size_t input_len);
 ssize_t compressionLz4CompressFeed(stream_compressor_t *sc,
                                    uint8_t *output,
                                    size_t output_capacity,

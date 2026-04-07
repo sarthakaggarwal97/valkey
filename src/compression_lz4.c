@@ -66,17 +66,11 @@ void compressionLz4DecompressorDestroy(stream_decompressor_t *sd) {
     sd->ctx = NULL;
 }
 
-size_t compressionLz4OutputBound(size_t input_len, bool frame_started, compress_flush_mode_t flush_mode) {
-    size_t bound = LZ4F_compressBound(input_len, &lz4f_prefs);
-
-    if (!frame_started) {
-        bound += LZ4F_HEADER_SIZE_MAX;
-    }
-    if (flush_mode != FLUSH_CONTINUE) {
-        /* LZ4F_compressBound(0) covers buffered flush bytes and frame end. */
-        bound += LZ4F_compressBound(0, &lz4f_prefs);
-    }
-    return bound;
+size_t compressionLz4OutputBound(size_t input_len) {
+    /* Conservative worst-case: data bound + frame header + flush/end overhead.
+     * Always includes all components so the caller can allocate once and reuse
+     * for any flush mode and frame state. */
+    return LZ4F_compressBound(input_len, &lz4f_prefs) + LZ4F_HEADER_SIZE_MAX + LZ4F_compressBound(0, &lz4f_prefs);
 }
 
 ssize_t compressionLz4CompressFeed(stream_compressor_t *sc,

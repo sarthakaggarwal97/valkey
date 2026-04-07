@@ -73,9 +73,10 @@ void streamCompressorDestroy(stream_compressor_t *sc);
 int streamDecompressorInit(stream_decompressor_t *sd, compression_algo_t algo);
 void streamDecompressorDestroy(stream_decompressor_t *sd);
 
-/* Return upper bound on compressed output size for the current stream state.
- * flush_mode: FLUSH_CONTINUE, FLUSH_SYNC, or FLUSH_END. */
-size_t streamCompressOutputBound(const stream_compressor_t *sc, size_t input_len, compress_flush_mode_t flush_mode);
+/* Return upper bound on compressed output size.
+ * The bound is conservative: it includes frame header, data, and flush/end
+ * overhead so the caller can allocate once and reuse for any flush mode. */
+size_t streamCompressOutputBound(const stream_compressor_t *sc, size_t input_len);
 
 /* Feed data through streaming compressor.
  * flush_mode: FLUSH_CONTINUE, FLUSH_SYNC, or FLUSH_END.

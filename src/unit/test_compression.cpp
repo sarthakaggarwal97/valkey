@@ -376,7 +376,7 @@ TEST(compression, streamCompressDecompressRoundTrip) {
     stream_compressor_t sc;
     ASSERT_TRUE(streamCompressorInit(&sc, ALGO_LZ4, 0) == 0);
 
-    size_t bound = streamCompressOutputBound(&sc, input_len, FLUSH_END);
+    size_t bound = streamCompressOutputBound(&sc, input_len);
     ASSERT_TRUE(bound > 0) << "bound should be > 0";
 
     uint8_t *compressed = (uint8_t *)zmalloc(bound);
@@ -413,31 +413,23 @@ TEST(compression, streamCompressOutputBound) {
     ASSERT_TRUE(streamCompressorInit(&sc, ALGO_LZ4, 0) == 0);
 
     /* Basic: bound for 1KB input should be > 0 */
-    size_t b1 = streamCompressOutputBound(&sc, 1024, FLUSH_CONTINUE);
-    ASSERT_TRUE(b1 > 0) << "bound for 1KB continue should be > 0";
+    size_t b1 = streamCompressOutputBound(&sc, 1024);
+    ASSERT_TRUE(b1 > 0) << "bound for 1KB should be > 0";
 
-    /* Bound with frame header should be larger than without */
-    size_t b_with_frame = streamCompressOutputBound(&sc, 1024, FLUSH_CONTINUE);
-    uint8_t *seed_buf = (uint8_t *)zmalloc(b_with_frame);
+    /* Bound is always conservative (includes frame header + flush overhead),
+     * so it should be stable regardless of frame state. */
+    size_t b_before = streamCompressOutputBound(&sc, 1024);
+    uint8_t *seed_buf = (uint8_t *)zmalloc(b_before);
     ASSERT_TRUE(seed_buf != NULL);
-    ASSERT_TRUE(streamCompressFeed(&sc, seed_buf, b_with_frame,
+    ASSERT_TRUE(streamCompressFeed(&sc, seed_buf, b_before,
                                    (const uint8_t *)"x", 1, FLUSH_CONTINUE) >= 0)
         << "seed write should start the frame";
-    size_t b_no_frame = streamCompressOutputBound(&sc, 1024, FLUSH_CONTINUE);
-    ASSERT_TRUE(b_with_frame >= b_no_frame) << "bound with frame header should be >= without frame";
+    size_t b_after = streamCompressOutputBound(&sc, 1024);
+    ASSERT_TRUE(b_before == b_after) << "bound should be the same before and after frame start";
 
-    /* Flush bound should be >= continue bound */
-    size_t b_flush = streamCompressOutputBound(&sc, 1024, FLUSH_SYNC);
-    size_t b_cont = streamCompressOutputBound(&sc, 1024, FLUSH_CONTINUE);
-    ASSERT_TRUE(b_flush >= b_cont) << "flush bound should be >= continue bound";
-
-    /* End bound should be >= flush bound */
-    size_t b_end = streamCompressOutputBound(&sc, 1024, FLUSH_END);
-    ASSERT_TRUE(b_end >= b_flush) << "end bound should be >= flush bound";
-
-    /* Zero input should still return > 0 for flush/end (internal buffering) */
-    size_t b_zero_flush = streamCompressOutputBound(&sc, 0, FLUSH_SYNC);
-    ASSERT_TRUE(b_zero_flush > 0) << "zero input flush bound should be > 0";
+    /* Zero input should still return > 0 (frame header + flush overhead) */
+    size_t b_zero = streamCompressOutputBound(&sc, 0);
+    ASSERT_TRUE(b_zero > 0) << "zero input bound should be > 0";
 
     zfree(seed_buf);
     streamCompressorDestroy(&sc);
@@ -492,7 +484,7 @@ TEST(compression, streamDecompressFeedErrors) {
     /* Once errored, all subsequent feeds fail immediately. */
     stream_compressor_t sc;
     ASSERT_TRUE(streamCompressorInit(&sc, ALGO_LZ4, 0) == 0);
-    size_t bound = streamCompressOutputBound(&sc, strlen(payload), FLUSH_END);
+    size_t bound = streamCompressOutputBound(&sc, strlen(payload));
     uint8_t *compressed = (uint8_t *)zmalloc(bound);
     ASSERT_TRUE(compressed != NULL);
     ssize_t compressed_len = streamCompressFeed(&sc, compressed, bound,
@@ -526,7 +518,7 @@ TEST(compression, streamCompressFeedErrorRecovery) {
     ASSERT_TRUE(sc.frame_started == false) << "frame_started should still be false";
 
     /* Retry with a proper buffer — should succeed */
-    size_t bound = streamCompressOutputBound(&sc, 9, FLUSH_END);
+    size_t bound = streamCompressOutputBound(&sc, 9);
     uint8_t *buf = (uint8_t *)zmalloc(bound);
     ssize_t ret2 = streamCompressFeed(&sc, buf, bound,
                                       (const uint8_t *)"test data", 9, FLUSH_END);
@@ -539,7 +531,7 @@ TEST(compression, streamCompressFeedErrorRecovery) {
     ASSERT_TRUE(streamCompressorInit(&sc2, ALGO_LZ4, 0) == 0);
 
     /* First call with enough space to start the frame */
-    size_t bound2 = streamCompressOutputBound(&sc2, 5, FLUSH_CONTINUE);
+    size_t bound2 = streamCompressOutputBound(&sc2, 5);
     uint8_t *buf2 = (uint8_t *)zmalloc(bound2);
     ssize_t ret3 = streamCompressFeed(&sc2, buf2, bound2,
                                       (const uint8_t *)"hello", 5, FLUSH_CONTINUE);
@@ -555,7 +547,7 @@ TEST(compression, streamCompressFeedErrorRecovery) {
     ASSERT_TRUE(sc2.errored == true) << "errored should be set (mid-frame failure)";
 
     /* Subsequent calls must fail immediately */
-    size_t bound3 = streamCompressOutputBound(&sc2, 5, FLUSH_END);
+    size_t bound3 = streamCompressOutputBound(&sc2, 5);
     uint8_t *buf3 = (uint8_t *)zmalloc(bound3);
     ssize_t ret5 = streamCompressFeed(&sc2, buf3, bound3,
                                       (const uint8_t *)"hello", 5, FLUSH_END);
