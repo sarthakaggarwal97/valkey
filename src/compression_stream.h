@@ -106,6 +106,9 @@ stream_writer_t *stream_writer_create(const stream_writer_config_t *cfg,
                                       vkcs_emit_fn emit_cb,
                                       void *emit_ctx);
 /* Returns emitted bytes for this call (>=0), -1 on error.
+ * NOTE: the return value is the number of *compressed* bytes emitted to the
+ * output sink, NOT the number of input bytes consumed (which is always `len`
+ * on success). Callers that need to track input progress should use `len`.
  * After stream_writer_finish(), write returns -1 and does not emit bytes. */
 ssize_t stream_writer_write(stream_writer_t *t, const void *buf, size_t len);
 /* Returns 0 on success, -1 on error.

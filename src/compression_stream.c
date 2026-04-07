@@ -303,8 +303,8 @@ static int streamWriterEmit(stream_writer_t *t, const uint8_t *buf, size_t len) 
 /* Ensure the output buffer is large enough for the given input.
  * Reuses the existing buffer when possible to avoid per-write allocation.
  * zmalloc aborts on OOM, so this cannot fail. */
-static void streamWriterEnsureOutBuf(stream_writer_t *t, size_t input_len, compress_flush_mode_t flush_mode) {
-    size_t needed = streamCompressOutputBound(&t->compressor, input_len, flush_mode);
+static void streamWriterEnsureOutBuf(stream_writer_t *t, size_t input_len) {
+    size_t needed = streamCompressOutputBound(&t->compressor, input_len);
     if (needed == 0) {
         /* Ensure a minimal valid buffer so streamCompressFeed never gets NULL. */
         if (t->out_buf == NULL) {
@@ -325,7 +325,7 @@ static int streamWriterFeedAndEmit(stream_writer_t *t,
                                    const uint8_t *input,
                                    size_t input_len,
                                    compress_flush_mode_t flush_mode) {
-    streamWriterEnsureOutBuf(t, input_len, flush_mode);
+    streamWriterEnsureOutBuf(t, input_len);
 
     ssize_t compressed = streamCompressFeed(&t->compressor, t->out_buf,
                                             t->out_buf_size,
