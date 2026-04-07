@@ -23,7 +23,6 @@ typedef struct {
     rio base; /* Must be first */
     rio *inner;
     stream_reader_t *reader;
-    bool detached;
 } decompress_rio_t;
 
 typedef enum {
@@ -44,12 +43,8 @@ decompress_rio_init_result_t rioInitWithDecompress(decompress_rio_t *dr,
                                                    rio *inner,
                                                    const stream_reader_config_t *cfg,
                                                    stream_reader_info_t *info);
-/* Finish the current frame/prefix and hand any unread raw bytes back to the
- * wrapped rio so it can continue reading after the adapter is removed. */
-int decompress_rio_detach(decompress_rio_t *dr);
 stream_reader_error_t decompress_rio_get_error(const decompress_rio_t *dr);
-/* Destroy the adapter without additional I/O. Call decompress_rio_detach()
- * first if the wrapped rio must continue reading after this stream. */
+/* Destroy the adapter without additional I/O. */
 void decompress_rio_destroy(decompress_rio_t *dr);
 
 #endif /* COMPRESSION_RIO_H */

@@ -76,12 +76,6 @@ static ssize_t rioBufferReadSome(rio *r, void *buf, size_t len) {
     return (ssize_t)got;
 }
 
-static int rioBufferUnread(rio *r, size_t len) {
-    if ((size_t)r->io.buffer.pos < len) return -1;
-    r->io.buffer.pos -= len;
-    return 0;
-}
-
 /* Returns 1 or 0 for success/failure. */
 static size_t rioBufferRead(rio *r, void *buf, size_t len) {
     return rioBufferReadSome(r, buf, len) == (ssize_t)len;
@@ -190,10 +184,6 @@ static ssize_t rioFileReadSome(rio *r, void *buf, size_t len) {
     size_t got = fread(buf, 1, len, r->io.file.fp);
     if (got == 0 && ferror(r->io.file.fp)) return -1;
     return (ssize_t)got;
-}
-
-static int rioFileUnread(rio *r, size_t len) {
-    return fseeko(r->io.file.fp, -(off_t)len, SEEK_CUR) == -1 ? -1 : 0;
 }
 
 /* Returns read/write position in file. */
@@ -325,13 +315,6 @@ static ssize_t rioConnReadSome(rio *r, void *buf, size_t len) {
     return rioConnConsumeBuffered(r, buf, len);
 }
 
-static int rioConnUnread(rio *r, size_t len) {
-    if ((size_t)r->io.conn.pos < len || r->io.conn.read_so_far < len) return -1;
-    r->io.conn.pos -= len;
-    r->io.conn.read_so_far -= len;
-    return 0;
-}
-
 /* Returns 1 or 0 for success/failure. */
 static size_t rioConnRead(rio *r, void *buf, size_t len) {
     if (rioConnFillBuffer(r, len, 1) != 1) return 0;
@@ -455,10 +438,6 @@ static size_t rioFdRead(rio *r, void *buf, size_t len) {
     return 0; /* Error, this target does not support reading. */
 }
 
-static int rioFdUnread(rio *r, size_t len) {
-    return lseek(r->io.fd.fd, -(off_t)len, SEEK_CUR) == (off_t)-1 ? -1 : 0;
-}
-
 /* Returns read/write position in file. */
 static off_t rioFdTell(rio *r) {
     return r->io.fd.pos;
@@ -545,43 +524,6 @@ ssize_t rioReadPartial(rio *r, void *buf, size_t len) {
         r->processed_bytes += (size_t)got;
     }
     return got;
-}
-
-/* Rewind already-buffered/read bytes on a readable rio.
- * Returns 0 on success, -1 when the backend cannot rewind by `len`.
- * This rewinds read position only; callers must not use it once checksum state
- * has been updated on the same rio. */
-int rioUnread(rio *r, size_t len) {
-    int rc = -1;
-
-    if (!r) return -1;
-    if (len == 0) return 0;
-    if (r->update_cksum) return -1;
-
-    switch (r->type) {
-    case RIO_TYPE_BUFFER:
-        rc = rioBufferUnread(r, len);
-        break;
-    case RIO_TYPE_FILE:
-        rc = rioFileUnread(r, len);
-        break;
-    case RIO_TYPE_CONN:
-        rc = rioConnUnread(r, len);
-        break;
-    case RIO_TYPE_FD:
-        rc = rioFdUnread(r, len);
-        break;
-    default:
-        return -1;
-    }
-    if (rc != 0) return -1;
-
-    if (r->processed_bytes >= len) {
-        r->processed_bytes -= len;
-    } else {
-        r->processed_bytes = 0;
-    }
-    return 0;
 }
 
 /* Set the file-based rio object to auto-fsync every 'bytes' file written.

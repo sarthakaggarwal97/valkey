@@ -18,7 +18,6 @@
 #define VKCS_VERSION 1
 #define VKCS_FLAG_CODEC_CHECKSUM (1 << 0)
 #define STREAM_KIND_RDB 0x00
-#define STREAM_KIND_REPL 0x01
 
 typedef enum {
     VKCS_CODEC_LZ4 = 0x01,
@@ -142,21 +141,6 @@ ssize_t stream_reader_read(stream_reader_t *t, void *buf, size_t len);
  * Returns 0 on success, -1 on error. */
 int stream_reader_get_info(stream_reader_t *t, stream_reader_info_t *info);
 stream_reader_error_t stream_reader_get_error(const stream_reader_t *t);
-/* Drain and discard any remaining decompressed bytes in the current frame.
- * After success, any pending raw input exposed by stream_reader_get_pending_input()
- * belongs to data following the compressed frame. */
-int stream_reader_finish(stream_reader_t *t);
-/* Finish the current frame/prefix and expose any raw input already pulled from
- * the source but not yet consumed by the reader. This is the handoff point for
- * callers that need to continue reading from the wrapped transport. */
-int stream_reader_detach(stream_reader_t *t, const uint8_t **buf, size_t *len);
-/* Expose unread raw input bytes that were pulled from the source but not yet
- * consumed by the reader. For passthrough streams this is the unread probe
- * prefix. For compressed streams, callers that need bytes following the
- * current frame should use stream_reader_detach() or stream_reader_finish()
- * first; calling this mid-frame may return compressed input that still belongs
- * to the active frame. */
-int stream_reader_get_pending_input(stream_reader_t *t, const uint8_t **buf, size_t *len);
 void stream_reader_destroy(stream_reader_t *t);
 
 #endif /* COMPRESSION_STREAM_H */
