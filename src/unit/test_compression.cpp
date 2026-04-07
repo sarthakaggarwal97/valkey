@@ -142,7 +142,7 @@ static ssize_t flakyReaderRead(void *ctx, void *buf, size_t len) {
 TEST(compression, envelopeRoundTrip) {
     vkcs_codec_t codecs[] = {VKCS_CODEC_LZ4};
     size_t codec_count = sizeof(codecs) / sizeof(codecs[0]);
-    uint8_t kinds[] = {STREAM_KIND_RDB, STREAM_KIND_REPL, 0x7f};
+    uint8_t kinds[] = {STREAM_KIND_RDB, 0x7f};
 
     for (size_t a = 0; a < codec_count; a++) {
         for (size_t k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++) {
@@ -184,7 +184,7 @@ TEST(compression, envelopeMagicBytes) {
 
 /* --- Property: Envelope stores stream_kind in byte 7 and keeps flags checksum-only. --- */
 TEST(compression, envelopeStreamKindByte) {
-    uint8_t kinds[] = {STREAM_KIND_RDB, STREAM_KIND_REPL, 0x7f};
+    uint8_t kinds[] = {STREAM_KIND_RDB, 0x7f};
 
     for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
         emit_buf_t eb = {};
@@ -285,7 +285,7 @@ TEST(compression, envelopeBitFlipFuzz) {
     const int iterations = 1000;
     vkcs_codec_t codecs[] = {VKCS_CODEC_LZ4};
     size_t codec_count = sizeof(codecs) / sizeof(codecs[0]);
-    uint8_t kinds[] = {STREAM_KIND_RDB, STREAM_KIND_REPL, 0x7f};
+    uint8_t kinds[] = {STREAM_KIND_RDB, 0x7f};
 
     /* Deterministic RNG for reproducible fuzz coverage. */
     for (int i = 0; i < iterations; i++) {
@@ -738,17 +738,17 @@ TEST(compression, streamReaderValidatesCompressedStreamKinds) {
          0,
          0,
          true},
-        {"REPL stream when RDB expected",
+        {"custom stream when RDB expected",
          "stream-kind mismatch",
-         STREAM_KIND_REPL,
+         0x7f,
          STREAM_KIND_RDB,
          0,
          0,
          false},
-        {"RDB stream when REPL expected",
+        {"RDB stream when custom expected",
          "stream-kind mismatch",
          STREAM_KIND_RDB,
-         STREAM_KIND_REPL,
+         0x7f,
          0,
          0,
          false},
@@ -1685,141 +1685,6 @@ TEST(compression, streamReaderStopsAtFrameEndBeforeTrailingBytes) {
     return;
 }
 
-TEST(compression, streamReaderDetachPreservesTrailingBytes) {
-    const char *trailer = "TRAILER-BYTES-AFTER-FRAME";
-    const size_t trailer_len = strlen(trailer);
-
-    struct {
-        const char *name;
-        size_t read_len;
-    } cases[] = {
-        {"after full read", strlen("stream-reader-detach")},
-        {"after partial read", 8},
-    };
-
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        const char *payload = "stream-reader-detach";
-        const size_t payload_len = strlen(payload);
-        dynamic_buf_t db;
-        dynamicBufInit(&db);
-
-        stream_writer_config_t cfg = makeWriterConfig(ALGO_LZ4, 0, STREAM_KIND_RDB);
-        stream_writer_t *w = stream_writer_create(&cfg, emitToDynamicBuf, &db);
-        ASSERT_TRUE(w != NULL) << cases[i].name;
-        ASSERT_TRUE(stream_writer_write(w, payload, payload_len) >= 0) << cases[i].name;
-        ASSERT_TRUE(stream_writer_finish(w) == 0) << cases[i].name;
-        stream_writer_destroy(w);
-
-        sds input = sdsnewlen(db.data, sdslen((const char *)db.data));
-        input = sdscatlen(input, trailer, trailer_len);
-
-        mem_reader_t mr = {};
-        mr.data = (const uint8_t *)input;
-        mr.len = sdslen(input);
-        mr.max_chunk = 3;
-        stream_reader_config_t rcfg = makeReaderConfig(STREAM_KIND_RDB, false, 8);
-        stream_reader_t *r = stream_reader_create(&rcfg, memReaderRead, &mr);
-        ASSERT_TRUE(r != NULL) << cases[i].name;
-
-        char out[128];
-        memset(out, 0, sizeof(out));
-        ASSERT_TRUE(stream_reader_read(r, out, cases[i].read_len) == (ssize_t)cases[i].read_len) << cases[i].name;
-        ASSERT_TRUE(memcmp(out, payload, cases[i].read_len) == 0) << cases[i].name;
-
-        const uint8_t *pending = NULL;
-        size_t pending_len = 0;
-        ASSERT_TRUE(stream_reader_detach(r, &pending, &pending_len) == 0) << cases[i].name;
-        ASSERT_TRUE(pending_len == trailer_len) << cases[i].name;
-        ASSERT_TRUE(memcmp(pending, trailer, trailer_len) == 0) << cases[i].name;
-
-        stream_reader_destroy(r);
-        sdsfree(input);
-        dynamicBufFree(&db);
-    }
-    return;
-}
-
-TEST(compression, streamReaderDetachPreservesTrailingBytesAfterEmptyFrame) {
-    const char *trailer = "TRAILER-BYTES-AFTER-FRAME";
-    const size_t trailer_len = strlen(trailer);
-
-    dynamic_buf_t db;
-    dynamicBufInit(&db);
-
-    stream_writer_config_t cfg = makeWriterConfig(ALGO_LZ4, 0, STREAM_KIND_RDB);
-    stream_writer_t *w = stream_writer_create(&cfg, emitToDynamicBuf, &db);
-    ASSERT_TRUE(w != NULL);
-    ASSERT_TRUE(stream_writer_finish(w) == 0);
-    stream_writer_destroy(w);
-
-    sds input = sdsnewlen(db.data, sdslen((const char *)db.data));
-    input = sdscatlen(input, trailer, trailer_len);
-
-    mem_reader_t mr = {};
-    mr.data = (const uint8_t *)input;
-    mr.len = sdslen(input);
-    mr.max_chunk = 3;
-    stream_reader_config_t rcfg = makeReaderConfig(STREAM_KIND_RDB, false, 8);
-    stream_reader_t *r = stream_reader_create(&rcfg, memReaderRead, &mr);
-    ASSERT_TRUE(r != NULL);
-
-    const uint8_t *pending = NULL;
-    size_t pending_len = 0;
-    ASSERT_TRUE(stream_reader_detach(r, &pending, &pending_len) == 0);
-    ASSERT_TRUE(pending_len == trailer_len);
-    ASSERT_TRUE(memcmp(pending, trailer, trailer_len) == 0);
-
-    stream_reader_destroy(r);
-    sdsfree(input);
-    dynamicBufFree(&db);
-    return;
-}
-
-TEST(compression, streamReaderGetPendingInputPreservesTrailingBytes) {
-    const char *payload = "stream-reader-pending-input";
-    const size_t payload_len = strlen(payload);
-    const char *trailer = "TRAILER-BYTES-AFTER-FRAME";
-    const size_t trailer_len = strlen(trailer);
-
-    dynamic_buf_t db;
-    dynamicBufInit(&db);
-
-    stream_writer_config_t cfg = makeWriterConfig(ALGO_LZ4, 0, STREAM_KIND_RDB);
-    stream_writer_t *w = stream_writer_create(&cfg, emitToDynamicBuf, &db);
-    ASSERT_TRUE(w != NULL);
-    ASSERT_TRUE(stream_writer_write(w, payload, payload_len) >= 0);
-    ASSERT_TRUE(stream_writer_finish(w) == 0);
-    stream_writer_destroy(w);
-
-    sds input = sdsnewlen(db.data, sdslen((const char *)db.data));
-    input = sdscatlen(input, trailer, trailer_len);
-
-    mem_reader_t mr = {};
-    mr.data = (const uint8_t *)input;
-    mr.len = sdslen(input);
-    mr.max_chunk = 3;
-    stream_reader_config_t rcfg = makeReaderConfig(STREAM_KIND_RDB, false, 8);
-    stream_reader_t *r = stream_reader_create(&rcfg, memReaderRead, &mr);
-    ASSERT_TRUE(r != NULL);
-
-    char out[128];
-    memset(out, 0, sizeof(out));
-    ASSERT_TRUE(stream_reader_read(r, out, payload_len) == (ssize_t)payload_len);
-    ASSERT_TRUE(memcmp(out, payload, payload_len) == 0);
-    ASSERT_TRUE(stream_reader_read(r, out, sizeof(out)) == 0);
-
-    const uint8_t *pending = NULL;
-    size_t pending_len = 0;
-    ASSERT_TRUE(stream_reader_get_pending_input(r, &pending, &pending_len) == 0);
-    ASSERT_TRUE(pending_len == trailer_len);
-    ASSERT_TRUE(memcmp(pending, trailer, trailer_len) == 0);
-
-    stream_reader_destroy(r);
-    sdsfree(input);
-    dynamicBufFree(&db);
-    return;
-}
-
 TEST(compression, streamReaderRejectsTruncatedFrameTrailer) {
     const size_t payload_len = 256;
     uint8_t payload[payload_len];
@@ -1854,50 +1719,6 @@ TEST(compression, streamReaderRejectsTruncatedFrameTrailer) {
         << "truncated compressed frame should latch corruption, not I/O";
 
     stream_reader_destroy(r);
-    dynamicBufFree(&db);
-    return;
-}
-
-TEST(compression, decompressRioDetachPreservesTrailingBytes) {
-    const char *payload = "preserve-trailing-bytes-after-frame";
-    const size_t payload_len = strlen(payload);
-    const char *trailer = "*1\r\n$4\r\nPING\r\n";
-    const size_t trailer_len = strlen(trailer);
-
-    dynamic_buf_t db;
-    dynamicBufInit(&db);
-
-    stream_writer_config_t cfg = makeWriterConfig(ALGO_LZ4, 0, STREAM_KIND_RDB);
-    stream_writer_t *w = stream_writer_create(&cfg, emitToDynamicBuf, &db);
-    ASSERT_TRUE(w != NULL);
-    ASSERT_TRUE(stream_writer_write(w, payload, payload_len) >= 0);
-    ASSERT_TRUE(stream_writer_finish(w) == 0);
-    stream_writer_destroy(w);
-
-    sds input = sdsnewlen(db.data, sdslen((const char *)db.data));
-    input = sdscatlen(input, trailer, trailer_len);
-
-    rio buffer_rio;
-    rioInitWithBuffer(&buffer_rio, input);
-
-    stream_reader_config_t rcfg = makeReaderConfig(STREAM_KIND_RDB, true, 8);
-    decompress_rio_t dr;
-    ASSERT_TRUE(rioInitWithDecompress(&dr, &buffer_rio, &rcfg, NULL) == DECOMPRESS_RIO_INIT_OK);
-
-    char out[128];
-    memset(out, 0, sizeof(out));
-    ASSERT_TRUE(rioRead((rio *)&dr, out, payload_len) != 0);
-    ASSERT_TRUE(memcmp(out, payload, payload_len) == 0);
-
-    ASSERT_TRUE(decompress_rio_detach(&dr) == 0);
-    decompress_rio_destroy(&dr);
-
-    char raw_trailer[64];
-    memset(raw_trailer, 0, sizeof(raw_trailer));
-    ASSERT_TRUE(rioRead(&buffer_rio, raw_trailer, trailer_len) != 0);
-    ASSERT_TRUE(memcmp(raw_trailer, trailer, trailer_len) == 0);
-
-    sdsfree(buffer_rio.io.buffer.ptr);
     dynamicBufFree(&db);
     return;
 }

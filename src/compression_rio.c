@@ -207,24 +207,10 @@ static size_t decompressRioRead(rio *r, void *buf, size_t len) {
 }
 
 /* rio vtable: tell callback — report transport bytes consumed from the wrapped
- * rio so progress and reuse handoff stay tied to source-stream position. */
+ * rio so progress stays tied to source-stream position. */
 static off_t decompressRioTell(rio *r) {
     decompress_rio_t *dr = (decompress_rio_t *)r;
     return (off_t)dr->inner->processed_bytes;
-}
-
-int decompress_rio_detach(decompress_rio_t *dr) {
-    const uint8_t *pending = NULL;
-    size_t pending_len = 0;
-
-    if (!dr || !dr->reader || !dr->inner) return -1;
-    if (dr->detached) return 0;
-    if (stream_reader_detach(dr->reader, &pending, &pending_len) != 0) return -1;
-    if (pending && pending_len > 0 && rioUnread(dr->inner, pending_len) != 0) {
-        return -1;
-    }
-    dr->detached = true;
-    return 0;
 }
 
 stream_reader_error_t decompress_rio_get_error(const decompress_rio_t *dr) {

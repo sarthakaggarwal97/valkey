@@ -777,59 +777,6 @@ stream_reader_error_t stream_reader_get_error(const stream_reader_t *t) {
     return t ? t->error_kind : STREAM_READER_ERROR_IO;
 }
 
-int stream_reader_finish(stream_reader_t *t) {
-    if (!t) return -1;
-    if (stream_reader_probe(t) != 0) return -1;
-    if (!t->probe.compressed) return 0;
-
-    /* Any already-buffered decompressed bytes belong to the current frame, so
-     * finishing can discard them in place without copying them anywhere. */
-    t->decompressed_buf_pos = t->decompressed_buf_len;
-    while (!t->decompressor.frame_done) {
-        ssize_t filled = streamReaderFillDecompressedBuf(t);
-        if (filled < 0) return -1;
-        if (filled == 0) {
-            if (t->decompressor.frame_done) break;
-            streamReaderSetError(t, STREAM_READER_ERROR_CORRUPT);
-            return -1;
-        }
-        t->decompressed_buf_pos = t->decompressed_buf_len;
-    }
-    return 0;
-}
-
-int stream_reader_detach(stream_reader_t *t, const uint8_t **buf, size_t *len) {
-    if (!t || !buf || !len) return -1;
-    /* Detach is the handoff point for callers that must keep using the wrapped
-     * transport after this stream ends. Finish drains the current frame so the
-     * pending raw bytes belong entirely to the next segment. */
-    if (stream_reader_finish(t) != 0) return -1;
-    return stream_reader_get_pending_input(t, buf, len);
-}
-
-int stream_reader_get_pending_input(stream_reader_t *t, const uint8_t **buf, size_t *len) {
-    if (!t || !buf || !len) return -1;
-    if (stream_reader_probe(t) != 0) return -1;
-
-    *buf = NULL;
-    *len = 0;
-
-    if (!t->probe.compressed) {
-        size_t prefix_avail = streamReaderProbeAvail(t);
-        if (prefix_avail > 0) {
-            *buf = t->probe.header + t->probe_replay_pos;
-            *len = prefix_avail;
-        }
-        return 0;
-    }
-
-    if (t->compressed_buf_len > 0) {
-        *buf = t->compressed_buf + t->compressed_buf_pos;
-        *len = t->compressed_buf_len;
-    }
-    return 0;
-}
-
 void stream_reader_destroy(stream_reader_t *t) {
     if (!t) return;
     streamReaderResetCompressedState(t);
