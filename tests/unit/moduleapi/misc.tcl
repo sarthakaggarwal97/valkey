@@ -233,6 +233,7 @@ start_server {overrides {save {900 1}} tags {"modules"}} {
         } {} {resp3}
     }
 
+
     test {test module get/set client name by id api} {
         catch { r test.getname } e
         assert_equal "-ERR No name" $e
