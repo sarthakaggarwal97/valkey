@@ -35,15 +35,6 @@ typedef struct {
     uint8_t stream_kind;
 } vkcs_probe_t;
 
-/* Write 8-byte VKCS envelope via callback.
- * Layout:
- *   [0..3] magic  "VKCS" (0x56 0x4B 0x43 0x53)
- *   [4]    version (VKCS_VERSION, currently 1)
- *   [5]    codec_id (VKCS codec registry)
- *   [6]    flags   (bit 0 = codec checksum enabled, remaining bits reserved)
- *   [7]    stream_kind (full 8-bit kind)
- *
- * Returns 0 on success, -1 on error (invalid codec or emit_cb failure). */
 static bool vkcsCodecIsSupported(vkcs_codec_t codec) {
     return codec == VKCS_CODEC_LZ4;
 }
@@ -93,11 +84,14 @@ static int vkcsCodecToCompressionAlgo(vkcs_codec_t codec, compression_algo_t *al
     }
 }
 
-int write_vkcs_envelope(vkcs_emit_fn emit_cb,
-                        void *ctx,
-                        vkcs_codec_t codec,
-                        uint8_t stream_kind,
-                        bool codec_checksum_enabled) {
+/* Write 8-byte VKCS envelope via callback.
+ * Layout: [0..3] magic "VKCS", [4] version, [5] codec_id, [6] flags, [7] stream_kind.
+ * Returns 0 on success, -1 on error (invalid codec or emit_cb failure). */
+static int write_vkcs_envelope(vkcs_emit_fn emit_cb,
+                               void *ctx,
+                               vkcs_codec_t codec,
+                               uint8_t stream_kind,
+                               bool codec_checksum_enabled) {
     if (!emit_cb) return -1;
     if (!vkcsCodecIsSupported(codec)) return -1;
 
@@ -121,11 +115,11 @@ int write_vkcs_envelope(vkcs_emit_fn emit_cb,
  * On success populates *codec and *stream_kind and returns 0.
  * Returns -1 on error (bad magic, unsupported version, unknown codec,
  * reserved bits set). */
-int read_vkcs_envelope(const uint8_t *buf,
-                       size_t len,
-                       vkcs_codec_t *codec,
-                       uint8_t *stream_kind,
-                       bool *codec_checksum_enabled) {
+static int read_vkcs_envelope(const uint8_t *buf,
+                              size_t len,
+                              vkcs_codec_t *codec,
+                              uint8_t *stream_kind,
+                              bool *codec_checksum_enabled) {
     if (!buf || len < VKCS_ENVELOPE_SIZE) return -1;
 
     if (buf[0] != VKCS_MAGIC_0 || buf[1] != VKCS_MAGIC_1 ||

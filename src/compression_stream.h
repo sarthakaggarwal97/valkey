@@ -81,23 +81,6 @@ typedef enum {
  * - -1: read error */
 typedef ssize_t (*stream_reader_read_fn)(void *ctx, void *buf, size_t len);
 
-/* Write VKCS envelope via callback. Returns 0 on success, -1 on error
- * (invalid codec or emit_cb failure). */
-int write_vkcs_envelope(vkcs_emit_fn emit_cb,
-                        void *ctx,
-                        vkcs_codec_t codec,
-                        uint8_t stream_kind,
-                        bool codec_checksum_enabled);
-
-/* Parse VKCS envelope from buffer. Returns 0 on success, -1 on error.
- * On success, *codec and *stream_kind are populated when corresponding pointers
- * are non-NULL. */
-int read_vkcs_envelope(const uint8_t *buf,
-                       size_t len,
-                       vkcs_codec_t *codec,
-                       uint8_t *stream_kind,
-                       bool *codec_checksum_enabled);
-
 /* Streaming writer API.
  * Ownership: returned context is owned by caller and must be destroyed.
  * Threading: stream_writer_t is NOT thread-safe; all API calls on a given
