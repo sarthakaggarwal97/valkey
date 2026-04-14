@@ -46,6 +46,5 @@ jobs:
             --dump-logs \
             --tls-module \
             --clients 1 \
-            --single tests/integration/replication.tcl \
-            --only "diskless no replicas drop during rdb pipe" \
+            --single tests/integration/replication-diskless-no-only.tcl \
             --loops 100
