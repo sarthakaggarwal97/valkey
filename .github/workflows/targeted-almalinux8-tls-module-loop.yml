@@ -1,20 +1,10 @@
 name: Targeted Almalinux8 TLS Module Loop
 
 on:
+  push:
+    branches:
+      - daily-repl-rdb-child-timeout-20260414-ci
   workflow_dispatch:
-    inputs:
-      loops:
-        description: "Number of loop iterations"
-        default: "100"
-      clients:
-        description: "Number of test clients"
-        default: "1"
-      test_file:
-        description: "Test file passed to --single"
-        default: "tests/integration/replication.tcl"
-      test_name:
-        description: "Test name passed to --only"
-        default: "diskless no replicas drop during rdb pipe"
 
 permissions:
   contents: read
@@ -55,7 +45,7 @@ jobs:
             --verbose \
             --dump-logs \
             --tls-module \
-            --clients "${{ github.event.inputs.clients }}" \
-            --single "${{ github.event.inputs.test_file }}" \
-            --only "${{ github.event.inputs.test_name }}" \
-            --loops "${{ github.event.inputs.loops }}"
+            --clients 1 \
+            --single tests/integration/replication.tcl \
+            --only "diskless no replicas drop during rdb pipe" \
+            --loops 100
