@@ -1,0 +1,61 @@
+name: Targeted Almalinux8 TLS Module Loop
+
+on:
+  workflow_dispatch:
+    inputs:
+      loops:
+        description: "Number of loop iterations"
+        default: "100"
+      clients:
+        description: "Number of test clients"
+        default: "1"
+      test_file:
+        description: "Test file passed to --single"
+        default: "tests/integration/replication.tcl"
+      test_name:
+        description: "Test name passed to --only"
+        default: "diskless no replicas drop during rdb pipe"
+
+permissions:
+  contents: read
+
+jobs:
+  almalinux8-tls-module-loop:
+    name: almalinux8 tls-module loop
+    runs-on: ubuntu-latest
+    container: almalinux:8
+    timeout-minutes: 1440
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install EPEL
+        run: dnf -y install epel-release
+
+      - name: Install libbacktrace
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ianlancetaylor/libbacktrace
+          ref: b9e40069c0b47a722286b94eb5231f7f05c08713
+          path: libbacktrace
+
+      - name: Build dependencies
+        run: |
+          dnf -y install make gcc openssl-devel openssl procps-ng which /usr/bin/kill /usr/bin/awk tcl tcltls
+          cd libbacktrace && ./configure && make && make install
+
+      - name: Build valkey
+        run: make -j BUILD_TLS=module SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes
+
+      - name: Generate test certs
+        run: ./utils/gen-test-certs.sh
+
+      - name: Run targeted loop
+        run: |
+          ./runtest \
+            --verbose \
+            --dump-logs \
+            --tls-module \
+            --clients "${{ github.event.inputs.clients }}" \
+            --single "${{ github.event.inputs.test_file }}" \
+            --only "${{ github.event.inputs.test_name }}" \
+            --loops "${{ github.event.inputs.loops }}"
