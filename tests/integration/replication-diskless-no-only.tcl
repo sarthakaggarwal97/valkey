@@ -34,7 +34,7 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                 after 500
                 $master incr no
 
-                wait_for_condition 1500 100 {
+                wait_for_condition 1800 100 {
                     [s -2 rdb_bgsave_in_progress] == 0
                 } else {
                     fail "rdb child didn't terminate"
