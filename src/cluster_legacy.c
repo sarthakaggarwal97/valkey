@@ -2610,6 +2610,7 @@ void clearNodeFailureIfNeeded(clusterNode *node) {
         serverLog(LL_NOTICE, "Clear FAIL state for node %.40s (%s): %s is reachable again.", node->name,
                   humanNodename(node), nodeIsReplica(node) ? "replica" : "primary without slots");
         node->flags &= ~CLUSTER_NODE_FAIL;
+        node->fail_time = 0;
         if (nodeIsReplica(myself) && myself->replicaof == node) node->flags &= ~CLUSTER_NODE_MY_PRIMARY_FAIL;
         clusterDoBeforeSleep(CLUSTER_TODO_UPDATE_STATE | CLUSTER_TODO_SAVE_CONFIG);
     }
@@ -2625,6 +2626,7 @@ void clearNodeFailureIfNeeded(clusterNode *node) {
             "Clear FAIL state for node %.40s (%s): is reachable again and nobody is serving its slots after some time.",
             node->name, humanNodename(node));
         node->flags &= ~CLUSTER_NODE_FAIL;
+        node->fail_time = 0;
         if (nodeIsReplica(myself) && myself->replicaof == node) node->flags &= ~CLUSTER_NODE_MY_PRIMARY_FAIL;
         clusterDoBeforeSleep(CLUSTER_TODO_UPDATE_STATE | CLUSTER_TODO_SAVE_CONFIG);
     }
@@ -4139,6 +4141,7 @@ int clusterProcessPacket(clusterLink *link) {
              * conditions detected by clearNodeFailureIfNeeded(). */
             if (nodeTimedOut(link->node)) {
                 link->node->flags &= ~CLUSTER_NODE_PFAIL;
+                link->node->fail_time = 0;
                 clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG | CLUSTER_TODO_UPDATE_STATE);
             } else if (nodeFailed(link->node)) {
                 clearNodeFailureIfNeeded(link->node);
@@ -5400,8 +5403,9 @@ int clusterGetReplicaRank(void) {
 }
 
 /* This function returns the "rank" of this instance's primary, in the context
- * of all failed primary list. The primary node will be ignored if failed time
- * exceeds cluster-node-timeout * cluster-replica-validity-factor.
+ * of all locally failing primary nodes. The primary node will be ignored if
+ * its local failing state exceeds cluster-node-timeout *
+ * cluster-replica-validity-factor.
  *
  * If multiple primary nodes go down at the same time, there is a certain
  * probability that their replicas will initiate the elections at the same time,
@@ -5422,8 +5426,13 @@ int clusterGetFailedPrimaryRank(void) {
     while ((de = dictNext(di)) != NULL) {
         clusterNode *node = dictGetVal(de);
 
-        /* Skip nodes that do not need to participate in the rank. */
-        if (!nodeFailed(node) || !clusterNodeIsVotingPrimary(node) || node->num_replicas == 0) continue;
+        /* Skip nodes that do not need to participate in the rank.
+         * Include PFAIL primaries too: during simultaneous shard failures,
+         * other primaries often remain in PFAIL while replica elections are
+         * already being scheduled. Restricting the rank to FAIL-only nodes can
+         * leave multiple shards with the same delay and trigger split votes. */
+        if (!(nodeFailed(node) || nodeTimedOut(node)) || !clusterNodeIsVotingPrimary(node) || node->num_replicas == 0)
+            continue;
 
         /* If cluster-replica-validity-factor is enabled, skip the invalid nodes. */
         if (server.cluster_replica_validity_factor) {
@@ -6266,6 +6275,7 @@ void clusterCron(void) {
              * not already in this state. */
             if (!(node->flags & (CLUSTER_NODE_PFAIL | CLUSTER_NODE_FAIL))) {
                 node->flags |= CLUSTER_NODE_PFAIL;
+                node->fail_time = now;
                 update_state = 1;
                 if (clusterNodeIsVotingPrimary(myself)) {
                     markNodeAsFailingIfNeeded(node);

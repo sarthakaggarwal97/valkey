@@ -64,77 +64,42 @@ start_cluster 3 4 {tags {external:skip cluster} overrides {cluster-ping-interval
     }
 } ;# start_cluster
 
-proc get_failover_election_epoch {srv_idx from_line} {
-    lassign [wait_for_log_messages $srv_idx {"*Starting a failover election for epoch *"} $from_line 1200 50] line _
-    if {![regexp {epoch ([0-9]+)} $line -> epoch]} {
-        fail "Could not parse failover epoch from log line: $line"
-    }
-    return $epoch
-}
+start_cluster 7 3 {tags {external:skip cluster} overrides {cluster-ping-interval 1000}} {
+    test "Primaries will not time out then they are elected in the same epoch" {
+        # Since we have the delay time, so these node may not initiate the
+        # election at the same time (same epoch). But if they do, we make
+        # sure there is no failover timeout.
 
-set ::same_epoch_failover_seen 0
-for {set attempt 1} {$attempt <= 5} {incr attempt} {
-    set ::same_epoch_failover_attempt $attempt
-    start_cluster 7 3 {tags {external:skip cluster} overrides {cluster-ping-interval 1000}} {
-        test "Primaries will not time out then they are elected in the same epoch" {
-            # The test only cares about the special case where all three
-            # replicas start the failover election in the same epoch. Retry a
-            # few times until we hit that timing window, then assert there are
-            # no timeouts.
-            set attempt $::same_epoch_failover_attempt
-            set log7 [count_log_lines -7]
-            set log8 [count_log_lines -8]
-            set log9 [count_log_lines -9]
+        # Killing there primary nodes.
+        pause_process [srv 0 pid]
+        pause_process [srv -1 pid]
+        pause_process [srv -2 pid]
 
-            # Killing there primary nodes.
-            pause_process [srv 0 pid]
-            pause_process [srv -1 pid]
-            pause_process [srv -2 pid]
-
-            # Wait for the failover
-            wait_for_condition 1000 50 {
-                [s -7 role] == "master" &&
-                [s -8 role] == "master" &&
-                [s -9 role] == "master"
-            } else {
-                fail "No failover detected"
-            }
-
-            set epoch7 [get_failover_election_epoch -7 $log7]
-            set epoch8 [get_failover_election_epoch -8 $log8]
-            set epoch9 [get_failover_election_epoch -9 $log9]
-
-            if {$::verbose} {
-                puts "Failover epochs on attempt $attempt: $epoch7 $epoch8 $epoch9"
-            }
-
-            # Make sure there is no false epoch 0.
-            verify_no_log_message -7 "*Failover election in progress for epoch 0*" $log7
-            verify_no_log_message -8 "*Failover election in progress for epoch 0*" $log8
-            verify_no_log_message -9 "*Failover election in progress for epoch 0*" $log9
-
-            if {$epoch7 == $epoch8 && $epoch8 == $epoch9} {
-                # Make sure there is no failover timeout.
-                verify_no_log_message -7 "*Failover attempt expired*" $log7
-                verify_no_log_message -8 "*Failover attempt expired*" $log8
-                verify_no_log_message -9 "*Failover attempt expired*" $log9
-
-                set ::same_epoch_failover_seen 1
-            }
-
-            # Resuming these primary nodes, speed up the shutdown.
-            resume_process [srv 0 pid]
-            resume_process [srv -1 pid]
-            resume_process [srv -2 pid]
+        # Wait for the failover
+        wait_for_condition 1000 50 {
+            [s -7 role] == "master" &&
+            [s -8 role] == "master" &&
+            [s -9 role] == "master"
+        } else {
+            fail "No failover detected"
         }
-    } ;# start_cluster
-}
 
-test "Same-epoch failover was observed" {
-    if {$::verbose && !$::same_epoch_failover_seen} {
-        puts "Same-epoch failover was not observed after 5 attempts; timeout assertions were skipped."
+        # Make sure there is no false epoch 0.
+        verify_no_log_message -7 "*Failover election in progress for epoch 0*" 0
+        verify_no_log_message -8 "*Failover election in progress for epoch 0*" 0
+        verify_no_log_message -9 "*Failover election in progress for epoch 0*" 0
+
+        # Make sure there is no failover timeout.
+        verify_no_log_message -7 "*Failover attempt expired*" 0
+        verify_no_log_message -8 "*Failover attempt expired*" 0
+        verify_no_log_message -9 "*Failover attempt expired*" 0
+
+        # Resuming these primary nodes, speed up the shutdown.
+        resume_process [srv 0 pid]
+        resume_process [srv -1 pid]
+        resume_process [srv -2 pid]
     }
-}
+} ;# start_cluster
 
 run_solo {cluster} {
     start_cluster 32 15 {tags {external:skip cluster} overrides {cluster-ping-interval 1000 cluster-node-timeout 15000}} {

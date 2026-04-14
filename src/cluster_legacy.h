@@ -393,7 +393,7 @@ struct _clusterNode {
     mstime_t pong_received;                 /* Unix time we received the pong */
     mstime_t data_received;                 /* Unix time we received any data */
     mstime_t meet_sent;                     /* Unix time we sent latest meet packet */
-    mstime_t fail_time;                     /* Unix time when FAIL flag was set */
+    mstime_t fail_time;                     /* Unix time when the current PFAIL/FAIL state started */
     mstime_t orphaned_time;                 /* Starting time of orphaned primary condition */
     mstime_t outbound_link_attempt_time;    /* Unix time we last tried to establish an outgoing link */
     mstime_t inbound_link_freed_time;       /* Last time we freed the inbound link for this node.
