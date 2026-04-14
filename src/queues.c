@@ -104,7 +104,10 @@ inline size_t mpscDequeueBatch(mpscQueue *q, void **jobs_out, size_t max_jobs) {
  * ========================================================================== */
 
 inline void spmcInit(spmcQueue *q) {
-    q->buffer = (spmcCell *)zmalloc(sizeof(spmcCell) * SPMC_QUEUE_SIZE);
+    size_t alloc_size = sizeof(spmcCell) * SPMC_QUEUE_SIZE + CACHE_LINE_SIZE - 1;
+    q->buffer_alloc = zmalloc(alloc_size);
+    q->buffer =
+        (spmcCell *)(((uintptr_t)q->buffer_alloc + (CACHE_LINE_SIZE - 1)) & ~((uintptr_t)CACHE_LINE_SIZE - 1));
     atomic_init(&q->head, 0);
     q->tail = 0;
     q->head_cache = 0;
@@ -116,8 +119,9 @@ inline void spmcInit(spmcQueue *q) {
 }
 
 inline void spmcFree(spmcQueue *q) {
-    if (q->buffer) {
-        zfree(q->buffer);
+    if (q->buffer_alloc) {
+        zfree(q->buffer_alloc);
+        q->buffer_alloc = NULL;
         q->buffer = NULL;
     }
     atomic_store_explicit(&q->head, 0, memory_order_relaxed);
