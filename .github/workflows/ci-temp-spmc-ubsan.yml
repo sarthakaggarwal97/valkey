@@ -1,0 +1,47 @@
+name: CI Temp SPMC UBSan
+
+on:
+  push:
+    branches:
+      - ci-temp-pr3512-spmc-ubsan
+  workflow_dispatch:
+
+concurrency:
+  group: ci-temp-spmc-ubsan-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  spmc-ubsan-repeat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [clang, gcc]
+    env:
+      CC: ${{ matrix.compiler }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install gtest
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libgtest-dev libgmock-dev
+
+      - name: Build UBSan unit tests
+        run: make all-with-unit-tests OPT=-O3 SANITIZER=undefined SERVER_CFLAGS='-Werror' LUA_DEBUG=yes
+
+      - name: Run full unit suite once
+        run: make test-unit accurate=1
+
+      - name: Repeat failing SPMC tests 100 times
+        run: |
+          set -euo pipefail
+          filter='SpmcQueueTest.TestSpmcBasicEnqueueDequeue:SpmcQueueTest.TestSpmcFullAndWrapAround:SpmcQueueTest.TestSpmcSize:SpmcQueueTest.TestSpmcConcurrent'
+          for i in $(seq 1 100); do
+            echo "Iteration ${i}/100"
+            ./src/unit/valkey-unit-gtests --gtest_filter="${filter}"
+          done
