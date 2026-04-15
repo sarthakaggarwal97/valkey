@@ -1,0 +1,83 @@
+name: Targeted Almalinux8 No-TLS Harness
+
+on:
+  workflow_dispatch:
+    inputs:
+      use_repo:
+        description: "Repository owner/name to checkout"
+        default: "valkey-io/valkey"
+        required: true
+      use_git_ref:
+        description: "Branch or SHA to checkout"
+        default: "unstable"
+        required: true
+      run_valkey_tests:
+        description: "Run ./runtest before module API tests (true/false)"
+        default: "true"
+        required: true
+      valkey_test_args:
+        description: "Extra args for ./runtest"
+        default: ""
+        required: false
+      run_moduleapi_tests:
+        description: "Run ./runtest-moduleapi (true/false)"
+        default: "true"
+        required: true
+      moduleapi_test_args:
+        description: "Extra args for ./runtest-moduleapi"
+        default: ""
+        required: false
+      moduleapi_loops:
+        description: "Repeat count for module API tests"
+        default: "1"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  almalinux8-no-tls:
+    name: almalinux8 no-tls harness
+    runs-on: ubuntu-latest
+    container: almalinux:8
+    timeout-minutes: 1440
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ github.event.inputs.use_repo }}
+          ref: ${{ github.event.inputs.use_git_ref }}
+
+      - name: Install EPEL
+        run: dnf -y install epel-release
+
+      - name: Install libbacktrace
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ianlancetaylor/libbacktrace
+          ref: b9e40069c0b47a722286b94eb5231f7f05c08713
+          path: libbacktrace
+
+      - name: Build dependencies
+        run: |
+          dnf -y install make gcc openssl-devel openssl procps-ng which /usr/bin/kill /usr/bin/awk tcl tcltls
+          cd libbacktrace && ./configure && make && make install
+
+      - name: Build valkey
+        run: make -j BUILD_TLS=module SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes
+
+      - name: Generate test certs
+        run: ./utils/gen-test-certs.sh
+
+      - name: Run valkey tests
+        if: ${{ github.event.inputs.run_valkey_tests != 'false' }}
+        run: |
+          ./runtest --accurate --verbose --dump-logs ${{ github.event.inputs.valkey_test_args }}
+
+      - name: Run module API tests
+        if: ${{ github.event.inputs.run_moduleapi_tests != 'false' }}
+        run: |
+          extra_args="${{ github.event.inputs.moduleapi_test_args }}"
+          if [ "${{ github.event.inputs.moduleapi_loops }}" != "1" ]; then
+            extra_args="$extra_args --loops ${{ github.event.inputs.moduleapi_loops }}"
+          fi
+          CFLAGS='-Werror' ./runtest-moduleapi --verbose --dump-logs $extra_args
