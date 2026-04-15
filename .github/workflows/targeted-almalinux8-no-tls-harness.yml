@@ -1,6 +1,9 @@
 name: Targeted Almalinux8 No-TLS Harness
 
 on:
+  push:
+    branches:
+      - codex/daily-hooks-ci
   workflow_dispatch:
     inputs:
       use_repo:
@@ -41,11 +44,19 @@ jobs:
     runs-on: ubuntu-latest
     container: almalinux:8
     timeout-minutes: 1440
+    env:
+      USE_REPO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.use_repo || github.repository }}
+      USE_GIT_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.use_git_ref || github.sha }}
+      RUN_VALKEY_TESTS: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_valkey_tests != 'false' }}
+      VALKEY_TEST_ARGS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.valkey_test_args || '' }}
+      RUN_MODULEAPI_TESTS: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_moduleapi_tests != 'false' }}
+      MODULEAPI_TEST_ARGS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.moduleapi_test_args || '' }}
+      MODULEAPI_LOOPS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.moduleapi_loops || '1' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: ${{ github.event.inputs.use_repo }}
-          ref: ${{ github.event.inputs.use_git_ref }}
+          repository: ${{ env.USE_REPO }}
+          ref: ${{ env.USE_GIT_REF }}
 
       - name: Install EPEL
         run: dnf -y install epel-release
@@ -69,15 +80,15 @@ jobs:
         run: ./utils/gen-test-certs.sh
 
       - name: Run valkey tests
-        if: ${{ github.event.inputs.run_valkey_tests != 'false' }}
+        if: ${{ env.RUN_VALKEY_TESTS == 'true' }}
         run: |
-          ./runtest --accurate --verbose --dump-logs ${{ github.event.inputs.valkey_test_args }}
+          ./runtest --accurate --verbose --dump-logs $VALKEY_TEST_ARGS
 
       - name: Run module API tests
-        if: ${{ github.event.inputs.run_moduleapi_tests != 'false' }}
+        if: ${{ env.RUN_MODULEAPI_TESTS == 'true' }}
         run: |
-          extra_args="${{ github.event.inputs.moduleapi_test_args }}"
-          if [ "${{ github.event.inputs.moduleapi_loops }}" != "1" ]; then
-            extra_args="$extra_args --loops ${{ github.event.inputs.moduleapi_loops }}"
+          extra_args="$MODULEAPI_TEST_ARGS"
+          if [ "$MODULEAPI_LOOPS" != "1" ]; then
+            extra_args="$extra_args --loops $MODULEAPI_LOOPS"
           fi
           CFLAGS='-Werror' ./runtest-moduleapi --verbose --dump-logs $extra_args
