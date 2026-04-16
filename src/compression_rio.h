@@ -33,8 +33,8 @@ typedef enum {
 
 /* --- Rio Decorator API --- */
 int rioInitWithCompress(compressRio *cr, rio *inner, const streamWriterConfig *cfg);
-int compress_rio_finish(compressRio *cr);
-void compress_rio_destroy(compressRio *cr);
+int compressRioFinish(compressRio *cr);
+void compressRioDestroy(compressRio *cr);
 
 /* Initialize and probe a decompression adapter in one step.
  * Returns OK for both passthrough and compressed streams, INCOMPATIBLE for
@@ -43,8 +43,8 @@ decompressRioInitResult rioInitWithDecompress(decompressRio *dr,
                                                    rio *inner,
                                                    const streamReaderConfig *cfg,
                                                    streamReaderInfo *info);
-streamReaderError decompress_rio_get_error(const decompressRio *dr);
+streamReaderError decompressRioGetError(const decompressRio *dr);
 /* Destroy the adapter without additional I/O. */
-void decompress_rio_destroy(decompressRio *dr);
+void decompressRioDestroy(decompressRio *dr);
 
 #endif /* COMPRESSION_RIO_H */

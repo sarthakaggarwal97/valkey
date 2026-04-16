@@ -85,48 +85,48 @@ typedef ssize_t (*streamReaderReadFn)(void *ctx, void *buf, size_t len);
  * Ownership: returned context is owned by caller and must be destroyed.
  * Threading: streamWriter is NOT thread-safe; all API calls on a given
  * instance must be externally serialized and single-owner at any instant. */
-streamWriter *stream_writer_create(const streamWriterConfig *cfg,
+streamWriter *streamWriterCreate(const streamWriterConfig *cfg,
                                       vkcsEmitFn emit_cb,
                                       void *emit_ctx);
 /* Returns emitted bytes for this call (>=0), -1 on error.
  * NOTE: the return value is the number of *compressed* bytes emitted to the
  * output sink, NOT the number of input bytes consumed (which is always `len`
  * on success). Callers that need to track input progress should use `len`.
- * After stream_writer_finish(), write returns -1 and does not emit bytes. */
-ssize_t stream_writer_write(streamWriter *t, const void *buf, size_t len);
+ * After streamWriterFinish(), write returns -1 and does not emit bytes. */
+ssize_t streamWriterWrite(streamWriter *t, const void *buf, size_t len);
 /* Returns 0 on success, -1 on error.
  * Flush-after-finish is a no-op success. */
-int stream_writer_flush(streamWriter *t);
+int streamWriterFlush(streamWriter *t);
 /* Returns 0 on success, -1 on error.
  * Calling finish more than once is a no-op success. */
-int stream_writer_finish(streamWriter *t);
-void stream_writer_destroy(streamWriter *t);
+int streamWriterFinish(streamWriter *t);
+void streamWriterDestroy(streamWriter *t);
 /* Snapshot only; cross-thread readers must synchronize externally
  * (for example via waitForClientIO-equivalent quiesce). */
-int stream_writer_is_errored(const streamWriter *t);
-void stream_writer_set_error(streamWriter *t);
+int streamWriterIsErrored(const streamWriter *t);
+void streamWriterSetError(streamWriter *t);
 
 /* Streaming reader API.
  * Ownership: returned context is owned by caller and must be destroyed. */
-streamReader *stream_reader_create(const streamReaderConfig *cfg,
+streamReader *streamReaderCreate(const streamReaderConfig *cfg,
                                       streamReaderReadFn read_cb,
                                       void *read_ctx);
 /* Ensure stream mode is detected and metadata is available.
  * Safe to call more than once.
  * Returns 0 on success, -1 on error. */
-int stream_reader_probe(streamReader *t);
+int streamReaderProbe(streamReader *t);
 /* Read up to len bytes into buf.
  * len must fit in ssize_t; larger requests return -1 without consuming input.
  * Returns:
  * - >0: bytes produced (decompressed or passthrough)
  * -  0: EOF
  * - -1: error */
-ssize_t stream_reader_read(streamReader *t, void *buf, size_t len);
+ssize_t streamReaderRead(streamReader *t, void *buf, size_t len);
 /* Populate stream metadata after probing.
  * For passthrough streams: compressed=0, algo=ALGO_NONE, stream_kind=0.
  * Returns 0 on success, -1 on error. */
-int stream_reader_get_info(streamReader *t, streamReaderInfo *info);
-streamReaderError stream_reader_get_error(const streamReader *t);
-void stream_reader_destroy(streamReader *t);
+int streamReaderGetInfo(streamReader *t, streamReaderInfo *info);
+streamReaderError streamReaderGetError(const streamReader *t);
+void streamReaderDestroy(streamReader *t);
 
 #endif /* COMPRESSION_STREAM_H */

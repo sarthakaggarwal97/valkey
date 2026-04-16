@@ -1628,14 +1628,14 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
 
     /* Finalize the compression frame before flushing to disk. */
     if (cr_initialized) {
-        if (compress_rio_finish(&cr) != 0) {
+        if (compressRioFinish(&cr) != 0) {
             errno = EIO; /* Compression finalization failure */
-            err_op = "compress_rio_finish";
-            compress_rio_destroy(&cr);
+            err_op = "compressRioFinish";
+            compressRioDestroy(&cr);
             cr_initialized = false;
             goto werr;
         }
-        compress_rio_destroy(&cr);
+        compressRioDestroy(&cr);
         cr_initialized = false;
     }
 
@@ -1665,7 +1665,7 @@ werr:
     if (cr_initialized) {
         /* Skip finish on error — output is being discarded (unlink below).
          * Just release resources. */
-        compress_rio_destroy(&cr);
+        compressRioDestroy(&cr);
     }
     if (fp) fclose(fp);
     unlink(filename);
@@ -3171,7 +3171,7 @@ decompressRioInitResult rdbInputStreamPrepare(rdbInputStream *input) {
 void rdbInputStreamDestroy(rdbInputStream *input) {
     if (!input) return;
     if (input->initialized) {
-        decompress_rio_destroy(&input->decompressor);
+        decompressRioDestroy(&input->decompressor);
         input->initialized = false;
     }
     input->rdb_rio = input->raw_rio;
@@ -3179,7 +3179,7 @@ void rdbInputStreamDestroy(rdbInputStream *input) {
 
 bool rdbRioHasCorruptCompressedInput(const rio *rdb) {
     return (rdb->flags & RIO_FLAG_STREAMING_DECOMPRESSION) &&
-           decompress_rio_get_error((const decompressRio *)rdb) == STREAM_READER_ERROR_CORRUPT;
+           decompressRioGetError((const decompressRio *)rdb) == STREAM_READER_ERROR_CORRUPT;
 }
 
 /* Save the given functions_ctx to the rdb.
