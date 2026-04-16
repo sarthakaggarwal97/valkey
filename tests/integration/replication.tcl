@@ -943,6 +943,12 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                         resume_process $slow_replica_pid
                     }
 
+                    # Resume before terminating the paused slow replica so the
+                    # disconnect is observed immediately instead of timing out.
+                    if {$all_drop == "all" || $all_drop == "slow"} {
+                        resume_process $slow_replica_pid
+                    }
+
                     # disconnect replicas depending on the current test
                     if {$all_drop == "all" || $all_drop == "fast"} {
                         exec kill [srv 0 pid]

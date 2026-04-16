@@ -55,6 +55,10 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                         resume_process $slow_replica_pid
                     }
 
+                    if {$all_drop == "all" || $all_drop == "slow"} {
+                        resume_process $slow_replica_pid
+                    }
+
                     if {$all_drop == "all" || $all_drop == "fast"} {
                         exec kill [srv 0 pid]
                         set replicas_alive [lreplace $replicas_alive 1 1]
