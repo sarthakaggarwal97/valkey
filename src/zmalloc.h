@@ -114,6 +114,8 @@
  * when using gcc-12 later with LTO enabled. It may be removed once the
  * bug[https://gcc.gnu.org/bugzilla/show_bug.cgi?id=96503] is fixed. */
 __attribute__((malloc, alloc_size(1), noinline)) void *zmalloc(size_t size);
+/* Allocate memory with the requested alignment. The returned pointer can be freed
+ * with zfree(). */
 __attribute__((malloc, alloc_size(2), noinline)) void *zmalloc_aligned(size_t alignment, size_t size);
 __attribute__((malloc, alloc_size(1), noinline)) void *zcalloc(size_t size);
 __attribute__((malloc, alloc_size(1, 2), noinline)) void *zcalloc_num(size_t num, size_t size);
