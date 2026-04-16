@@ -63,6 +63,8 @@ start_server {overrides {save "" enable-debug-command local}} {
 
         r bgsave
         waitForBgsave r
+        set header [read_dump_rdb_header_bytes r]
+        assert_equal "VKCS" [string range $header 0 3]
         r config rewrite
         restart_server 0 true false
 
@@ -72,10 +74,14 @@ start_server {overrides {save "" enable-debug-command local}} {
     }
 
     test {Empty database LZ4 save and load} {
+        r config set rdbcompression yes
         r config set rdb-compression-algo lz4
+        r config set rdb-compression-level 0
         r flushall
         assert_equal 0 [r dbsize]
         assert_equal "OK" [r save]
+        set header [read_dump_rdb_header_bytes r]
+        assert_equal "VKCS" [string range $header 0 3]
         restart_server 0 true false
         assert_equal 0 [r dbsize]
     }
