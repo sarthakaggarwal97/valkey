@@ -14,37 +14,37 @@
 typedef struct {
     rio base; /* Must be first — allows casting to (rio *) */
     rio *inner;
-    stream_writer_t *compressor;
+    streamWriter *compressor;
     bool finalized;
-} compress_rio_t;
+} compressRio;
 
 /* Decompression rio wrapper. */
 typedef struct {
     rio base; /* Must be first */
     rio *inner;
-    stream_reader_t *reader;
-} decompress_rio_t;
+    streamReader *reader;
+} decompressRio;
 
 typedef enum {
     DECOMPRESS_RIO_INIT_ERROR = -1,
     DECOMPRESS_RIO_INIT_OK = 0,
     DECOMPRESS_RIO_INIT_INCOMPATIBLE = 1,
-} decompress_rio_init_result_t;
+} decompressRioInitResult;
 
 /* --- Rio Decorator API --- */
-int rioInitWithCompress(compress_rio_t *cr, rio *inner, const stream_writer_config_t *cfg);
-int compress_rio_finish(compress_rio_t *cr);
-void compress_rio_destroy(compress_rio_t *cr);
+int rioInitWithCompress(compressRio *cr, rio *inner, const streamWriterConfig *cfg);
+int compress_rio_finish(compressRio *cr);
+void compress_rio_destroy(compressRio *cr);
 
 /* Initialize and probe a decompression adapter in one step.
  * Returns OK for both passthrough and compressed streams, INCOMPATIBLE for
  * malformed/unexpected stream envelopes, and ERROR for I/O or setup failures. */
-decompress_rio_init_result_t rioInitWithDecompress(decompress_rio_t *dr,
+decompressRioInitResult rioInitWithDecompress(decompressRio *dr,
                                                    rio *inner,
-                                                   const stream_reader_config_t *cfg,
-                                                   stream_reader_info_t *info);
-stream_reader_error_t decompress_rio_get_error(const decompress_rio_t *dr);
+                                                   const streamReaderConfig *cfg,
+                                                   streamReaderInfo *info);
+streamReaderError decompress_rio_get_error(const decompressRio *dr);
 /* Destroy the adapter without additional I/O. */
-void decompress_rio_destroy(decompress_rio_t *dr);
+void decompress_rio_destroy(decompressRio *dr);
 
 #endif /* COMPRESSION_RIO_H */

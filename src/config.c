@@ -3286,7 +3286,7 @@ static int validateRdbCompressionSettings(const char **err) {
 }
 
 static int validateRdbCompressionSettingsFinal(const char **err) {
-    if (!compressionAlgoSupportsLevel((compression_algo_t)server.rdb_compression_algo) &&
+    if (!compressionAlgoSupportsLevel((compressionAlgo)server.rdb_compression_algo) &&
         server.rdb_compression_level != RDB_COMPRESSION_LEVEL_DEFAULT) {
         *err = "rdb-compression-level is supported only for compression algorithms that accept a level (currently: lz4)";
         return 0;
