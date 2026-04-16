@@ -36,7 +36,7 @@ typedef int (*vkcsEmitFn)(void *ctx, const uint8_t *data, size_t len);
 
 /* Streaming writer config. */
 typedef struct {
-    compressionAlgo algo;     /* Compression algorithm for this stream. */
+    compressionAlgo algo;        /* Compression algorithm for this stream. */
     int level;                   /* Codec-specific compression level; ignored when unsupported. */
     uint8_t stream_kind;         /* Application-defined stream kind stored in the VKCS envelope. */
     bool codec_checksum_enabled; /* Enable codec-native integrity checks when supported. */
@@ -63,7 +63,7 @@ typedef struct stream_reader streamReader;
 typedef struct {
     bool compressed;             /* true => input was classified as VKCS-compressed, false => passthrough. */
     bool codec_checksum_enabled; /* Parsed VKCS checksum policy. Ignore when compressed is false. */
-    compressionAlgo algo;     /* Parsed compression algorithm, or ALGO_NONE for passthrough. */
+    compressionAlgo algo;        /* Parsed compression algorithm, or ALGO_NONE for passthrough. */
     uint8_t stream_kind;         /* Parsed VKCS stream kind. Ignore when compressed is false. */
 } streamReaderInfo;
 
@@ -86,8 +86,8 @@ typedef ssize_t (*streamReaderReadFn)(void *ctx, void *buf, size_t len);
  * Threading: streamWriter is NOT thread-safe; all API calls on a given
  * instance must be externally serialized and single-owner at any instant. */
 streamWriter *streamWriterCreate(const streamWriterConfig *cfg,
-                                      vkcsEmitFn emit_cb,
-                                      void *emit_ctx);
+                                 vkcsEmitFn emit_cb,
+                                 void *emit_ctx);
 /* Returns emitted bytes for this call (>=0), -1 on error.
  * NOTE: the return value is the number of *compressed* bytes emitted to the
  * output sink, NOT the number of input bytes consumed (which is always `len`
@@ -109,8 +109,8 @@ void streamWriterSetError(streamWriter *t);
 /* Streaming reader API.
  * Ownership: returned context is owned by caller and must be destroyed. */
 streamReader *streamReaderCreate(const streamReaderConfig *cfg,
-                                      streamReaderReadFn read_cb,
-                                      void *read_ctx);
+                                 streamReaderReadFn read_cb,
+                                 void *read_ctx);
 /* Ensure stream mode is detected and metadata is available.
  * Safe to call more than once.
  * Returns 0 on success, -1 on error. */

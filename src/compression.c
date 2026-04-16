@@ -159,7 +159,7 @@ ssize_t streamCompressFeed(streamCompressor *sc,
     if (!codecImpl || !codecImpl->compress_feed) return -1;
 
     return codecImpl->compress_feed(sc, output, outputCapacity,
-                                     input, inputLen, flushMode);
+                                    input, inputLen, flushMode);
 }
 
 ssize_t streamDecompressFeed(streamDecompressor *sd,
@@ -186,5 +186,5 @@ ssize_t streamDecompressFeed(streamDecompressor *sd,
     }
 
     return codecImpl->decompress_feed(sd, output, outputCapacity,
-                                       input, inputLen, inputConsumed);
+                                      input, inputLen, inputConsumed);
 }

@@ -222,9 +222,9 @@ streamReaderError decompressRioGetError(const decompressRio *dr) {
  * caller gets a stable classification up front: passthrough, compressed, or
  * incompatible envelope. */
 decompressRioInitResult rioInitWithDecompress(decompressRio *dr,
-                                                   rio *inner,
-                                                   const streamReaderConfig *cfg,
-                                                   streamReaderInfo *info) {
+                                              rio *inner,
+                                              const streamReaderConfig *cfg,
+                                              streamReaderInfo *info) {
     streamReaderInfo local_info = {0};
 
     if (!dr || !inner || !cfg) return DECOMPRESS_RIO_INIT_ERROR;

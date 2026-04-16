@@ -40,9 +40,9 @@ void compressRioDestroy(compressRio *cr);
  * Returns OK for both passthrough and compressed streams, INCOMPATIBLE for
  * malformed/unexpected stream envelopes, and ERROR for I/O or setup failures. */
 decompressRioInitResult rioInitWithDecompress(decompressRio *dr,
-                                                   rio *inner,
-                                                   const streamReaderConfig *cfg,
-                                                   streamReaderInfo *info);
+                                              rio *inner,
+                                              const streamReaderConfig *cfg,
+                                              streamReaderInfo *info);
 streamReaderError decompressRioGetError(const decompressRio *dr);
 /* Destroy the adapter without additional I/O. */
 void decompressRioDestroy(decompressRio *dr);
