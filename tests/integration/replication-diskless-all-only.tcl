@@ -74,8 +74,7 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                         after 2000
                     }
 
-                    set rdb_child_wait_tries [expr {$all_drop == "no" ? 2400 : 2100}]
-                    wait_for_condition $rdb_child_wait_tries 100 {
+                    wait_for_condition 2400 100 {
                         [s -2 rdb_bgsave_in_progress] == 0
                     } else {
                         fail "rdb child didn't terminate"
