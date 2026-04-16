@@ -97,7 +97,6 @@ typedef struct spmcQueue {
     size_t head_cache;
 
     /* Data buffer */
-    void *buffer_alloc;
     _Alignas(CACHE_LINE_SIZE) spmcCell *buffer;
 } spmcQueue;
 

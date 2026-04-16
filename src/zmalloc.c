@@ -187,6 +187,24 @@ void *zmalloc(size_t size) {
     return ptr;
 }
 
+/* Allocate aligned memory or panic.
+ * The returned pointer can be freed with zfree(). */
+void *zmalloc_aligned(size_t alignment, size_t size) {
+#ifndef HAVE_MALLOC_SIZE
+    (void)alignment;
+    (void)size;
+    /* PREFIX_SIZE header would break alignment guarantee. */
+    serverPanic("zmalloc_aligned requires HAVE_MALLOC_SIZE");
+    return NULL;
+#else
+    void *ptr = NULL;
+    int ret = posix_memalign(&ptr, alignment, size);
+    if (ret != 0 || !ptr) zmalloc_oom_handler(size);
+    update_zmalloc_stat_alloc(zmalloc_size(ptr));
+    return ptr;
+#endif
+}
+
 /* Try allocating memory, and return NULL if failed. */
 void *ztrymalloc(size_t size) {
     void *ptr = ztrymalloc_usable_internal(size, NULL);
