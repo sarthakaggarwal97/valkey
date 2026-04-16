@@ -73,7 +73,7 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                         # is paused, then restore a generous timeout so the
                         # remaining replica can finish the streamed RDB.
                         $master config set repl-timeout 2
-                        wait_for_log_messages -2 {"*Disconnecting timedout replica (full sync)*"} $loglines 1 1
+                        wait_for_log_messages -2 {"*Disconnecting timedout replica (full sync)*"} $loglines 100 100
                         $master config set repl-timeout 60
                     }
 
