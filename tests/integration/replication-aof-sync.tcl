@@ -189,7 +189,11 @@ tags {"repl external:skip"} {
                     fail "Replica removed the synced RDB before BGREWRITEAOF fallback completed"
                 }
 
-                after 1000
+                wait_for_condition 50 200 {
+                    [log_file_matches $replica_log "*Background AOF rewrite*"]
+                } else {
+                    fail "Replica did not trigger background AOF rewrite"
+                }
                 assert {![log_file_matches $replica_log "*Reused RDB file from primary sync as AOF base file*"]}
                 waitForBgrewriteaof $replica
 

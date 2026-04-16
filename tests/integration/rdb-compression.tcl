@@ -53,6 +53,33 @@ start_server {overrides {save "" enable-debug-command local}} {
         assert_rdb_test_dataset r $prefix
     }
 
+    test {BGSAVE with LZ4 compression round-trips correctly} {
+        set prefix "lz4-bgsave"
+        r config set rdbcompression yes
+        r config set rdb-compression-algo lz4
+        r config set rdb-compression-level 0
+        write_rdb_test_dataset r $prefix
+        set digest [debug_digest]
+
+        r bgsave
+        waitForBgsave r
+        r config rewrite
+        restart_server 0 true false
+
+        set newdigest [debug_digest]
+        assert {$digest eq $newdigest}
+        assert_rdb_test_dataset r $prefix
+    }
+
+    test {Empty database LZ4 save and load} {
+        r config set rdb-compression-algo lz4
+        r flushall
+        assert_equal 0 [r dbsize]
+        assert_equal "OK" [r save]
+        restart_server 0 true false
+        assert_equal 0 [r dbsize]
+    }
+
     test {RDB save with LZF (default) round-trips correctly} {
         set prefix "lzf-round-trip"
         r config set rdbcompression yes
