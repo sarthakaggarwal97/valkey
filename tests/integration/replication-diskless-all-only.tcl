@@ -31,6 +31,9 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
 
                     set loglines [count_log_lines -2]
                     [lindex $replicas 0] config set repl-diskless-load swapdb
+                    if {$all_drop == "no" || $all_drop == "fast"} {
+                        [lindex $replicas 0] config set key-load-delay 100
+                    }
                     [lindex $replicas 0] replicaof $master_host $master_port
                     [lindex $replicas 1] replicaof $master_host $master_port
 
@@ -42,19 +45,15 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                         set start_time [clock seconds]
                     }
 
-                    # Use the same bounded slow-reader simulation as the real
-                    # test so each subcase exercises the same timing path.
-                    set slow_replica_pid [srv -1 pid]
-                    pause_process $slow_replica_pid
-
-                    after 500
-                    $master incr $all_drop
-
                     if {$all_drop == "no" || $all_drop == "fast"} {
-                        set slow_replica_resume_delay [expr {$all_drop == "no" ? 1000 : 1500}]
-                        after $slow_replica_resume_delay
-                        resume_process $slow_replica_pid
+                        after 500
+                    } else {
+                        set slow_replica_pid [srv -1 pid]
+                        pause_process $slow_replica_pid
+                        after 500
                     }
+
+                    $master incr $all_drop
 
                     if {$all_drop == "all" || $all_drop == "slow"} {
                         resume_process $slow_replica_pid
