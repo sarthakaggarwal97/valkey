@@ -11,10 +11,14 @@ permissions:
 
 jobs:
   almalinux8-tls-module-loop:
-    name: almalinux8 tls-module loop
+    name: almalinux8 tls-module loop (${{ matrix.subcase }})
     runs-on: ubuntu-latest
     container: almalinux:8
     timeout-minutes: 1440
+    strategy:
+      fail-fast: false
+      matrix:
+        subcase: [no, slow, fast, all, timeout]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -47,4 +51,5 @@ jobs:
             --tls-module \
             --clients 1 \
             --single tests/integration/replication-diskless-all-only.tcl \
+            --only "diskless ${{ matrix.subcase }} replicas drop during rdb pipe" \
             --loops 100
