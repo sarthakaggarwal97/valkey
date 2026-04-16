@@ -939,7 +939,8 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                     $master incr $all_drop
 
                     if {$all_drop == "no" || $all_drop == "fast"} {
-                        after 1500
+                        set slow_replica_resume_delay [expr {$all_drop == "no" ? 1000 : 1500}]
+                        after $slow_replica_resume_delay
                         resume_process $slow_replica_pid
                     }
 

@@ -36,7 +36,7 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                 pause_process $slow_replica_pid
                 after 500
                 $master incr no
-                after 1500
+                after 1000
                 resume_process $slow_replica_pid
 
                 wait_for_condition 2400 100 {
