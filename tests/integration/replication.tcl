@@ -960,10 +960,12 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                         set replicas_alive [lreplace $replicas_alive 0 0]
                     }
                     if {$all_drop == "timeout"} {
+                        # Let one replica hit repl-timeout while the slow reader
+                        # is paused, then restore a generous timeout so the
+                        # remaining replica can finish the streamed RDB.
                         $master config set repl-timeout 2
-                        # we want the slow replica to hang on a key for very long so it'll reach repl-timeout
-                        pause_process [srv -1 pid]
-                        after 2000
+                        wait_for_log_messages -2 {"*Disconnecting timedout replica (full sync)*"} $loglines 100 100
+                        $master config set repl-timeout 60
                     }
 
                     # The "no" case still needs the most headroom because both
@@ -987,7 +989,6 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                         wait_for_log_messages -2 {"*Diskless rdb transfer, done reading from pipe, 1 replicas still up*"} $loglines 1 1
                     }
                     if {$all_drop == "timeout"} {
-                        wait_for_log_messages -2 {"*Disconnecting timedout replica (full sync)*"} $loglines 1 1
                         wait_for_log_messages -2 {"*Diskless rdb transfer, done reading from pipe, 1 replicas still up*"} $loglines 1 1
                         # master disconnected the slow replica, remove from array
                         set replicas_alive [lreplace $replicas_alive 0 0]
