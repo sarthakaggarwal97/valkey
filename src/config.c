@@ -38,6 +38,7 @@
 #include "cluster_migrateslots.h"
 #include "eval.h"
 #include "lrulfu.h"
+#include "compression.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -181,6 +182,14 @@ configEnum log_timestamp_format_enum[] = {{"legacy", LOG_TIMESTAMP_LEGACY},
 configEnum rdb_version_check_enum[] = {{"strict", RDB_VERSION_CHECK_STRICT},
                                        {"relaxed", RDB_VERSION_CHECK_RELAXED},
                                        {NULL, 0}};
+
+configEnum rdb_compression_algo_enum[] = {{"lzf", ALGO_LZF},
+                                          {"lz4", ALGO_LZ4},
+                                          {NULL, 0}};
+
+/* Default for rdb-compression-level.
+ * Kept centralized to avoid drift between config table and validation logic. */
+#define RDB_COMPRESSION_LEVEL_DEFAULT 0
 
 /* Output buffer limits presets. */
 clientBufferLimitsConfig clientBufferLimitsDefaults[CLIENT_TYPE_OBUF_COUNT] = {
@@ -455,6 +464,10 @@ static int updateClientOutputBufferLimit(sds *args, int arg_len, const char **er
  * within conf file parsing. This is only needed to support the deprecated
  * abnormal aggregate `save T C` functionality. Remove in the future. */
 static int reading_config_file;
+/* Tracks nested config parsing depth (top-level + includes). */
+static int config_parse_depth;
+static int validateRdbCompressionSettings(const char **err);
+static int validateRdbCompressionSettingsFinal(const char **err);
 
 void loadServerConfigFromString(sds config) {
     deprecatedConfig deprecated_configs[] = {
@@ -474,6 +487,7 @@ void loadServerConfigFromString(sds config) {
     int argc;
 
     reading_config_file = 1;
+    config_parse_depth++;
     lines = sdssplitlen(config, sdslen(config), "\n", 1, &totlines);
 
     for (i = 0; i < totlines; i++) {
@@ -626,16 +640,24 @@ void loadServerConfigFromString(sds config) {
         err = "replicaof directive not allowed in cluster mode";
         goto loaderr;
     }
+    /* Validate cross-option consistency once at top-level parse end, after
+     * all include files have been processed. */
+    if (config_parse_depth == 1 && !validateRdbCompressionSettingsFinal(&err)) {
+        goto loaderr;
+    }
 
     /* To ensure backward compatibility and work while hz is out of range */
     if (server.hz < CONFIG_MIN_HZ) server.hz = CONFIG_MIN_HZ;
     if (server.hz > CONFIG_MAX_HZ) server.hz = CONFIG_MAX_HZ;
 
     sdsfreesplitres(lines, totlines);
-    reading_config_file = 0;
+    config_parse_depth--;
+    reading_config_file = config_parse_depth > 0;
     return;
 
 loaderr:
+    config_parse_depth--;
+    reading_config_file = config_parse_depth > 0;
     if (argv) sdsfreesplitres(argv, argc);
     fprintf(stderr, "\n*** FATAL CONFIG FILE ERROR (Version %s) ***\n", VALKEY_VERSION);
     if (i < totlines) {
@@ -3252,6 +3274,26 @@ static int isValidDbHashSeed(sds val, const char **err) {
     return 1;
 }
 
+/* Keep RDB compression settings coherent.
+ * Compression level tuning applies only to algorithms that expose one.
+ * For algorithms without level support, only the default level is allowed. */
+static int validateRdbCompressionSettings(const char **err) {
+    /* Startup parsing applies configs one directive at a time, so defer this
+     * cross-option validation until the top-level parse completes. Runtime
+     * CONFIG SET continues to validate immediately. */
+    if (reading_config_file) return 1;
+    return validateRdbCompressionSettingsFinal(err);
+}
+
+static int validateRdbCompressionSettingsFinal(const char **err) {
+    if (!compressionAlgoSupportsLevel((compression_algo_t)server.rdb_compression_algo) &&
+        server.rdb_compression_level != RDB_COMPRESSION_LEVEL_DEFAULT) {
+        *err = "rdb-compression-level is supported only for compression algorithms that accept a level (currently: lz4)";
+        return 0;
+    }
+    return 1;
+}
+
 standardConfig static_configs[] = {
     /* Bool configs */
     createBoolConfig("rdbchecksum", NULL, IMMUTABLE_CONFIG, server.rdb_checksum, 1, NULL, NULL),
@@ -3366,8 +3408,10 @@ standardConfig static_configs[] = {
     createEnumConfig("log-format", NULL, MODIFIABLE_CONFIG, log_format_enum, server.log_format, LOG_FORMAT_LEGACY, NULL, NULL),
     createEnumConfig("log-timestamp-format", NULL, MODIFIABLE_CONFIG, log_timestamp_format_enum, server.log_timestamp_format, LOG_TIMESTAMP_LEGACY, NULL, NULL),
     createEnumConfig("rdb-version-check", NULL, MODIFIABLE_CONFIG, rdb_version_check_enum, server.rdb_version_check, RDB_VERSION_CHECK_STRICT, NULL, NULL),
+    createEnumConfig("rdb-compression-algo", NULL, MODIFIABLE_CONFIG, rdb_compression_algo_enum, server.rdb_compression_algo, ALGO_LZF, NULL, validateRdbCompressionSettings),
 
     /* Integer configs */
+    createIntConfig("rdb-compression-level", NULL, MODIFIABLE_CONFIG, -1000, 22, server.rdb_compression_level, RDB_COMPRESSION_LEVEL_DEFAULT, INTEGER_CONFIG, NULL, validateRdbCompressionSettings),
     createIntConfig("databases", NULL, IMMUTABLE_CONFIG, 1, INT_MAX, server.config_databases, 16, INTEGER_CONFIG, NULL, NULL),
     createIntConfig("cluster-databases", NULL, IMMUTABLE_CONFIG, 1, INT_MAX, server.config_databases_cluster, 1, INTEGER_CONFIG, NULL, NULL),
     createIntConfig("port", NULL, MODIFIABLE_CONFIG, 0, 65535, server.port, 6379, INTEGER_CONFIG, NULL, updatePort),                                               /* TCP port. */
