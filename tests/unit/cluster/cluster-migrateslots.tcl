@@ -1068,6 +1068,10 @@ start_cluster 3 3 {tags {logreqres:skip external:skip cluster} overrides {cluste
     }
 
     test "Import multiple slot ranges with multiple slots" {
+        ensure_slot_on_node 2 16379
+        ensure_slot_on_node 2 16380
+        ensure_slot_on_node 2 16382
+        ensure_slot_on_node 2 16383
         assert_does_not_resync {
             # Populate data before migration
             populate 250 "$16379_slot_tag:" 1000 -2
@@ -1100,6 +1104,7 @@ start_cluster 3 3 {tags {logreqres:skip external:skip cluster} overrides {cluste
     }
 
     test "Export all slots from node" {
+        ensure_slot_on_node 2 16383
         assert_does_not_resync {
             # Populate data before migration
             populate 1000 "$16383_slot_tag:" 1000 -2
