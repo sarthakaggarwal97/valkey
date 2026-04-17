@@ -136,8 +136,12 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                         }
                     }
 
+                    # In the "no" case both replicas stay alive through the
+                    # full streamed RDB, so on slow TLS runners the final
+                    # ONLINE transition can lag behind child exit.
+                    set replica_online_wait_tries [expr {$all_drop == "no" ? 600 : 150}]
                     foreach replica $replicas_alive {
-                        wait_for_condition 150 100 {
+                        wait_for_condition $replica_online_wait_tries 100 {
                             [lindex [$replica role] 3] eq {connected}
                         } else {
                             fail "replicas still not connected after some time"

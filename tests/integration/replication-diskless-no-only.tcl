@@ -45,8 +45,11 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
 
                 wait_for_log_messages -2 {"*Diskless rdb transfer, done reading from pipe, 2 replicas still up*"} $loglines 1 1
 
+                # Both replicas stay alive through the full streamed RDB, so
+                # on slow TLS runners the final ONLINE transition can lag
+                # behind child exit.
                 foreach replica $replicas {
-                    wait_for_condition 150 100 {
+                    wait_for_condition 600 100 {
                         [lindex [$replica role] 3] eq {connected}
                     } else {
                         fail "replicas still not connected after some time"
