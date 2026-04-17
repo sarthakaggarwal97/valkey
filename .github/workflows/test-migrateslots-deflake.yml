@@ -1,0 +1,34 @@
+name: Deflake cluster-migrateslots
+
+on:
+  push:
+    branches:
+      - fix-migrateslots-ensure-slots
+
+permissions:
+  contents: read
+
+jobs:
+  deflake:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install libbacktrace
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ianlancetaylor/libbacktrace
+          ref: b9e40069c0b47a722286b94eb5231f7f05c08713
+          path: libbacktrace
+      - run: cd libbacktrace && ./configure && make && sudo make install
+      - name: Checkout Valkey
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Build
+        run: |
+          make -j$(nproc) SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes
+      - name: Run cluster-migrateslots 200 times
+        run: |
+          sudo apt-get install -y tcl8.6 tclx
+          for i in $(seq 1 200); do
+            echo "=== Run $i/200 ==="
+            ./runtest --single unit/cluster/cluster-migrateslots --tags -slow --dump-logs || exit 1
+          done
+          echo "All 200 runs passed!"
