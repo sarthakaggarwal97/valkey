@@ -256,9 +256,17 @@ jobs:
           repository: ianlancetaylor/libbacktrace
           ref: b9e40069c0b47a722286b94eb5231f7f05c08713
           path: libbacktrace
+      - name: Configure Ubuntu archive mirror
+        run: |
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          if [ -f /etc/apt/sources.list ]; then
+            sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list
+          fi
       - name: Build libbacktrace
         run: |
-          apt-get update && apt-get install -y make gcc-13 git cmake g++ python3
+          apt-get update -o Acquire::Retries=3 && apt-get install -y make gcc-13 git cmake g++ python3
           update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
           cd libbacktrace && ./configure && make && make install
       - name: Install gtest
