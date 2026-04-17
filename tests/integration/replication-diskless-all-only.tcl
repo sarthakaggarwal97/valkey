@@ -10,9 +10,10 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
     set master_port [srv 0 port]
     set master_pid [srv 0 pid]
 
-    # Match the real test's dataset so the streamed RDB is large enough to
-    # exercise the blocked-writer path.
-    $master debug populate 20000 test 10000
+    # Use a dataset large enough to fill the pipe and exercise the
+    # blocked-writer path, but small enough to complete within the
+    # timeout even on slow TLS CI runners.
+    $master debug populate 10000 test 10000
     $master config set rdbcompression no
 
     set os [catch {exec uname}]

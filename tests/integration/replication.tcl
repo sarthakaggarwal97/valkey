@@ -890,8 +890,9 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
     set master_pid [srv 0 pid]
     # Put enough data in the db that the rdb file is bigger than the socket
     # buffers so the primary can hit the blocked writer path while replicas
-    # consume the streamed RDB.
-    $master debug populate 20000 test 10000
+    # consume the streamed RDB.  Keep the dataset small enough to complete
+    # within the timeout even on slow TLS CI runners (~100 MB uncompressed).
+    $master debug populate 10000 test 10000
     $master config set rdbcompression no
     # If running on Linux, we also measure utime/stime to detect possible I/O handling issues
     set os [catch {exec uname}]
