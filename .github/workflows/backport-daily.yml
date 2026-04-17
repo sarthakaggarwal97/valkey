@@ -1,0 +1,39 @@
+name: Daily Test Workflow for Backport Stabilization Branches
+
+on:
+  schedule:
+    - cron: '15 1 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: fork-backport-daily-tests
+  cancel-in-progress: false
+
+jobs:
+  run-daily-for-backport-branches:
+    if: github.repository == 'sarthakaggarwal97/valkey'
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    strategy:
+      fail-fast: false
+      matrix:
+        backport-branch:
+          - 'backport-test-fixes-7.2'
+          - 'backport-test-fixes-8.0'
+          - 'backport-test-fixes-8.1'
+          - 'backport-test-fixes-9.0'
+      max-parallel: 1
+    uses: ./.github/workflows/daily.yml
+    with:
+      use_repo: sarthakaggarwal97/valkey
+      use_git_ref: ${{ matrix.backport-branch }}
+      skipjobs: ""
+      skiptests: ""
+    secrets: inherit
