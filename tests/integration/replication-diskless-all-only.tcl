@@ -10,10 +10,10 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
     set master_port [srv 0 port]
     set master_pid [srv 0 pid]
 
-    # Use a dataset large enough to fill the pipe and exercise the
-    # blocked-writer path, but small enough to complete within the
-    # timeout even on slow TLS CI runners.
-    $master debug populate 10000 test 10000
+    # Use the smallest dataset that still comfortably exceeds the pipe and
+    # socket buffers, so the blocked-writer path is exercised without making
+    # TLS CI spend minutes draining an oversized transfer.
+    $master debug populate 4000 test 10000
     $master config set rdbcompression no
 
     set os [catch {exec uname}]
@@ -33,7 +33,11 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                     set loglines [count_log_lines -2]
                     [lindex $replicas 0] config set repl-diskless-load swapdb
                     if {$all_drop == "no" || $all_drop == "fast"} {
-                        [lindex $replicas 0] config set key-load-delay 100
+                        # 4k keys with 500 microseconds each keeps one replica
+                        # slow for about 2 seconds, which is long enough to
+                        # fill the pipe without turning the whole transfer into
+                        # a multi-minute TLS run.
+                        [lindex $replicas 0] config set key-load-delay 500
                     }
                     [lindex $replicas 0] replicaof $master_host $master_port
                     [lindex $replicas 1] replicaof $master_host $master_port

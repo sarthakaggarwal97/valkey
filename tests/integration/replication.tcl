@@ -888,11 +888,11 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
     set master_host [srv 0 host]
     set master_port [srv 0 port]
     set master_pid [srv 0 pid]
-    # Put enough data in the db that the rdb file is bigger than the socket
-    # buffers so the primary can hit the blocked writer path while replicas
-    # consume the streamed RDB.  Keep the dataset small enough to complete
-    # within the timeout even on slow TLS CI runners (~100 MB uncompressed).
-    $master debug populate 10000 test 10000
+    # Put enough data in the db that the RDB is comfortably larger than the
+    # pipe and socket buffers so the primary can hit the blocked writer path,
+    # but keep it small enough that slow TLS CI runners don't spend minutes
+    # draining an oversized transfer (~40 MB uncompressed).
+    $master debug populate 4000 test 10000
     $master config set rdbcompression no
     # If running on Linux, we also measure utime/stime to detect possible I/O handling issues
     set os [catch {exec uname}]
@@ -921,7 +921,11 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                     # can't drain the pipe fast enough, leaving the RDB child
                     # blocked on write() for minutes.
                     if {$all_drop == "no" || $all_drop == "fast"} {
-                        [lindex $replicas 0] config set key-load-delay 100
+                        # 4k keys with 500 microseconds each keeps replica 0
+                        # slow for about 2 seconds, which is long enough to
+                        # fill the pipe without turning the transfer into a
+                        # multi-minute TLS run.
+                        [lindex $replicas 0] config set key-load-delay 500
                     }
                     [lindex $replicas 0] replicaof $master_host $master_port
                     [lindex $replicas 1] replicaof $master_host $master_port
