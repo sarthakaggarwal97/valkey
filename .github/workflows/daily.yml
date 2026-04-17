@@ -609,6 +609,14 @@ jobs:
         with:
           repository: ${{ inputs.use_repo || github.event.inputs.use_repo || github.repository }}
           ref: ${{ inputs.use_git_ref || github.event.inputs.use_git_ref || github.ref }}
+      - name: Select io-threads args
+        run: |
+          ref="${{ inputs.use_git_ref || github.event.inputs.use_git_ref || github.ref_name }}"
+          if [[ "$ref" == *"7.2" ]]; then
+            echo "IO_THREADS_ARGS=--config io-threads 4 --config io-threads-do-reads yes" >> $GITHUB_ENV
+          else
+            echo "IO_THREADS_ARGS=--io-threads" >> $GITHUB_ENV
+          fi
       - name: Install libbacktrace
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -622,10 +630,10 @@ jobs:
         run: sudo apt-get install tcl8.6 tclx
       - name: test
         if: true && !contains(github.event.inputs.skiptests, 'valkey')
-        run: ./runtest --io-threads --accurate --verbose --tags network --dump-logs ${{github.event.inputs.test_args}}
+        run: ./runtest ${{ env.IO_THREADS_ARGS }} --accurate --verbose --tags network --dump-logs ${{github.event.inputs.test_args}}
       - name: cluster tests
         if: true && !contains(github.event.inputs.skiptests, 'cluster')
-        run: ./runtest-cluster --io-threads ${{github.event.inputs.cluster_test_args}}
+        run: ./runtest-cluster ${{ env.IO_THREADS_ARGS }} ${{github.event.inputs.cluster_test_args}}
   test-ubuntu-tls-io-threads:
     runs-on: ubuntu-latest
     if: |
@@ -653,6 +661,14 @@ jobs:
         with:
           repository: ${{ inputs.use_repo || github.event.inputs.use_repo || github.repository }}
           ref: ${{ inputs.use_git_ref || github.event.inputs.use_git_ref || github.ref }}
+      - name: Select io-threads args
+        run: |
+          ref="${{ inputs.use_git_ref || github.event.inputs.use_git_ref || github.ref_name }}"
+          if [[ "$ref" == *"7.2" ]]; then
+            echo "IO_THREADS_ARGS=--config io-threads 4 --config io-threads-do-reads yes" >> $GITHUB_ENV
+          else
+            echo "IO_THREADS_ARGS=--io-threads" >> $GITHUB_ENV
+          fi
       - name: Install libbacktrace
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -669,11 +685,11 @@ jobs:
       - name: test
         if: true && !contains(github.event.inputs.skiptests, 'valkey')
         run: |
-          ./runtest --io-threads --tls --accurate --verbose --tags network --dump-logs ${{github.event.inputs.test_args}}
+          ./runtest ${{ env.IO_THREADS_ARGS }} --tls --accurate --verbose --tags network --dump-logs ${{github.event.inputs.test_args}}
       - name: cluster tests
         if: true && !contains(github.event.inputs.skiptests, 'cluster')
         run: |
-          ./runtest-cluster --io-threads --tls ${{github.event.inputs.cluster_test_args}}
+          ./runtest-cluster ${{ env.IO_THREADS_ARGS }} --tls ${{github.event.inputs.cluster_test_args}}
   test-ubuntu-reclaim-cache:
     runs-on: ubuntu-latest
     if: |
