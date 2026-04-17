@@ -98,8 +98,16 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                     if {$all_drop == "no"} {
                         wait_for_log_messages -2 {"*Diskless rdb transfer, done reading from pipe, 2 replicas still up*"} $loglines 1 1
                     }
-                    if {$all_drop == "slow" || $all_drop == "fast"} {
+                    if {$all_drop == "fast"} {
                         wait_for_log_messages -2 {"*Diskless rdb transfer, done reading from pipe, 1 replicas still up*"} $loglines 1 1
+                    }
+                    if {$all_drop == "slow"} {
+                        if {[catch {
+                            wait_for_log_messages -2 {"*Diskless rdb transfer, done reading from pipe, 1 replicas still up*"} $loglines 1 1
+                        }]} {
+                            wait_for_log_messages -2 {"*Diskless rdb transfer, done reading from pipe, 2 replicas still up*"} $loglines 1 1
+                            wait_for_log_messages -2 {"*Connection with replica client id * lost.*"} $loglines 1 1
+                        }
                     }
                     if {$all_drop == "timeout"} {
                         wait_for_log_messages -2 {"*Diskless rdb transfer, done reading from pipe, 1 replicas still up*"} $loglines 1 1
