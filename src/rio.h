@@ -59,6 +59,11 @@ struct _rio {
     size_t (*write)(struct _rio *, const void *buf, size_t len);
     off_t (*tell)(struct _rio *);
     int (*flush)(struct _rio *);
+    /* Partial-read backend: returns >0 bytes read, 0 on EOF, -1 on error.
+     * Unlike read(), partial results are allowed. Used by rioReadPartial()
+     * for streaming decompression and other adapters that need incremental
+     * input. NULL when the backend does not support reading. */
+    ssize_t (*read_some)(struct _rio *, void *buf, size_t len);
     /* The update_cksum method if not NULL is used to compute the checksum of
      * all the data that was read or written so far. The method should be
      * designed so that can be called with the current checksum, and the buf

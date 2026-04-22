@@ -3123,19 +3123,25 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
     if (server.rdb_checksum && !(r->flags & RIO_FLAG_STREAMING_CODEC_CHECKSUM))
         rioGenericUpdateChecksum(r, buf, len);
 
-    /* For streaming-decompressed load paths, processed_bytes counts logical
-     * bytes returned by the adapter. Progress and throttling should follow the
-     * underlying transport position instead. */
-    off_t progress_pos = (off_t)(r->processed_bytes + len);
+    /* Event scheduling uses decoded (logical) bytes so that
+     * processEventsWhileBlocked() fires based on actual parsing work, even
+     * when the stream reader is draining its internal decompressed buffer
+     * without advancing the transport position.
+     *
+     * Progress reporting uses transport bytes for decompression paths so the
+     * loading percentage stays consistent with the file size passed to
+     * startLoadingFile(). */
+    off_t decoded_pos = (off_t)(r->processed_bytes + len);
+    off_t report_pos = decoded_pos;
     if (r->flags & RIO_FLAG_STREAMING_DECOMPRESSION) {
-        progress_pos = rioTell(r);
+        report_pos = rioTell(r);
     }
 
     if (server.loading_process_events_interval_bytes &&
-        progress_pos / server.loading_process_events_interval_bytes >
-            server.loading_loaded_bytes / server.loading_process_events_interval_bytes) {
+        decoded_pos / server.loading_process_events_interval_bytes >
+            (off_t)r->processed_bytes / server.loading_process_events_interval_bytes) {
         if (server.primary_host && server.repl_state == REPL_STATE_TRANSFER) replicationSendNewlineToPrimary();
-        loadingAbsProgress(progress_pos);
+        loadingAbsProgress(report_pos);
         processEventsWhileBlocked();
         processModuleLoadingProgressEvent(0);
     }

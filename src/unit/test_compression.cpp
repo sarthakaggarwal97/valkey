@@ -1062,6 +1062,8 @@ TEST(compression, rioDecoratorsPreserveInnerType) {
     stream_writer_config_t wcfg = makeWriterConfig(ALGO_LZ4, 0, STREAM_KIND_RDB);
     compress_rio_t cr;
     ASSERT_TRUE(rioInitWithCompress(&cr, &buffer_rio, &wcfg) == 0);
+    /* Decorators preserve the inner backend type via the type field.
+     * Verify the decorator reports the same type as the wrapped rio. */
     ASSERT_TRUE(rioCheckType((rio *)&cr) == RIO_TYPE_BUFFER);
     compress_rio_destroy(&cr);
     sdsfree(buffer_rio.io.buffer.ptr);

@@ -42,6 +42,7 @@ static void rioInitBase(rio *base,
     base->write = write_fn;
     base->tell = tell_fn;
     base->flush = flush_fn;
+    base->read_some = NULL;
     base->update_cksum = NULL;
     base->cksum = 0;
     base->flags = flags;

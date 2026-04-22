@@ -370,6 +370,7 @@ ssize_t stream_writer_write(stream_writer_t *t, const void *buf, size_t len) {
      * prevents silent data drops in shared API users (rio/replication). */
     if (t->finished) return -1;
     if (len == 0) return 0;
+    if (len > (size_t)SSIZE_MAX) return -1;
 
     const uint8_t *src = (const uint8_t *)buf;
     size_t remaining = len;
