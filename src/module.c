@@ -424,60 +424,6 @@ static int commandResultFailureListeners = 0;     /* Count of modules listening 
 static int commandResultRejectedListeners = 0;    /* Count of modules listening for command result rejected. */
 static int commandResultACLRejectedListeners = 0; /* Count of modules listening for command result ACL rejected. */
 
-static int moduleIsCommandResultDebugModule(const ValkeyModule *module) {
-    return module && module->name && !strcmp(module->name, "commandresult");
-}
-
-static const char *moduleCommandResultEventName(uint64_t eid) {
-    switch (eid) {
-    case VALKEYMODULE_EVENT_COMMAND_RESULT_SUCCESS:
-        return "success";
-    case VALKEYMODULE_EVENT_COMMAND_RESULT_FAILURE:
-        return "failure";
-    case VALKEYMODULE_EVENT_COMMAND_RESULT_REJECTED:
-        return "rejected";
-    case VALKEYMODULE_EVENT_COMMAND_RESULT_ACL_REJECTED:
-        return "acl_rejected";
-    default:
-        return "other";
-    }
-}
-
-static int moduleIsCommandResultEvent(uint64_t eid) {
-    return eid == VALKEYMODULE_EVENT_COMMAND_RESULT_SUCCESS ||
-           eid == VALKEYMODULE_EVENT_COMMAND_RESULT_FAILURE ||
-           eid == VALKEYMODULE_EVENT_COMMAND_RESULT_REJECTED ||
-           eid == VALKEYMODULE_EVENT_COMMAND_RESULT_ACL_REJECTED;
-}
-
-static int moduleShouldLogCommandResultCommand(const struct serverCommand *cmd) {
-    return cmd && cmd->declared_name &&
-           (!strcmp(cmd->declared_name, "cmdresult.unsubscribe") || !strcmp(cmd->declared_name, "ping") ||
-            !strcmp(cmd->declared_name, "module|unload"));
-}
-
-static void moduleLogCommandResultListeners(const char *where, uint64_t filter_eid) {
-    listIter li;
-    listNode *ln;
-
-    serverLog(LL_NOTICE,
-              "commandresult-debug %s counters success=%d failure=%d rejected=%d acl_rejected=%d total=%lu",
-              where, commandResultSuccessListeners, commandResultFailureListeners, commandResultRejectedListeners,
-              commandResultACLRejectedListeners, listLength(ValkeyModule_EventListeners));
-
-    listRewind(ValkeyModule_EventListeners, &li);
-    while ((ln = listNext(&li))) {
-        ValkeyModuleEventListener *el = listNodeValue(ln);
-
-        if (!moduleIsCommandResultEvent(el->event.id)) continue;
-        if (filter_eid && el->event.id != filter_eid) continue;
-
-        serverLog(LL_NOTICE, "commandresult-debug listener module=%s module_ptr=%p event=%s",
-                  (el->module && el->module->name) ? el->module->name : "(null)", (void *)el->module,
-                  moduleCommandResultEventName(el->event.id));
-    }
-}
-
 /* Data structures related to the module users */
 
 /* This is the object returned by VM_CreateModuleUser(). The module API is
@@ -11740,14 +11686,6 @@ void moduleFireCommandResultEvent(client *c,
                                   int command_failed,
                                   long long duration,
                                   long long dirty) {
-    if (moduleShouldLogCommandResultCommand(cmd)) {
-        serverLog(LL_NOTICE, "commandresult-debug fire command=%s status=%s", cmd->declared_name,
-                  command_failed ? "failure" : "success");
-        moduleLogCommandResultListeners("before-fire",
-                                        command_failed ? VALKEYMODULE_EVENT_COMMAND_RESULT_FAILURE
-                                                       : VALKEYMODULE_EVENT_COMMAND_RESULT_SUCCESS);
-    }
-
     /* Fast path: skip if no modules are subscribed to the relevant command
      * result event. This is an O(1) check using a dedicated counter, avoiding
      * the cost of argv decoding and struct building when no one is listening. */
@@ -12777,13 +12715,10 @@ int VM_SubscribeToServerEvent(ValkeyModuleCtx *ctx, ValkeyModuleEvent event, Val
         } else {
             el->callback = callback; /* Update the callback with the new one. */
         }
-        if (moduleIsCommandResultDebugModule(ctx->module) && moduleIsCommandResultEvent(event.id)) {
-            serverLog(LL_NOTICE, "commandresult-debug subscribe module=%s action=%s event=%s",
-                      ctx->module->name, callback ? "update" : "remove", moduleCommandResultEventName(event.id));
-            moduleLogCommandResultListeners("after-subscribe-update", 0);
-        }
         return VALKEYMODULE_OK;
     }
+
+    if (callback == NULL) return VALKEYMODULE_OK;
 
     /* No event found, we need to add a new one. */
     el = zmalloc(sizeof(*el));
@@ -12799,11 +12734,6 @@ int VM_SubscribeToServerEvent(ValkeyModuleCtx *ctx, ValkeyModuleEvent event, Val
         commandResultRejectedListeners++;
     else if (event.id == VALKEYMODULE_EVENT_COMMAND_RESULT_ACL_REJECTED)
         commandResultACLRejectedListeners++;
-    if (moduleIsCommandResultDebugModule(ctx->module) && moduleIsCommandResultEvent(event.id)) {
-        serverLog(LL_NOTICE, "commandresult-debug subscribe module=%s action=add event=%s", ctx->module->name,
-                  moduleCommandResultEventName(event.id));
-        moduleLogCommandResultListeners("after-subscribe-add", 0);
-    }
     return VALKEYMODULE_OK;
 }
 
@@ -12948,19 +12878,10 @@ void moduleFireServerEvent(uint64_t eid, int subid, void *data) {
 void moduleUnsubscribeAllServerEvents(ValkeyModule *module) {
     listNode *ln = listFirst(ValkeyModule_EventListeners);
 
-    if (moduleIsCommandResultDebugModule(module)) {
-        serverLog(LL_NOTICE, "commandresult-debug unload-start module=%s", module->name);
-        moduleLogCommandResultListeners("before-unload", 0);
-    }
-
     while (ln) {
         listNode *next = listNextNode(ln);
         ValkeyModuleEventListener *el = ln->value;
         if (el->module == module) {
-            if (moduleIsCommandResultDebugModule(module) && moduleIsCommandResultEvent(el->event.id)) {
-                serverLog(LL_NOTICE, "commandresult-debug unload-remove module=%s event=%s", module->name,
-                          moduleCommandResultEventName(el->event.id));
-            }
             if (el->event.id == VALKEYMODULE_EVENT_COMMAND_RESULT_SUCCESS)
                 commandResultSuccessListeners--;
             else if (el->event.id == VALKEYMODULE_EVENT_COMMAND_RESULT_FAILURE)
@@ -12973,11 +12894,6 @@ void moduleUnsubscribeAllServerEvents(ValkeyModule *module) {
             zfree(el);
         }
         ln = next;
-    }
-
-    if (moduleIsCommandResultDebugModule(module)) {
-        serverLog(LL_NOTICE, "commandresult-debug unload-end module=%s", module->name);
-        moduleLogCommandResultListeners("after-unload", 0);
     }
 }
 
