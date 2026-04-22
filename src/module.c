@@ -472,9 +472,9 @@ static void moduleLogCommandResultListeners(const char *where, uint64_t filter_e
         if (!moduleIsCommandResultEvent(el->event.id)) continue;
         if (filter_eid && el->event.id != filter_eid) continue;
 
-        serverLog(LL_NOTICE, "commandresult-debug listener module=%s module_ptr=%p cb=%p event=%s",
+        serverLog(LL_NOTICE, "commandresult-debug listener module=%s module_ptr=%p event=%s",
                   (el->module && el->module->name) ? el->module->name : "(null)", (void *)el->module,
-                  (void *)el->callback, moduleCommandResultEventName(el->event.id));
+                  moduleCommandResultEventName(el->event.id));
     }
 }
 
@@ -12958,8 +12958,8 @@ void moduleUnsubscribeAllServerEvents(ValkeyModule *module) {
         ValkeyModuleEventListener *el = ln->value;
         if (el->module == module) {
             if (moduleIsCommandResultDebugModule(module) && moduleIsCommandResultEvent(el->event.id)) {
-                serverLog(LL_NOTICE, "commandresult-debug unload-remove module=%s event=%s cb=%p", module->name,
-                          moduleCommandResultEventName(el->event.id), (void *)el->callback);
+                serverLog(LL_NOTICE, "commandresult-debug unload-remove module=%s event=%s", module->name,
+                          moduleCommandResultEventName(el->event.id));
             }
             if (el->event.id == VALKEYMODULE_EVENT_COMMAND_RESULT_SUCCESS)
                 commandResultSuccessListeners--;
