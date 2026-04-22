@@ -44,7 +44,6 @@ start_server {overrides {save "" enable-debug-command local}} {
         set prefix "lz4-round-trip"
         r config set rdbcompression yes
         r config set rdb-compression-algo lz4
-        r config set rdb-compression-level 0
         write_rdb_test_dataset r $prefix
         assert_rdb_test_dataset r $prefix
         set digest [debug_digest]
@@ -54,7 +53,6 @@ start_server {overrides {save "" enable-debug-command local}} {
         restart_server 0 true false
 
         assert_equal "lz4" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "0" [lindex [r config get rdb-compression-level] 1]
         set newdigest [debug_digest]
         assert {$digest eq $newdigest}
         assert_rdb_test_dataset r $prefix
@@ -63,7 +61,6 @@ start_server {overrides {save "" enable-debug-command local}} {
     test {Empty LZ4-compressed RDB saves and loads correctly} {
         r config set rdbcompression yes
         r config set rdb-compression-algo lz4
-        r config set rdb-compression-level 0
         r flushall
 
         assert_equal 0 [r dbsize]
@@ -80,7 +77,6 @@ start_server {overrides {save "" enable-debug-command local}} {
     test {RDB save with LZF (default) round-trips correctly} {
         set prefix "lzf-round-trip"
         r config set rdbcompression yes
-        r config set rdb-compression-level 0
         r config set rdb-compression-algo lzf
         write_rdb_test_dataset r $prefix
         assert_rdb_test_dataset r $prefix
@@ -91,7 +87,6 @@ start_server {overrides {save "" enable-debug-command local}} {
         restart_server 0 true false
 
         assert_equal "lzf" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "0" [lindex [r config get rdb-compression-level] 1]
         set newdigest [debug_digest]
         assert {$digest eq $newdigest}
         assert_rdb_test_dataset r $prefix
@@ -100,7 +95,6 @@ start_server {overrides {save "" enable-debug-command local}} {
     test {Uncompressed RDB files load correctly (backward compat)} {
         set prefix "plain-rdb"
         r config set rdbcompression no
-        r config set rdb-compression-level 0
         r config set rdb-compression-algo lzf
         write_rdb_test_dataset r $prefix
         assert_rdb_test_dataset r $prefix
@@ -119,7 +113,6 @@ start_server {overrides {save "" enable-debug-command local}} {
     test {LZ4 compressed RDB with large dataset} {
         r config set rdbcompression yes
         r config set rdb-compression-algo lz4
-        r config set rdb-compression-level 0
         r flushall
         for {set i 0} {$i < 1000} {incr i} {
             r set "bulk:$i" [string repeat "payload:$i " 32]
@@ -144,7 +137,6 @@ start_server {overrides {save "" enable-debug-command local}} {
     test {Changing compression config during active BGSAVE does not affect the in-flight save} {
         r config set rdbcompression yes
         r config set rdb-compression-algo lz4
-        r config set rdb-compression-level -9
         r config set rdb-key-save-delay 10000
         r flushall
         for {set i 0} {$i < 128} {incr i} {
@@ -159,7 +151,7 @@ start_server {overrides {save "" enable-debug-command local}} {
             fail "BGSAVE did not start in time"
         }
 
-        r config set rdb-compression-level 0 rdb-compression-algo lzf
+        r config set rdb-compression-algo lzf
 
         wait_for_condition 500 10 {
             [s rdb_bgsave_in_progress] eq 0
@@ -182,20 +174,17 @@ start_server {overrides {save "" enable-debug-command local}} {
         set prefix "lz4-to-lzf"
         r config set rdbcompression yes
         r config set rdb-compression-algo lz4
-        r config set rdb-compression-level -9
         write_rdb_test_dataset r $prefix
         assert_rdb_test_dataset r $prefix
         set digest [debug_digest]
 
         # Save with LZ4, then restart with LZF and load the existing file.
         assert_equal "OK" [r save]
-        r config set rdb-compression-level 0
         r config set rdb-compression-algo lzf
         r config rewrite
         restart_server 0 true false
 
         assert_equal "lzf" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "0" [lindex [r config get rdb-compression-level] 1]
         set newdigest [debug_digest]
         assert {$digest eq $newdigest}
         assert_rdb_test_dataset r $prefix
@@ -204,7 +193,6 @@ start_server {overrides {save "" enable-debug-command local}} {
     test {Switching from LZF to LZ4 preserves data} {
         set prefix "lzf-to-lz4"
         r config set rdbcompression yes
-        r config set rdb-compression-level 0
         r config set rdb-compression-algo lzf
         write_rdb_test_dataset r $prefix
         assert_rdb_test_dataset r $prefix
@@ -213,56 +201,10 @@ start_server {overrides {save "" enable-debug-command local}} {
         # Save with LZF, then restart with LZ4 and load the existing file.
         assert_equal "OK" [r save]
         r config set rdb-compression-algo lz4
-        r config set rdb-compression-level -9
         r config rewrite
         restart_server 0 true false
 
         assert_equal "lz4" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "-9" [lindex [r config get rdb-compression-level] 1]
-        set newdigest [debug_digest]
-        assert {$digest eq $newdigest}
-        assert_rdb_test_dataset r $prefix
-    }
-
-    test {Switching from fast to default LZ4 compression level preserves data} {
-        set prefix "lz4-fast-to-default"
-        r config set rdbcompression yes
-        r config set rdb-compression-algo lz4
-        r config set rdb-compression-level -9
-        write_rdb_test_dataset r $prefix
-        assert_rdb_test_dataset r $prefix
-        set digest [debug_digest]
-
-        # Save with fast mode, then restart with the default level configured.
-        assert_equal "OK" [r save]
-        r config set rdb-compression-level 0
-        r config rewrite
-        restart_server 0 true false
-
-        assert_equal "lz4" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "0" [lindex [r config get rdb-compression-level] 1]
-        set newdigest [debug_digest]
-        assert {$digest eq $newdigest}
-        assert_rdb_test_dataset r $prefix
-    }
-
-    test {Switching from default to fast LZ4 compression level preserves data} {
-        set prefix "lz4-default-to-fast"
-        r config set rdbcompression yes
-        r config set rdb-compression-algo lz4
-        r config set rdb-compression-level 0
-        write_rdb_test_dataset r $prefix
-        assert_rdb_test_dataset r $prefix
-        set digest [debug_digest]
-
-        # Save with the default level, then restart with fast mode configured.
-        assert_equal "OK" [r save]
-        r config set rdb-compression-level -9
-        r config rewrite
-        restart_server 0 true false
-
-        assert_equal "lz4" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "-9" [lindex [r config get rdb-compression-level] 1]
         set newdigest [debug_digest]
         assert {$digest eq $newdigest}
         assert_rdb_test_dataset r $prefix
@@ -273,106 +215,20 @@ start_server {overrides {save "" enable-debug-command local}} {
         assert_match "*argument(s) must be one of the following: lzf, lz4*" $err
     }
 
-    test {Invalid compression level config is rejected} {
-        catch {r config set rdb-compression-level -1001} err
-        assert_match "*between* -1000 *22*" $err
-        catch {r config set rdb-compression-level 23} err
-        assert_match "*between* -1000 *22*" $err
-        catch {r config set rdb-compression-level not-an-int} err
-        assert_match "*parsed into an integer*" $err
-    }
-
-    test {Compression level rejects algorithms without level support} {
-        r config set rdb-compression-level 0 rdb-compression-algo lzf
-
-        catch {r config set rdb-compression-level -9} err
-        assert_match "*supported only for compression algorithms that accept a level*" $err
-        assert_equal "lzf" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "0" [lindex [r config get rdb-compression-level] 1]
-
-        # Invalid paired updates should fail atomically regardless of argument order.
-        catch {r config set rdb-compression-algo lzf rdb-compression-level -9} err
-        assert_match "*supported only for compression algorithms that accept a level*" $err
-        assert_equal "lzf" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "0" [lindex [r config get rdb-compression-level] 1]
-
-        catch {r config set rdb-compression-level -9 rdb-compression-algo lzf} err
-        assert_match "*supported only for compression algorithms that accept a level*" $err
-        assert_equal "lzf" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "0" [lindex [r config get rdb-compression-level] 1]
-
-        r config set rdb-compression-algo lz4
-        r config set rdb-compression-level -9
-        catch {r config set rdb-compression-algo lzf} err
-        assert_match "*supported only for compression algorithms that accept a level*" $err
-        assert_equal "lz4" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "-9" [lindex [r config get rdb-compression-level] 1]
-
-        catch {r config set rdb-compression-algo lzf rdb-compression-level -9} err
-        assert_match "*supported only for compression algorithms that accept a level*" $err
-        assert_equal "lz4" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "-9" [lindex [r config get rdb-compression-level] 1]
-
-        r config set rdb-compression-level 0 rdb-compression-algo lzf
-        assert_equal "lzf" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "0" [lindex [r config get rdb-compression-level] 1]
-
-        # Restore LZ4 so following tests keep their existing assumptions.
-        r config set rdb-compression-algo lz4
-    }
-
-    test {Startup rejects unsupported compression level for selected algorithm} {
-        set confdir [tmpdir "rdb-compression-invalid-startup"]
-        exec mkdir -p $confdir
-        set cfgfile [file join $confdir "valkey.conf"]
-        set pidfile [file join $confdir "startup.pid"]
-        set port [find_available_port $::baseport $::portcount]
-
-        set fd [open $cfgfile w]
-        puts $fd "port $port"
-        puts $fd "bind 127.0.0.1"
-        puts $fd "save \"\""
-        puts $fd "dir $confdir"
-        puts $fd "daemonize yes"
-        puts $fd "pidfile $pidfile"
-        puts $fd "logfile /dev/null"
-        puts $fd "rdb-compression-algo lzf"
-        puts $fd "rdb-compression-level -9"
-        close $fd
-
-        set rc [catch {exec $::VALKEY_SERVER_BIN $cfgfile} err]
-        assert {$rc == 1}
-        assert_match "*rdb-compression-level is supported only for compression algorithms that accept a level*" $err
-
-        # Defensive cleanup in case startup unexpectedly succeeded.
-        if {[file exists $pidfile]} {
-            set pf [open $pidfile r]
-            set pid [string trim [read $pf]]
-            close $pf
-            if {$pid ne ""} {
-                catch {exec kill $pid}
-                catch {exec kill -9 $pid}
-            }
-        }
-    }
-
     test {RDB compression configs survive CONFIG REWRITE and restart} {
         r config set rdbcompression yes
         r config set rdb-compression-algo lz4
-        r config set rdb-compression-level -9
         r config rewrite
 
         restart_server 0 true false
 
         assert_equal "yes" [lindex [r config get rdbcompression] 1]
         assert_equal "lz4" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "-9" [lindex [r config get rdb-compression-level] 1]
     }
 
     test {LZ4 compressed RDB with rdb-checksum yes sets the VKCS codec checksum flag} {
         r config set rdbcompression yes
         r config set rdb-compression-algo lz4
-        r config set rdb-compression-level 0
         r flushall
         for {set i 0} {$i < 200} {incr i} {
             r set "cksum:$i" [string repeat "payload$i " 200]
@@ -394,7 +250,6 @@ start_server {overrides {save "" enable-debug-command local}} {
     test {Partial VKCS snapshot copied from an interrupted BGSAVE is rejected on load} {
         r config set rdbcompression yes
         r config set rdb-compression-algo lz4
-        r config set rdb-compression-level 0
         r config set rdb-key-save-delay 10000
         r flushall
         set noisy_payload ""
@@ -541,10 +396,9 @@ start_server {overrides {save "" enable-debug-command local}} {
     }
 }
 
-start_server {config "minimal.conf" args {"--rdb-compression-level -9" "--rdb-compression-algo lz4"}} {
-    test {Startup accepts valid LZ4 compression config regardless of directive order} {
+start_server {config "minimal.conf" args {"--rdb-compression-algo lz4"}} {
+    test {Startup accepts valid LZ4 compression config} {
         assert_equal "lz4" [lindex [r config get rdb-compression-algo] 1]
-        assert_equal "-9" [lindex [r config get rdb-compression-level] 1]
     }
 }
 
@@ -552,7 +406,6 @@ start_server {overrides {save "" enable-debug-command local rdbchecksum no}} {
     test {LZ4 compressed RDB with rdb-checksum no leaves VKCS flags clear and loads correctly} {
         r config set rdbcompression yes
         r config set rdb-compression-algo lz4
-        r config set rdb-compression-level 0
         r flushall
         for {set i 0} {$i < 50} {incr i} {
             r set "nocksum:$i" [string repeat "data$i " 100]
@@ -585,7 +438,6 @@ start_server {tags {"rdb-compression repl external:skip"}} {
         test {Disk-based full sync replication works with LZ4-compressed RDB snapshot} {
             $primary config set rdbcompression yes
             $primary config set rdb-compression-algo lz4
-            $primary config set rdb-compression-level -5
             $primary flushall
             for {set i 0} {$i < 500} {incr i} {
                 $primary set "repl:$i" [string repeat "payload$i " 40]
@@ -643,12 +495,8 @@ start_server {tags {"rdb-compression repl external:skip"}} {
 
 set cluster_bus_port [find_available_port $::baseport $::portcount]
 start_server [list tags {"rdb-compression cluster external:skip singledb"} overrides [list save "" cluster-enabled yes cluster-port $cluster_bus_port]] {
-    test {RDB compression configs validate in cluster mode} {
-        catch {r config set rdb-compression-level -9} err
-        assert_match "*supported only for compression algorithms that accept a level*" $err
-
+    test {RDB compression config works in cluster mode} {
         r config set rdb-compression-algo lz4
-        r config set rdb-compression-level -5
         assert_equal "OK" [r save]
     }
 }

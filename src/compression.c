@@ -12,7 +12,6 @@
 #include <string.h>
 
 typedef struct {
-    bool supports_level;
     int (*compressor_init)(stream_compressor_t *sc);
     void (*compressor_destroy)(stream_compressor_t *sc);
     int (*decompressor_init)(stream_decompressor_t *sd);
@@ -33,7 +32,6 @@ typedef struct {
 } compression_codec_impl_t;
 
 static const compression_codec_impl_t compression_lz4_codec_impl = {
-    .supports_level = true,
     .compressor_init = compressionLz4CompressorInit,
     .compressor_destroy = compressionLz4CompressorDestroy,
     .decompressor_init = compressionLz4DecompressorInit,
@@ -73,11 +71,6 @@ static const compression_codec_impl_t *compressionCodecImplForAlgo(compression_a
 
 bool compressionAlgoSupportsStreaming(compression_algo_t algo) {
     return compressionCodecImplForAlgo(algo) != NULL;
-}
-
-bool compressionAlgoSupportsLevel(compression_algo_t algo) {
-    const compression_codec_impl_t *codec_impl = compressionCodecImplForAlgo(algo);
-    return codec_impl && codec_impl->supports_level;
 }
 
 const char *compressionAlgoName(compression_algo_t algo) {

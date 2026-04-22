@@ -58,9 +58,6 @@ typedef struct {
 /* Returns true if the algorithm supports streaming codec framing. */
 bool compressionAlgoSupportsStreaming(compression_algo_t algo);
 
-/* Returns true if the algorithm exposes a tunable compression level. */
-bool compressionAlgoSupportsLevel(compression_algo_t algo);
-
 /* Returns a stable name for logging/debugging. */
 const char *compressionAlgoName(compression_algo_t algo);
 

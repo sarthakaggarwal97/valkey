@@ -1602,7 +1602,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
     if (use_streaming_compression) {
         stream_writer_config_t cfg = {
             .algo = (compression_algo_t)server.rdb_compression_algo,
-            .level = server.rdb_compression_level,
+            .level = 0,
             .stream_kind = STREAM_KIND_RDB,
             .codec_checksum_enabled = server.rdb_checksum != 0,
         };
