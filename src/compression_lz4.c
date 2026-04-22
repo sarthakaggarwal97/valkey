@@ -112,7 +112,7 @@ ssize_t compressionLz4CompressFeed(stream_compressor_t *sc,
     if (input_len > 0) {
         size_t r;
 
-        if (offset >= output_capacity) goto lz4_error;
+        if (offset >= output_capacity) return -1;
         r = LZ4F_compressUpdate(cctx, output + offset, output_capacity - offset,
                                 input, input_len, NULL);
         if (LZ4F_isError(r)) goto lz4_error;
@@ -123,14 +123,14 @@ ssize_t compressionLz4CompressFeed(stream_compressor_t *sc,
     if (flush_mode == FLUSH_SYNC) {
         size_t r;
 
-        if (offset >= output_capacity) goto lz4_error;
+        if (offset >= output_capacity) return -1;
         r = LZ4F_flush(cctx, output + offset, output_capacity - offset, NULL);
         if (LZ4F_isError(r)) goto lz4_error;
         offset += r;
     } else if (flush_mode == FLUSH_END) {
         size_t r;
 
-        if (offset >= output_capacity) goto lz4_error;
+        if (offset >= output_capacity) return -1;
         r = LZ4F_compressEnd(cctx, output + offset, output_capacity - offset, NULL);
         if (LZ4F_isError(r)) goto lz4_error;
         offset += r;

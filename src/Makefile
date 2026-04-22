@@ -717,9 +717,6 @@ $(ENGINE_LIB_NAME): $(ENGINE_SERVER_OBJ)
 	rm -f $@
 	$(SERVER_AR) rcs $@ $^
 
-# valkey-unit-tests
-$(ENGINE_UNIT_TESTS): $(ENGINE_TEST_OBJ) $(ENGINE_LIB_NAME)
-	$(SERVER_LD) -o $@ $^ ../deps/libvalkey/lib/libvalkey.a ../deps/hdr_histogram/libhdrhistogram.a ../deps/fpconv/libfpconv.a ../deps/lz4/liblz4.a $(FINAL_LIBS)
 # valkey-sentinel
 $(ENGINE_SENTINEL_NAME): $(SERVER_NAME)
 	$(ENGINE_INSTALL) $(SERVER_NAME) $(ENGINE_SENTINEL_NAME)

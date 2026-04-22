@@ -180,7 +180,7 @@ static size_t rioFileWrite(rio *r, const void *buf, size_t len) {
 
 /* Returns 1 or 0 for success/failure. */
 static size_t rioFileRead(rio *r, void *buf, size_t len) {
-    return fread(buf, len, 1, r->io.file.fp);
+    return fread(buf, 1, len, r->io.file.fp) == len;
 }
 
 /* Partial-read variant: returns bytes read (may be less than len), 0 on EOF, -1 on error. */

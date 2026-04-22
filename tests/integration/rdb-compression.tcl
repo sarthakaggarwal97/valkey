@@ -1,12 +1,19 @@
 tags {"rdb-compression external:skip needs:debug"} {
 
-proc read_dump_rdb_header_bytes {client} {
-    set rdbfile [file join [lindex [$client config get dir] 1] dump.rdb]
-    set fd [open $rdbfile r]
+proc read_binary_file_prefix {path count} {
+    set fd [open $path r]
     fconfigure $fd -translation binary
-    set header [read $fd 8]
+    set prefix [read $fd $count]
     close $fd
-    return $header
+    return $prefix
+}
+
+proc dump_rdb_path {client} {
+    return [file join [lindex [$client config get dir] 1] dump.rdb]
+}
+
+proc read_dump_rdb_header_bytes {client} {
+    return [read_binary_file_prefix [dump_rdb_path $client] 8]
 }
 
 proc write_rdb_test_dataset {client prefix} {
@@ -51,6 +58,23 @@ start_server {overrides {save "" enable-debug-command local}} {
         set newdigest [debug_digest]
         assert {$digest eq $newdigest}
         assert_rdb_test_dataset r $prefix
+    }
+
+    test {Empty LZ4-compressed RDB saves and loads correctly} {
+        r config set rdbcompression yes
+        r config set rdb-compression-algo lz4
+        r config set rdb-compression-level 0
+        r flushall
+
+        assert_equal 0 [r dbsize]
+        assert_equal "OK" [r save]
+        r config rewrite
+        assert_equal "VKCS" [string range [read_dump_rdb_header_bytes r] 0 3]
+
+        restart_server 0 true false
+
+        assert_equal "lz4" [lindex [r config get rdb-compression-algo] 1]
+        assert_equal 0 [r dbsize]
     }
 
     test {RDB save with LZF (default) round-trips correctly} {
@@ -115,6 +139,43 @@ start_server {overrides {save "" enable-debug-command local}} {
         assert_equal 5 [r llen bulk:list]
         assert_equal "v1" [r hget bulk:hash f1]
         assert_equal 1002 [r dbsize]
+    }
+
+    test {Changing compression config during active BGSAVE does not affect the in-flight save} {
+        r config set rdbcompression yes
+        r config set rdb-compression-algo lz4
+        r config set rdb-compression-level -9
+        r config set rdb-key-save-delay 10000
+        r flushall
+        for {set i 0} {$i < 128} {incr i} {
+            r set "bgsave-race:$i" [string repeat "payload:$i " 128]
+        }
+
+        assert_match {*Background saving started*} [r bgsave]
+        wait_for_condition 200 10 {
+            [s rdb_bgsave_in_progress] eq 1
+        } else {
+            r config set rdb-key-save-delay 0
+            fail "BGSAVE did not start in time"
+        }
+
+        r config set rdb-compression-level 0 rdb-compression-algo lzf
+
+        wait_for_condition 500 10 {
+            [s rdb_bgsave_in_progress] eq 0
+        } else {
+            r config set rdb-key-save-delay 0
+            fail "BGSAVE did not finish in time"
+        }
+        r config set rdb-key-save-delay 0
+
+        assert_equal "lzf" [lindex [r config get rdb-compression-algo] 1]
+        assert_equal "VKCS" [string range [read_dump_rdb_header_bytes r] 0 3]
+
+        assert_equal "OK" [r save]
+        assert_equal "VALKEY" [string range [read_dump_rdb_header_bytes r] 0 5]
+
+        r config set rdb-compression-algo lz4
     }
 
     test {Switching from LZ4 to LZF preserves data} {
@@ -328,6 +389,63 @@ start_server {overrides {save "" enable-debug-command local}} {
         set newdigest [debug_digest]
         assert {$digest eq $newdigest}
         assert_equal [string repeat "payload42 " 200] [r get cksum:42]
+    }
+
+    test {Partial VKCS snapshot copied from an interrupted BGSAVE is rejected on load} {
+        r config set rdbcompression yes
+        r config set rdb-compression-algo lz4
+        r config set rdb-compression-level 0
+        r config set rdb-key-save-delay 10000
+        r flushall
+        set noisy_payload ""
+        for {set j 0} {$j < 32768} {incr j} {
+            append noisy_payload [format %c [expr {(($j * 31) + 17) % 94 + 33}]]
+        }
+        for {set i 0} {$i < 128} {incr i} {
+            r set "partial:$i" "${noisy_payload}:$i"
+        }
+
+        assert_match {*Background saving started*} [r bgsave]
+        wait_for_condition 200 10 {
+            [s rdb_bgsave_in_progress] eq 1
+        } else {
+            r config set rdb-key-save-delay 0
+            fail "BGSAVE did not start in time"
+        }
+
+        wait_for_condition 200 10 {
+            [get_child_pid 0] ne ""
+        } else {
+            r config set rdb-key-save-delay 0
+            fail "Timed out waiting for BGSAVE child pid"
+        }
+        set child_pid [get_child_pid 0]
+        set dir [lindex [r config get dir] 1]
+        set temp_rdb [file join $dir temp-${child_pid}.rdb]
+        set partial_rdb [file join $dir partial-vkcs.rdb]
+        wait_for_condition 500 10 {
+            [file exists $temp_rdb] && [file size $temp_rdb] > 4096
+        } else {
+            r config set rdb-key-save-delay 0
+            catch {exec kill -9 $child_pid}
+            fail "Timed out waiting for partial VKCS snapshot"
+        }
+
+        file copy -force $temp_rdb $partial_rdb
+        assert_equal "VKCS" [string range [read_binary_file_prefix $partial_rdb 8] 0 3]
+
+        catch {exec kill -9 $child_pid}
+        wait_for_condition 500 10 {
+            [s rdb_bgsave_in_progress] eq 0
+        } else {
+            r config set rdb-key-save-delay 0
+            fail "Interrupted BGSAVE child was not collected in time"
+        }
+        r config set rdb-key-save-delay 0
+
+        file copy -force $partial_rdb [dump_rdb_path r]
+        catch {r debug reload nosave} err
+        assert_match "*Error*" $err
     }
 
     test {LZ4 compressed RDB detects tail corruption when codec checksums are enabled} {

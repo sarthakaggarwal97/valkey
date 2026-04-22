@@ -154,6 +154,7 @@ ssize_t streamCompressFeed(stream_compressor_t *sc,
                            compress_flush_mode_t flush_mode) {
     if (!sc || !output) return -1;
     if (sc->errored) return -1;
+    if (input_len > 0 && !input) return -1;
 
     const compression_codec_impl_t *codec_impl = compressionCodecImplForAlgo(sc->algo);
     if (!codec_impl || !codec_impl->compress_feed) return -1;
