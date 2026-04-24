@@ -460,8 +460,6 @@ static int updateClientOutputBufferLimit(sds *args, int arg_len, const char **er
  * within conf file parsing. This is only needed to support the deprecated
  * abnormal aggregate `save T C` functionality. Remove in the future. */
 static int reading_config_file;
-/* Tracks nested config parsing depth (top-level + includes). */
-static int config_parse_depth;
 
 void loadServerConfigFromString(sds config) {
     deprecatedConfig deprecated_configs[] = {
@@ -481,7 +479,6 @@ void loadServerConfigFromString(sds config) {
     int argc;
 
     reading_config_file = 1;
-    config_parse_depth++;
     lines = sdssplitlen(config, sdslen(config), "\n", 1, &totlines);
 
     for (i = 0; i < totlines; i++) {
@@ -634,18 +631,16 @@ void loadServerConfigFromString(sds config) {
         err = "replicaof directive not allowed in cluster mode";
         goto loaderr;
     }
+
     /* To ensure backward compatibility and work while hz is out of range */
     if (server.hz < CONFIG_MIN_HZ) server.hz = CONFIG_MIN_HZ;
     if (server.hz > CONFIG_MAX_HZ) server.hz = CONFIG_MAX_HZ;
 
     sdsfreesplitres(lines, totlines);
-    config_parse_depth--;
-    reading_config_file = config_parse_depth > 0;
+    reading_config_file = 0;
     return;
 
 loaderr:
-    config_parse_depth--;
-    reading_config_file = config_parse_depth > 0;
     if (argv) sdsfreesplitres(argv, argc);
     fprintf(stderr, "\n*** FATAL CONFIG FILE ERROR (Version %s) ***\n", VALKEY_VERSION);
     if (i < totlines) {
