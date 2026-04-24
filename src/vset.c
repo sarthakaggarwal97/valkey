@@ -2130,6 +2130,8 @@ long long vsetEstimatedEarliestExpiry(vset *set, vsetGetExpiryFunc getExpiry) {
         rax *r = vsetBucketRax(*set);
         raxIterator it;
         raxStart(&it, r);
+        assert(raxSeek(&it, "^", NULL, 0));
+        assert(raxNext(&it));
         expiry = decodeExpiryKey(it.key);
         raxStop(&it);
         break;
