@@ -1006,10 +1006,8 @@ int startAppendOnly(void) {
     return C_OK;
 }
 
-/* Try to restart AOF after replica full sync by adopting `server.rdb_filename`
- * as the new BASE file (RDB preamble mode), avoiding a redundant AOFRW.
- * Returns C_OK on success; on C_ERR caller should fallback to
- * restartAOFAfterSYNC(). */
+/* Check whether an RDB file uses VKCS streaming compression by probing
+ * the first 8 bytes for a valid VKCS envelope (magic + version). */
 static int rdbFileUsesStreamingCompression(const char *filename) {
     unsigned char header[VKCS_ENVELOPE_SIZE];
     int fd = open(filename, O_RDONLY);
@@ -1030,6 +1028,10 @@ static int rdbFileUsesStreamingCompression(const char *filename) {
     return memcmp(header, "VKCS", 4) == 0 && header[4] == VKCS_VERSION;
 }
 
+/* Try to restart AOF after replica full sync by adopting `server.rdb_filename`
+ * as the new BASE file (RDB preamble mode), avoiding a redundant AOFRW.
+ * Returns C_OK on success; on C_ERR caller should fallback to
+ * restartAOFAfterSYNC(). */
 int restartAOFWithSyncRdb(void) {
     serverAssert(server.aof_state == AOF_OFF);
 

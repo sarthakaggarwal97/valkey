@@ -63,7 +63,7 @@ typedef struct streamReader streamReader;
 typedef struct {
     bool compressed;             /* true => input was classified as VKCS-compressed, false => passthrough. */
     bool codec_checksum_enabled; /* Parsed VKCS checksum policy. Ignore when compressed is false. */
-    compressionAlgo algo;        /* Parsed compression algorithm, or ALGO_NONE for passthrough. */
+    compressionAlgo algo;        /* Parsed compression algorithm, or COMPRESSION_ALGO_NONE for passthrough. */
     uint8_t stream_kind;         /* Parsed VKCS stream kind. Ignore when compressed is false. */
 } streamReaderInfo;
 
@@ -124,7 +124,7 @@ int streamReaderProbe(streamReader *t);
  * - -1: error */
 ssize_t streamReaderRead(streamReader *t, void *buf, size_t len);
 /* Populate stream metadata after probing.
- * For passthrough streams: compressed=0, algo=ALGO_NONE, stream_kind=0.
+ * For passthrough streams: compressed=0, algo=COMPRESSION_ALGO_NONE, stream_kind=0.
  * Returns 0 on success, -1 on error. */
 int streamReaderGetInfo(streamReader *t, streamReaderInfo *info);
 streamReaderError streamReaderGetError(const streamReader *t);

@@ -183,8 +183,8 @@ configEnum rdb_version_check_enum[] = {{"strict", RDB_VERSION_CHECK_STRICT},
                                        {"relaxed", RDB_VERSION_CHECK_RELAXED},
                                        {NULL, 0}};
 
-configEnum rdb_compression_algo_enum[] = {{"lzf", ALGO_LZF},
-                                          {"lz4", ALGO_LZ4},
+configEnum rdb_compression_algo_enum[] = {{"lzf", COMPRESSION_ALGO_LZF},
+                                          {"lz4", COMPRESSION_ALGO_LZ4},
                                           {NULL, 0}};
 
 /* Output buffer limits presets. */
@@ -3378,7 +3378,7 @@ standardConfig static_configs[] = {
     createEnumConfig("log-format", NULL, MODIFIABLE_CONFIG, log_format_enum, server.log_format, LOG_FORMAT_LEGACY, NULL, NULL),
     createEnumConfig("log-timestamp-format", NULL, MODIFIABLE_CONFIG, log_timestamp_format_enum, server.log_timestamp_format, LOG_TIMESTAMP_LEGACY, NULL, NULL),
     createEnumConfig("rdb-version-check", NULL, MODIFIABLE_CONFIG, rdb_version_check_enum, server.rdb_version_check, RDB_VERSION_CHECK_STRICT, NULL, NULL),
-    createEnumConfig("rdb-compression-algo", NULL, MODIFIABLE_CONFIG, rdb_compression_algo_enum, server.rdb_compression_algo, ALGO_LZF, NULL, NULL),
+    createEnumConfig("rdb-compression-algo", NULL, MODIFIABLE_CONFIG, rdb_compression_algo_enum, server.rdb_compression_algo, COMPRESSION_ALGO_LZF, NULL, NULL),
 
     /* Integer configs */
     createIntConfig("databases", NULL, IMMUTABLE_CONFIG, 1, INT_MAX, server.config_databases, 16, INTEGER_CONFIG, NULL, NULL),

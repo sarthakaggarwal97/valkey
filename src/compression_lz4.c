@@ -120,14 +120,14 @@ ssize_t compressionLz4CompressFeed(streamCompressor *sc,
     }
 
     /* Handle flush/end modes */
-    if (flush_mode == FLUSH_SYNC) {
+    if (flush_mode == COMPRESS_FLUSH_SYNC) {
         size_t r;
 
         if (offset >= output_capacity) return -1;
         r = LZ4F_flush(cctx, output + offset, output_capacity - offset, NULL);
         if (LZ4F_isError(r)) goto lz4_error;
         offset += r;
-    } else if (flush_mode == FLUSH_END) {
+    } else if (flush_mode == COMPRESS_FLUSH_END) {
         size_t r;
 
         if (offset >= output_capacity) return -1;

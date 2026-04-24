@@ -42,13 +42,13 @@ static const compressionCodecImpl compressionLz4CodecImpl = {
 };
 
 static const char *const compressionAlgoNameByAlgo[] = {
-    [ALGO_NONE] = "none",
-    [ALGO_LZF] = "lzf",
-    [ALGO_LZ4] = "lz4",
+    [COMPRESSION_ALGO_NONE] = "none",
+    [COMPRESSION_ALGO_LZF] = "lzf",
+    [COMPRESSION_ALGO_LZ4] = "lz4",
 };
 
 static const compressionCodecImpl *const compressionCodecImplByAlgo[] = {
-    [ALGO_LZ4] = &compressionLz4CodecImpl,
+    [COMPRESSION_ALGO_LZ4] = &compressionLz4CodecImpl,
 };
 
 static const char *compressionAlgoNameForAlgo(compressionAlgo algo) {

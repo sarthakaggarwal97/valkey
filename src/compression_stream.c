@@ -6,7 +6,7 @@
 
 #include "compression_stream.h"
 #include "zmalloc.h"
-#include <assert.h>
+#include "serverassert.h"
 #include <limits.h>
 #include <string.h>
 
@@ -36,15 +36,6 @@ typedef struct {
     uint8_t stream_kind;
 } vkcsProbe;
 
-/* Write 8-byte VKCS envelope via callback.
- * Layout:
- *   [0..3] magic  "VKCS" (0x56 0x4B 0x43 0x53)
- *   [4]    version (VKCS_VERSION, currently 1)
- *   [5]    codec_id (VKCS codec registry)
- *   [6]    flags   (bit 0 = codec checksum enabled, remaining bits reserved)
- *   [7]    stream_kind (full 8-bit kind)
- *
- * Returns 0 on success, -1 on error (invalid codec or emit_cb failure). */
 static bool vkcsCodecIsSupported(vkcsCodec codec) {
     return codec == VKCS_CODEC_LZ4;
 }
@@ -59,7 +50,7 @@ static void vkcsProbeSetPassthrough(vkcsProbe *probe) {
     probe->ready = true;
     probe->compressed = false;
     probe->codec_checksum_enabled = false;
-    probe->algo = ALGO_NONE;
+    probe->algo = COMPRESSION_ALGO_NONE;
     probe->stream_kind = 0;
 }
 
@@ -76,7 +67,7 @@ static void vkcsProbeSetCompressed(vkcsProbe *probe,
 
 static int compressionAlgoToVkcsCodec(compressionAlgo algo, vkcsCodec *codec) {
     switch (algo) {
-    case ALGO_LZ4:
+    case COMPRESSION_ALGO_LZ4:
         *codec = VKCS_CODEC_LZ4;
         return 0;
     default:
@@ -87,13 +78,22 @@ static int compressionAlgoToVkcsCodec(compressionAlgo algo, vkcsCodec *codec) {
 static int vkcsCodecToCompressionAlgo(vkcsCodec codec, compressionAlgo *algo) {
     switch (codec) {
     case VKCS_CODEC_LZ4:
-        *algo = ALGO_LZ4;
+        *algo = COMPRESSION_ALGO_LZ4;
         return 0;
     default:
         return -1;
     }
 }
 
+/* Write 8-byte VKCS envelope via callback.
+ * Layout:
+ *   [0..3] magic  "VKCS" (0x56 0x4B 0x43 0x53)
+ *   [4]    version (VKCS_VERSION, currently 1)
+ *   [5]    codec_id (VKCS codec registry)
+ *   [6]    flags   (bit 0 = codec checksum enabled, remaining bits reserved)
+ *   [7]    stream_kind (full 8-bit kind)
+ *
+ * Returns 0 on success, -1 on error (invalid codec or emit_cb failure). */
 static int writeVkcsEnvelope(vkcsEmitFn emit_cb,
                              void *ctx,
                              vkcsCodec codec,
@@ -153,7 +153,7 @@ static int readVkcsEnvelopeInfo(const uint8_t *buf,
     vkcsCodec codec;
     uint8_t stream_kind = 0;
     bool codec_checksum_enabled = false;
-    compressionAlgo algo = ALGO_NONE;
+    compressionAlgo algo = COMPRESSION_ALGO_NONE;
 
     if (readVkcsEnvelope(buf, VKCS_ENVELOPE_SIZE,
                          &codec, &stream_kind, &codec_checksum_enabled) != 0 ||
@@ -171,7 +171,7 @@ static int readVkcsEnvelopeInfo(const uint8_t *buf,
 
 static void vkcsProbeInit(vkcsProbe *probe) {
     memset(probe, 0, sizeof(*probe));
-    probe->algo = ALGO_NONE;
+    probe->algo = COMPRESSION_ALGO_NONE;
     probe->codec_checksum_enabled = false;
 }
 
@@ -376,7 +376,7 @@ ssize_t streamWriterWrite(streamWriter *t, const void *buf, size_t len) {
         size_t chunk_len = remaining < STREAM_WRITER_INPUT_CHUNK_SIZE
                                ? remaining
                                : STREAM_WRITER_INPUT_CHUNK_SIZE;
-        if (streamWriterFeedAndEmit(t, src, chunk_len, FLUSH_CONTINUE) != 0) return -1;
+        if (streamWriterFeedAndEmit(t, src, chunk_len, COMPRESS_FLUSH_CONTINUE) != 0) return -1;
         src += chunk_len;
         remaining -= chunk_len;
     }
@@ -395,7 +395,7 @@ int streamWriterFlush(streamWriter *t) {
     if (t->finished) return 0;
 
     if (!t->envelope_written || !t->compressor.stream_started) return 0;
-    if (streamWriterFeedAndEmit(t, NULL, 0, FLUSH_SYNC) != 0) return -1;
+    if (streamWriterFeedAndEmit(t, NULL, 0, COMPRESS_FLUSH_SYNC) != 0) return -1;
     return 0;
 }
 
@@ -407,7 +407,7 @@ int streamWriterFinish(streamWriter *t) {
 
     /* If nothing was ever written, emit envelope + empty frame end. */
     if (streamWriterEnsureEnvelope(t) != 0) return -1;
-    if (streamWriterFeedAndEmit(t, NULL, 0, FLUSH_END) != 0) return -1;
+    if (streamWriterFeedAndEmit(t, NULL, 0, COMPRESS_FLUSH_END) != 0) return -1;
     return 0;
 }
 
@@ -765,7 +765,7 @@ int streamReaderGetInfo(streamReader *t, streamReaderInfo *info) {
 
     info->compressed = t->probe.compressed;
     info->codec_checksum_enabled = t->probe.compressed ? t->probe.codec_checksum_enabled : false;
-    info->algo = t->probe.compressed ? t->probe.algo : ALGO_NONE;
+    info->algo = t->probe.compressed ? t->probe.algo : COMPRESSION_ALGO_NONE;
     info->stream_kind = t->probe.stream_kind;
     return 0;
 }

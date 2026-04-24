@@ -7,7 +7,6 @@
 #ifndef COMPRESSION_H
 #define COMPRESSION_H
 
-#include "fmacros.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -15,16 +14,16 @@
 
 /* --- Algorithm identifiers --- */
 typedef enum {
-    ALGO_NONE = 0x00, /* Disabled */
-    ALGO_LZF = 0x01,  /* Per-string LZF (RDB only, existing behavior) */
-    ALGO_LZ4 = 0x02,
+    COMPRESSION_ALGO_NONE = 0x00, /* Disabled */
+    COMPRESSION_ALGO_LZF = 0x01,  /* Per-string LZF (RDB only, existing behavior) */
+    COMPRESSION_ALGO_LZ4 = 0x02,
 } compressionAlgo;
 
 /* --- Flush modes for streaming compression --- */
 typedef enum {
-    FLUSH_CONTINUE = 0, /* Buffer internally */
-    FLUSH_SYNC = 1,     /* Emit all buffered data, keep frame open */
-    FLUSH_END = 2,      /* Finalize frame */
+    COMPRESS_FLUSH_CONTINUE = 0, /* Buffer internally */
+    COMPRESS_FLUSH_SYNC = 1,     /* Emit all buffered data, keep frame open */
+    COMPRESS_FLUSH_END = 2,      /* Finalize frame */
 } compressFlushMode;
 
 /* --- Streaming compressor context --- */
@@ -80,7 +79,7 @@ bool streamDecompressorFrameDone(const streamDecompressor *sd);
 size_t streamCompressOutputBound(const streamCompressor *sc, size_t input_len);
 
 /* Feed data through streaming compressor.
- * flush_mode: FLUSH_CONTINUE, FLUSH_SYNC, or FLUSH_END.
+ * flush_mode: COMPRESS_FLUSH_CONTINUE, COMPRESS_FLUSH_SYNC, or COMPRESS_FLUSH_END.
  * Returns bytes written to output, 0 for no output, -1 on error. */
 ssize_t streamCompressFeed(streamCompressor *sc,
                            uint8_t *output,
