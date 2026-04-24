@@ -2757,8 +2757,11 @@ tags {"aof external:skip"} {
                     }
                 }
 
-                # Verify initial HLEN
-                assert_equal 30 [r HLEN myhash]
+                # Expired fields may be lazily removed while checking their TTLs.
+                set hlen [r HLEN myhash]
+                if {$hlen < 20 || $hlen > 30} {
+                    fail "Expected HLEN to be between 20 and 30, but got $hlen"
+                }
                 # Verify values
                 for {set i 1} {$i <= 40} {incr i} {
                     if {$i >= 11 && $i <= 30} {
