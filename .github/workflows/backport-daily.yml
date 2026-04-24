@@ -1,5 +1,7 @@
 name: Daily Test Workflow for Backport Stabilization Branches
 
+# Keep this workflow registered on the fork default branch for manual reruns.
+
 on:
   schedule:
     - cron: '15 1 * * *'
