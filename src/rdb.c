@@ -1275,6 +1275,7 @@ int rdbSaveInfoAuxFields(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
         if (rdbSaveAuxFieldStrInt(rdb, "repl-offset", server.primary_repl_offset) == -1) return -1;
     }
     if (rdbSaveAuxFieldStrInt(rdb, "aof-base", aof_base) == -1) return -1;
+    if (server.aof_integrity_check && rdbSaveAuxFieldStrInt(rdb, "aof-lsn", server.aof_lsn) == -1) return -1;
 
     /* Handle additional dynamic aux fields */
     if (rdbAuxFields != NULL) {
@@ -1480,7 +1481,9 @@ int rdbSaveRio(int req, int rdbver, rio *rdb, int *error, int rdbflags, rdbSaveI
     long key_counter = 0;
     int j;
 
-    if (server.rdb_checksum) rdb->update_cksum = rioGenericUpdateChecksum;
+    if (server.rdb_checksum || (server.aof_integrity_check && (rdbflags & RDBFLAGS_AOF_PREAMBLE))) {
+        rdb->update_cksum = rioGenericUpdateChecksum;
+    }
     const char *magic_prefix = rdbUseValkeyMagic(rdbver) ? "VALKEY" : "REDIS0";
     serverAssert(rdbver >= 0 && rdbver <= RDB_VERSION);
     snprintf(magic, sizeof(magic), "%s%03d", magic_prefix, rdbver);
@@ -3314,6 +3317,8 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             } else if (!strcasecmp(objectGetVal(auxkey), "aof-base")) {
                 long long isbase = strtoll(objectGetVal(auxval), NULL, 10);
                 if (isbase) serverLog(LL_NOTICE, "RDB is base AOF");
+            } else if (!strcasecmp(objectGetVal(auxkey), "aof-lsn")) {
+                server.aof_lsn = strtoll(objectGetVal(auxval), NULL, 10);
             } else if (!strcasecmp(objectGetVal(auxkey), "redis-bits")) {
                 /* Just ignored. */
             } else if (!strcasecmp(objectGetVal(auxkey), "slot-info")) {
@@ -3555,7 +3560,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         uint64_t cksum, expected = rdb->cksum;
 
         if (rioRead(rdb, &cksum, 8) == 0) goto eoferr;
-        if (server.rdb_checksum && !server.skip_checksum_validation) {
+        if ((server.rdb_checksum || (server.aof_integrity_check && (rdbflags & RDBFLAGS_AOF_PREAMBLE))) && !server.skip_checksum_validation) {
             memrev64ifbe(&cksum);
             if (rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) {
                 serverLog(LL_NOTICE, "RDB file was saved with checksum disabled: skipped checksum for this transfer");

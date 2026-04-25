@@ -2326,6 +2326,8 @@ void initServerConfig(void) {
     server.aof_flush_sleep = 0;
     server.aof_last_fsync = time(NULL) * 1000;
     server.aof_cur_timestamp = 0;
+    server.aof_integrity_check = 0;
+    server.aof_lsn = 0;
     atomic_store_explicit(&server.aof_bio_fsync_status, C_OK, memory_order_relaxed);
     server.aof_rewrite_time_last = -1;
     server.aof_rewrite_time_start = -1;
@@ -3217,6 +3219,11 @@ void InitServerLast(void) {
     bioInit();
     initIOThreads(1);
     set_jemalloc_bg_thread(server.jemalloc_bg_thread);
+
+    if (server.aof_integrity_check && !server.aof_use_rdb_preamble) {
+        serverLog(LL_WARNING, "aof-integrity-check requires aof-use-rdb-preamble to be enabled. Disabling integrity checks.");
+        server.aof_integrity_check = 0;
+    }
 
     /* First set initial_memory_usage to zero as baseline for getMemoryOverheadData(). */
     server.initial_memory_usage = 0;
