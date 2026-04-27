@@ -31,7 +31,6 @@ jobs:
           - 'backport-test-fixes-8.0'
           - 'backport-test-fixes-8.1'
           - 'backport-test-fixes-9.0'
-      max-parallel: 1
     uses: ./.github/workflows/daily.yml
     with:
       use_repo: sarthakaggarwal97/valkey
