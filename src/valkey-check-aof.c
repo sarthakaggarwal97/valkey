@@ -62,7 +62,7 @@ static char error[1044];
 static off_t epos;
 static long long line = 1;
 static time_t to_timestamp = 0;
-static long long expected_lsn = 0;
+static long long expected_seq_number = 0;
 static int integrity_hdr_expected = 0;
 static off_t integrity_validated_until = 0;
 
@@ -187,59 +187,57 @@ int processAnnotations(FILE *fp, char *filename, int last_file) {
     }
 
     if (!strncmp(buf, "#HDR:v1;", 8)) {
-        size_t h_len = 0;
-        long long h_lsn = 0;
-        uint64_t h_cksum = 0;
+        size_t hdr_len = 0;
+        long long hdr_seq = 0;
+        uint64_t hdr_checksum = 0;
         char *field;
-        if ((field = strstr(buf, "len:")) != NULL) h_len = strtoull(field + 4, NULL, 10);
-        if ((field = strstr(buf, "lsn:")) != NULL) h_lsn = strtoll(field + 4, NULL, 10);
-        if ((field = strstr(buf, "cksum:")) != NULL) h_cksum = strtoull(field + 6, NULL, 16);
+        if ((field = strstr(buf, "len:")) != NULL) hdr_len = strtoull(field + 4, NULL, 10);
+        if ((field = strstr(buf, "seq:")) != NULL) hdr_seq = strtoll(field + 4, NULL, 10);
+        if ((field = strstr(buf, "checksum:")) != NULL) hdr_checksum = strtoull(field + 9, NULL, 16);
 
         /* Check data integrity */
-        char *cksum_tag = strstr(buf, "cksum:");
-        if (!cksum_tag) {
+        char *checksum_tag = strstr(buf, "checksum:");
+        if (!checksum_tag) {
             ERROR("AOF integrity header lacks a checksum");
             printf("%s\n", error);
             exit(1);
         }
-        if (cksum_tag) {
-            uint64_t calc_cksum = crc64(0, (unsigned char *)buf, cksum_tag - buf);
-            off_t current_pos = ftello(fp);
+        uint64_t computed_checksum = crc64(0, (unsigned char *)buf, checksum_tag - buf);
+        off_t current_pos = ftello(fp);
 
-            size_t remaining = h_len;
-            unsigned char check_buf[16 * 1024];
-            while (remaining > 0) {
-                size_t to_read = remaining > sizeof(check_buf) ? sizeof(check_buf) : remaining;
-                if (fread(check_buf, to_read, 1, fp) != 1) {
-                    ERROR("AOF short write detected. Expected %zu more bytes", remaining);
-                    printf("%s\n", error);
-                    exit(1);
-                }
-                calc_cksum = crc64(calc_cksum, check_buf, to_read);
-                remaining -= to_read;
-            }
-
-            if (calc_cksum != h_cksum) {
-                ERROR("AOF CRC mismatch. Calculated %llx, got %llx", (unsigned long long)calc_cksum,
-                      (unsigned long long)h_cksum);
+        size_t remaining = hdr_len;
+        unsigned char check_buf[16 * 1024];
+        while (remaining > 0) {
+            size_t to_read = remaining > sizeof(check_buf) ? sizeof(check_buf) : remaining;
+            if (fread(check_buf, to_read, 1, fp) != 1) {
+                ERROR("AOF short read detected. Expected %zu more bytes", remaining);
                 printf("%s\n", error);
                 exit(1);
             }
-            fseek(fp, current_pos, SEEK_SET);
-            integrity_validated_until = current_pos + h_len;
+            computed_checksum = crc64(computed_checksum, check_buf, to_read);
+            remaining -= to_read;
         }
 
-        /* Check LSN continuity */
-        if (expected_lsn == 0) expected_lsn = h_lsn;
-        if (h_lsn != expected_lsn) {
-            ERROR("AOF LSN mismatch. Expected %lld, got %lld", expected_lsn, h_lsn);
+        if (computed_checksum != hdr_checksum) {
+            ERROR("AOF checksum mismatch. Calculated %llx, got %llx", (unsigned long long)computed_checksum,
+                  (unsigned long long)hdr_checksum);
             printf("%s\n", error);
             exit(1);
         }
-        expected_lsn = h_lsn + 1;
+        fseek(fp, current_pos, SEEK_SET);
+        integrity_validated_until = current_pos + hdr_len;
+
+        /* Check sequence continuity */
+        if (expected_seq_number == 0) expected_seq_number = hdr_seq;
+        if (hdr_seq != expected_seq_number) {
+            ERROR("AOF sequence mismatch. Expected %lld, got %lld", expected_seq_number, hdr_seq);
+            printf("%s\n", error);
+            exit(1);
+        }
+        expected_seq_number = hdr_seq + 1;
         integrity_hdr_expected = 1;
     } else if (strstr(buf, "#INTEGRITY_OFF")) {
-        expected_lsn = 0;
+        expected_seq_number = 0;
         integrity_hdr_expected = 0;
     }
 
@@ -287,10 +285,10 @@ int checkSingleAof(char *aof_filename, char *aof_filepath, int last_file, int fi
     int multi = 0;
     char buf[2];
 
-    /* If expected_lsn is already set (e.g. from previous file in manifest), keep it.
-     * Otherwise, processAnnotations will initialize it from first #HDR or #LSN. */
+    /* If expected_seq_number is already set (e.g. from previous file in manifest), keep it.
+     * Otherwise, processAnnotations will initialize it from first #HDR. */
     integrity_validated_until = 0;
-    if (expected_lsn > 0) integrity_hdr_expected = 1;
+    if (expected_seq_number > 0) integrity_hdr_expected = 1;
 
     FILE *fp = fopen(aof_filepath, "r+");
     if (fp == NULL) {

@@ -1275,7 +1275,7 @@ int rdbSaveInfoAuxFields(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
         if (rdbSaveAuxFieldStrInt(rdb, "repl-offset", server.primary_repl_offset) == -1) return -1;
     }
     if (rdbSaveAuxFieldStrInt(rdb, "aof-base", aof_base) == -1) return -1;
-    if (server.aof_integrity_check && rdbSaveAuxFieldStrInt(rdb, "aof-lsn", server.aof_lsn) == -1) return -1;
+    if (server.aof_integrity_check && rdbSaveAuxFieldStrInt(rdb, "aof-seq", server.aof_seq_number) == -1) return -1;
 
     /* Handle additional dynamic aux fields */
     if (rdbAuxFields != NULL) {
@@ -3317,8 +3317,8 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             } else if (!strcasecmp(objectGetVal(auxkey), "aof-base")) {
                 long long isbase = strtoll(objectGetVal(auxval), NULL, 10);
                 if (isbase) serverLog(LL_NOTICE, "RDB is base AOF");
-            } else if (!strcasecmp(objectGetVal(auxkey), "aof-lsn")) {
-                server.aof_lsn = strtoll(objectGetVal(auxval), NULL, 10);
+            } else if (!strcasecmp(objectGetVal(auxkey), "aof-seq")) {
+                server.aof_seq_number = strtoll(objectGetVal(auxval), NULL, 10);
             } else if (!strcasecmp(objectGetVal(auxkey), "redis-bits")) {
                 /* Just ignored. */
             } else if (!strcasecmp(objectGetVal(auxkey), "slot-info")) {

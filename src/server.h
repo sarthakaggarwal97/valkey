@@ -2031,7 +2031,7 @@ struct valkeyServer {
     time_t aof_cur_timestamp;           /* Current record timestamp in AOF */
     int aof_timestamp_enabled;          /* Enable record timestamp in AOF */
     int aof_integrity_check;            /* Enable metadata integrity check in AOF */
-    long long aof_lsn;                  /* Current AOF Log Sequence Number */
+    long long aof_seq_number;           /* Current AOF sequence number */
     int aof_lastbgrewrite_status;       /* C_OK or C_ERR */
     unsigned long aof_delayed_fsync;    /* delayed AOF fsync() counter */
     int aof_rewrite_incremental_fsync;  /* fsync incrementally while aof rewriting? */

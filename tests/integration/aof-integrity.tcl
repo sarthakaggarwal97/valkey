@@ -20,8 +20,8 @@ tags {"aof-integrity external:skip"} {
             set content [read $fp]
             close $fp
             
-            assert_match {*#HDR:v1;*lsn:1;cksum:*} $content
-            assert_match {*#HDR:v1;*lsn:2;cksum:*} $content
+            assert_match {*#HDR:v1;*seq:1;checksum:*} $content
+            assert_match {*#HDR:v1;*seq:2;checksum:*} $content
             set sp1_actual [dict get [srv config] dir]
         }
 
@@ -33,7 +33,7 @@ tags {"aof-integrity external:skip"} {
         }
     }
 
-    test "Server fails to start if LSN mismatch is detected" {
+    test "Server fails to start if sequence mismatch is detected" {
         set sp2 [tmpdir server.aof-integrity-2]
         start_server [list overrides [list dir $sp2 appendonly yes appendfsync always aof-integrity-check yes aof-use-rdb-preamble yes] keep_persistence true] {
             set rd [valkey [srv host] [srv port] 0 $::tls]
@@ -48,20 +48,20 @@ tags {"aof-integrity external:skip"} {
         }
         
         # Manually append an entry with skipped LSN.
-        # Header prefix: #HDR:v1;len:22;lsn:3;
+        # Header prefix: #HDR:v1;len:22;seq:3;
         # Data: *3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n
-        # Calculated CRC: 5377171a71027a35
+        # Calculated CRC: f727c89e1cc513c
         set fp [open $::ai2_path a]
         fconfigure $fp -translation binary
-        puts -nonewline $fp "#HDR:v1;len:22;lsn:3;cksum:5377171a71027a35\r\n*3\r\n\$3\r\nSET\r\n\$1\r\nb\r\n\$1\r\n2\r\n"
+        puts -nonewline $fp "#HDR:v1;len:22;seq:3;checksum:f727c89e1cc513c\r\n*3\r\n\$3\r\nSET\r\n\$1\r\nb\r\n\$1\r\n2\r\n"
         close $fp
         
         start_server [list overrides [list dir $::sp2_actual appendonly yes aof-integrity-check yes aof-use-rdb-preamble yes] wait_ready false] {
-            wait_for_log_messages 0 {"*AOF LSN mismatch*"} 0 10 1000
+            wait_for_log_messages 0 {"*AOF sequence mismatch*"} 0 10 1000
         }
     }
 
-    test "Server fails to start if CRC mismatch is detected" {
+    test "Server fails to start if checksum mismatch is detected" {
         set sp3 [tmpdir server.aof-integrity-3]
         start_server [list overrides [list dir $sp3 appendonly yes appendfsync always aof-integrity-check yes aof-use-rdb-preamble yes] keep_persistence true] {
             set rd [valkey [srv host] [srv port] 0 $::tls]
@@ -89,7 +89,7 @@ tags {"aof-integrity external:skip"} {
         close $fp
         
         start_server [list overrides [list dir $::sp3_actual appendonly yes aof-integrity-check yes aof-use-rdb-preamble yes] wait_ready false] {
-            wait_for_log_messages 0 {"*AOF CRC mismatch*"} 0 10 1000
+            wait_for_log_messages 0 {"*AOF checksum mismatch*"} 0 10 1000
         }
     }
 
@@ -213,7 +213,7 @@ tags {"aof-integrity external:skip"} {
         }
     }
 
-    test "AOF integrity: LSN persistence through AOF rewrite" {
+    test "AOF integrity: sequence persistence through AOF rewrite" {
         set sp [tmpdir server.aof-integrity-lsn-persistence]
         start_server [list overrides [list dir $sp appendonly yes appendfsync always aof-integrity-check yes aof-use-rdb-preamble yes] keep_persistence true] {
             set rd [valkey [srv host] [srv port] 0 $::tls]
@@ -229,8 +229,8 @@ tags {"aof-integrity external:skip"} {
             set content [read $fp]
             close $fp
             
-            # set c should be lsn 3.
-            assert_match {*lsn:3;*} $content
+            # set c should be sequence 3.
+            assert_match {*seq:3;*} $content
             set sp_actual [dict get [srv config] dir]
         }
 
@@ -261,17 +261,17 @@ tags {"aof-integrity external:skip"} {
         catch {exec ./src/valkey-check-aof $::am6_path} output
         assert_match {*All AOF files and manifest are valid*} $output
         
-        # Corrupt LSN in the NEWEST increment file
+        # Corrupt sequence in the NEWEST increment file
         set fp [open $::ai6_path a]
         fconfigure $fp -translation binary
-        # Previous was lsn:2 (from 'set b 2'). Use lsn:4 to skip 3.
-        # Header prefix: #HDR:v1;len:22;lsn:4;
+        # Previous was seq:2 (from 'set b 2'). Use seq:4 to skip 3.
+        # Header prefix: #HDR:v1;len:22;seq:4;
         # Data: *3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n
-        # Calculated CRC: bd72ed7ddb3059c3
-        puts -nonewline $fp "#HDR:v1;len:22;lsn:4;cksum:bd72ed7ddb3059c3\r\n*3\r\n\$3\r\nSET\r\n\$1\r\nc\r\n\$1\r\n3\r\n"
+        # Calculated CRC: e17786ee4bfe72ca
+        puts -nonewline $fp "#HDR:v1;len:22;seq:4;checksum:e17786ee4bfe72ca\r\n*3\r\n\$3\r\nSET\r\n\$1\r\nc\r\n\$1\r\n3\r\n"
         close $fp
         
         catch {exec ./src/valkey-check-aof $::am6_path} output
-        assert_match {*AOF LSN mismatch*} $output
+        assert_match {*AOF sequence mismatch*} $output
     }
 }

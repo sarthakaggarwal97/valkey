@@ -2327,7 +2327,7 @@ void initServerConfig(void) {
     server.aof_last_fsync = time(NULL) * 1000;
     server.aof_cur_timestamp = 0;
     server.aof_integrity_check = 0;
-    server.aof_lsn = 0;
+    server.aof_seq_number = 0;
     atomic_store_explicit(&server.aof_bio_fsync_status, C_OK, memory_order_relaxed);
     server.aof_rewrite_time_last = -1;
     server.aof_rewrite_time_start = -1;

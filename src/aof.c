@@ -1477,15 +1477,15 @@ void feedAppendOnlyFile(int dictid, robj **argv, int argc) {
      * positive reply about the operation performed. */
     if (server.aof_state == AOF_ON || (server.aof_state == AOF_WAIT_REWRITE && server.child_type == CHILD_TYPE_AOF)) {
         if (server.aof_integrity_check && sdslen(buf) > 0) {
-            server.aof_lsn++;
+            server.aof_seq_number++;
             char hdr_prefix[128];
             int hdr_prefix_len =
-                snprintf(hdr_prefix, sizeof(hdr_prefix), "#HDR:v1;len:%zu;lsn:%lld;", sdslen(buf), server.aof_lsn);
-            uint64_t cksum = crc64(0, (unsigned char *)hdr_prefix, hdr_prefix_len);
-            cksum = crc64(cksum, (unsigned char *)buf, sdslen(buf));
+                snprintf(hdr_prefix, sizeof(hdr_prefix), "#HDR:v1;len:%zu;seq:%lld;", sdslen(buf), server.aof_seq_number);
+            uint64_t checksum = crc64(0, (unsigned char *)hdr_prefix, hdr_prefix_len);
+            checksum = crc64(checksum, (unsigned char *)buf, sdslen(buf));
 
             server.aof_buf = sdscatlen(server.aof_buf, hdr_prefix, hdr_prefix_len);
-            server.aof_buf = sdscatprintf(server.aof_buf, "cksum:%llx\r\n", (unsigned long long)cksum);
+            server.aof_buf = sdscatprintf(server.aof_buf, "checksum:%llx\r\n", (unsigned long long)checksum);
         }
         server.aof_buf = sdscatlen(server.aof_buf, buf, sdslen(buf));
     }
@@ -1543,7 +1543,7 @@ int loadSingleAppendOnlyFile(char *filename) {
 
     /* integrity_hdr_expected tracks if we are currently in a region of the AOF where integrity headers
      * are expected. Once enabled, all subsequent commands must have a valid header. */
-    int integrity_hdr_expected = server.aof_integrity_check && (server.aof_lsn > 0);
+    int integrity_hdr_expected = server.aof_integrity_check && (server.aof_seq_number > 0);
     /* integrity_validated_until tracks the file offset up to which data has been verified by a header checksum.
      * Commands must start before this offset to be considered validated. */
     off_t integrity_validated_until = 0;
@@ -1639,59 +1639,57 @@ int loadSingleAppendOnlyFile(char *filename) {
         }
         if (buf[0] == '#') {
             if (server.aof_integrity_check && !strncmp(buf, "#HDR:v1;", 8)) {
-                size_t h_len = 0;
-                long long h_lsn = 0;
-                uint64_t h_cksum = 0;
+                size_t hdr_len = 0;
+                long long hdr_seq = 0;
+                uint64_t hdr_checksum = 0;
                 char *field;
-                if ((field = strstr(buf, "len:")) != NULL) h_len = strtoull(field + 4, NULL, 10);
-                if ((field = strstr(buf, "lsn:")) != NULL) h_lsn = strtoll(field + 4, NULL, 10);
-                if ((field = strstr(buf, "cksum:")) != NULL) h_cksum = strtoull(field + 6, NULL, 16);
+                if ((field = strstr(buf, "len:")) != NULL) hdr_len = strtoull(field + 4, NULL, 10);
+                if ((field = strstr(buf, "seq:")) != NULL) hdr_seq = strtoll(field + 4, NULL, 10);
+                if ((field = strstr(buf, "checksum:")) != NULL) hdr_checksum = strtoull(field + 9, NULL, 16);
 
                 /* Check data integrity */
-                char *cksum_tag = strstr(buf, "cksum:");
-                if (!cksum_tag) {
+                char *checksum_tag = strstr(buf, "checksum:");
+                if (!checksum_tag) {
                     serverLog(LL_WARNING, "AOF integrity header in %s lacks a checksum", filename);
                     goto fmterr;
                 }
-                if (cksum_tag) {
-                    uint64_t calc_cksum = crc64(0, (unsigned char *)buf, cksum_tag - buf);
-                    off_t current_pos = ftello(fp);
+                uint64_t computed_checksum = crc64(0, (unsigned char *)buf, checksum_tag - buf);
+                off_t current_pos = ftello(fp);
 
-                    size_t remaining = h_len;
-                    unsigned char check_buf[16 * 1024];
-                    while (remaining > 0) {
-                        size_t to_read = remaining > sizeof(check_buf) ? sizeof(check_buf) : remaining;
-                        if (fread(check_buf, to_read, 1, fp) != 1) {
-                            serverLog(LL_WARNING, "AOF short write detected in %s. Expected %zu more bytes",
-                                      filename, remaining);
-                            goto uxeof;
-                        }
-                        calc_cksum = crc64(calc_cksum, check_buf, to_read);
-                        remaining -= to_read;
+                size_t remaining = hdr_len;
+                unsigned char check_buf[16 * 1024];
+                while (remaining > 0) {
+                    size_t to_read = remaining > sizeof(check_buf) ? sizeof(check_buf) : remaining;
+                    if (fread(check_buf, to_read, 1, fp) != 1) {
+                        serverLog(LL_WARNING, "AOF short read detected in %s. Expected %zu more bytes",
+                                  filename, remaining);
+                        goto uxeof;
                     }
-
-                    if (calc_cksum != h_cksum) {
-                        serverLog(LL_WARNING, "AOF CRC mismatch in %s. Calculated %llx, got %llx", filename,
-                                  (unsigned long long)calc_cksum, (unsigned long long)h_cksum);
-                        goto fmterr;
-                    }
-                    fseek(fp, current_pos, SEEK_SET);
-                    integrity_validated_until = current_pos + h_len;
+                    computed_checksum = crc64(computed_checksum, check_buf, to_read);
+                    remaining -= to_read;
                 }
 
-                /* Check LSN continuity */
-                if (h_lsn != server.aof_lsn + 1) {
-                    serverLog(LL_WARNING, "AOF LSN mismatch in %s. Expected %lld, got %lld", filename,
-                              server.aof_lsn + 1, h_lsn);
+                if (computed_checksum != hdr_checksum) {
+                    serverLog(LL_WARNING, "AOF checksum mismatch in %s. Calculated %llx, got %llx", filename,
+                              (unsigned long long)computed_checksum, (unsigned long long)hdr_checksum);
+                    goto fmterr;
+                }
+                fseek(fp, current_pos, SEEK_SET);
+                integrity_validated_until = current_pos + hdr_len;
+
+                /* Check sequence continuity */
+                if (hdr_seq != server.aof_seq_number + 1) {
+                    serverLog(LL_WARNING, "AOF sequence mismatch in %s. Expected %lld, got %lld", filename,
+                              server.aof_seq_number + 1, hdr_seq);
                     ret = AOF_FAILED;
                     goto cleanup;
                 }
                 integrity_hdr_expected = 1;
-                server.aof_lsn = h_lsn;
+                server.aof_seq_number = hdr_seq;
             } else if (server.aof_integrity_check && strstr(buf, "#INTEGRITY_OFF")) {
                 serverLog(LL_NOTICE, "AOF loading: encountered INTEGRITY_OFF");
                 integrity_hdr_expected = 0;
-                server.aof_lsn = 0;
+                server.aof_seq_number = 0;
             }
             continue;
         }
