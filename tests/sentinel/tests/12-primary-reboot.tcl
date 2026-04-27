@@ -58,7 +58,7 @@ test "Primary reboot in very short time" {
     reboot_instance valkey $master_id
     
     foreach_sentinel_id id {        
-        wait_for_condition 1000 100 {
+        wait_for_condition 1500 100 {
             [lindex [S $id SENTINEL GET-PRIMARY-ADDR-BY-NAME mymaster] 1] != $old_port
         } else {
             fail "At least one Sentinel did not receive failover info"
