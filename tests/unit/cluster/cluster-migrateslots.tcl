@@ -1994,6 +1994,9 @@ start_cluster 3 3 {tags {logreqres:skip external:skip cluster} overrides {cluste
         }
         test "Restart $node_name during migration ($save_condition) causes $expectation" {
             set_debug_prevent_pause 1
+            ensure_slot_on_node 2 16379
+            ensure_slot_on_node 2 16381
+            ensure_slot_on_node 2 16383
 
             # Load data before the snapshot
             populate 333 "$16379_slot_tag:1:" 1000 -2
