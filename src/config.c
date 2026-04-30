@@ -2635,8 +2635,8 @@ static int updateAofAutoGCEnabled(const char **err) {
 static int updateAofIntegrityCheck(const char **err) {
     UNUSED(err);
     if (!server.aof_integrity_check) {
-        serverLog(LL_NOTICE, "AOF integrity check disabled, resetting sequence number");
-        server.aof_seq_number = 0;
+        serverLog(LL_NOTICE, "AOF integrity check disabled, resetting running checksum");
+        server.aof_running_checksum = 0;
         if (server.aof_state == AOF_ON) {
             server.aof_buf = sdscat(server.aof_buf, "#INTEGRITY_OFF\r\n");
         }

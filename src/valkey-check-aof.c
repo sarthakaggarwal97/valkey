@@ -62,7 +62,7 @@ static char error[1044];
 static off_t epos;
 static long long line = 1;
 static time_t to_timestamp = 0;
-static long long expected_seq_number = 0;
+static uint64_t expected_running_checksum = 0;
 static int integrity_hdr_expected = 0;
 static off_t integrity_validated_until = 0;
 
@@ -188,11 +188,9 @@ int processAnnotations(FILE *fp, char *filename, int last_file) {
 
     if (!strncmp(buf, "#HDR:v1;", 8)) {
         size_t hdr_len = 0;
-        long long hdr_seq = 0;
         uint64_t hdr_checksum = 0;
         char *field;
         if ((field = strstr(buf, "len:")) != NULL) hdr_len = strtoull(field + 4, NULL, 10);
-        if ((field = strstr(buf, "seq:")) != NULL) hdr_seq = strtoll(field + 4, NULL, 10);
         if ((field = strstr(buf, "checksum:")) != NULL) hdr_checksum = strtoull(field + 9, NULL, 16);
 
         /* Check data integrity */
@@ -202,7 +200,7 @@ int processAnnotations(FILE *fp, char *filename, int last_file) {
             printf("%s\n", error);
             exit(1);
         }
-        uint64_t computed_checksum = crc64(0, (unsigned char *)buf, checksum_tag - buf);
+        uint64_t computed_checksum = crc64(expected_running_checksum, (unsigned char *)buf, checksum_tag - buf);
         off_t current_pos = ftello(fp);
 
         size_t remaining = hdr_len;
@@ -227,17 +225,10 @@ int processAnnotations(FILE *fp, char *filename, int last_file) {
         fseek(fp, current_pos, SEEK_SET);
         integrity_validated_until = current_pos + hdr_len;
 
-        /* Check sequence continuity */
-        if (expected_seq_number == 0) expected_seq_number = hdr_seq;
-        if (hdr_seq != expected_seq_number) {
-            ERROR("AOF sequence mismatch. Expected %lld, got %lld", expected_seq_number, hdr_seq);
-            printf("%s\n", error);
-            exit(1);
-        }
-        expected_seq_number = hdr_seq + 1;
+        expected_running_checksum = computed_checksum;
         integrity_hdr_expected = 1;
     } else if (strstr(buf, "#INTEGRITY_OFF")) {
-        expected_seq_number = 0;
+        expected_running_checksum = 0;
         integrity_hdr_expected = 0;
     }
 
@@ -285,10 +276,10 @@ int checkSingleAof(char *aof_filename, char *aof_filepath, int last_file, int fi
     int multi = 0;
     char buf[2];
 
-    /* If expected_seq_number is already set (e.g. from previous file in manifest), keep it.
+    /* If expected_running_checksum is already set (e.g. from previous file in manifest), keep it.
      * Otherwise, processAnnotations will initialize it from first #HDR. */
     integrity_validated_until = 0;
-    if (expected_seq_number > 0) integrity_hdr_expected = 1;
+    if (expected_running_checksum > 0) integrity_hdr_expected = 1;
 
     FILE *fp = fopen(aof_filepath, "r+");
     if (fp == NULL) {
@@ -547,6 +538,9 @@ void checkMultiPartAof(char *dirpath, char *manifest_filepath, int fix) {
 
         printf("Start to check BASE AOF (%s format).\n", aof_preamble ? "RDB" : "RESP");
         ret = checkSingleAof(aof_filename, aof_filepath, last_file, fix, aof_preamble);
+        if (aof_preamble && ret == AOF_CHECK_OK) {
+            expected_running_checksum = rdbCheckGetAofChecksum();
+        }
         printAofStyle(ret, aof_filename, (char *)"BASE AOF");
         sdsfree(aof_filepath);
     }

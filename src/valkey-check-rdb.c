@@ -87,6 +87,7 @@ struct {
     char error[1024];
     int databases;
     int format;
+    uint64_t aof_checksum;
 
     /* stats */
     rdbStats **stats; /* stats group by datatype,encoding,isexpired */
@@ -728,6 +729,8 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
             if (!strcasecmp(objectGetVal(auxkey), "lua")) {
                 /* In older version before 7.0, we may save lua scripts in a replication RDB. */
                 rdbstate.lua_scripts++;
+            } else if (!strcasecmp(objectGetVal(auxkey), "aof-checksum")) {
+                rdbstate.aof_checksum = strtoull(objectGetVal(auxval), NULL, 10);
             }
             rdbCheckInfo("AUX FIELD %s = '%s'", (char *)objectGetVal(auxkey), (char *)objectGetVal(auxval));
             decrRefCount(auxkey);
@@ -914,6 +917,7 @@ int redis_check_rdb_main(int argc, char **argv, FILE *fp) {
     rdbstate.databases = 0;
     rdbstate.functions_num = 0;
     rdbstate.lua_scripts = 0;
+    rdbstate.aof_checksum = 0;
 
     /* In order to call the loading functions we need to create the shared
      * integer objects, however since this function may be called from
@@ -937,4 +941,9 @@ int redis_check_rdb_main(int argc, char **argv, FILE *fp) {
     if (fp) return (retval == 0) ? C_OK : C_ERR;
     freeRdbProfile(rdbstate.stats, rdbstate.stats_num);
     exit(retval);
+}
+
+/* Return the AOF running checksum captured during RDB check. */
+uint64_t rdbCheckGetAofChecksum(void) {
+    return rdbstate.aof_checksum;
 }

@@ -20,8 +20,7 @@ tags {"aof-integrity external:skip"} {
             set content [read $fp]
             close $fp
             
-            assert_match {*#HDR:v1;*seq:1;checksum:*} $content
-            assert_match {*#HDR:v1;*seq:2;checksum:*} $content
+            assert_match {*#HDR:v1;*checksum:*} $content
             set sp1_actual [dict get [srv config] dir]
         }
 
@@ -30,34 +29,6 @@ tags {"aof-integrity external:skip"} {
             set rd [valkey [srv host] [srv port] 0 $::tls]
             assert_equal "bar" [$rd get foo]
             assert_equal "qux" [$rd get baz]
-        }
-    }
-
-    test "Server fails to start if sequence mismatch is detected" {
-        set sp2 [tmpdir server.aof-integrity-2]
-        start_server [list overrides [list dir $sp2 appendonly yes appendfsync always aof-integrity-check yes aof-use-rdb-preamble yes] keep_persistence true] {
-            set rd [valkey [srv host] [srv port] 0 $::tls]
-            set ::ai2_path [file join [dict get [srv config] dir] "appendonlydir" "appendonly.aof.1.incr.aof"]
-            set ::sp2_actual [dict get [srv config] dir]
-            $rd set a 1
-            wait_for_condition 50 100 {
-                [file exists $::ai2_path] && [file size $::ai2_path] > 0
-            } else {
-                fail "AOF file not created"
-            }
-        }
-        
-        # Manually append an entry with skipped LSN.
-        # Header prefix: #HDR:v1;len:22;seq:3;
-        # Data: *3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n
-        # Calculated CRC: f727c89e1cc513c
-        set fp [open $::ai2_path a]
-        fconfigure $fp -translation binary
-        puts -nonewline $fp "#HDR:v1;len:22;seq:3;checksum:f727c89e1cc513c\r\n*3\r\n\$3\r\nSET\r\n\$1\r\nb\r\n\$1\r\n2\r\n"
-        close $fp
-        
-        start_server [list overrides [list dir $::sp2_actual appendonly yes aof-integrity-check yes aof-use-rdb-preamble yes] wait_ready false] {
-            wait_for_log_messages 0 {"*AOF sequence mismatch*"} 0 10 1000
         }
     }
 
@@ -75,7 +46,7 @@ tags {"aof-integrity external:skip"} {
             }
         }
         
-        # Flip a bit in the data
+        # Flip a bit in the data to break the checksum
         set fp [open $::ai3_path r]
         fconfigure $fp -translation binary
         set content [read $fp]
@@ -213,7 +184,7 @@ tags {"aof-integrity external:skip"} {
         }
     }
 
-    test "AOF integrity: sequence persistence through AOF rewrite" {
+    test "AOF integrity: checksum persistence through AOF rewrite" {
         set sp [tmpdir server.aof-integrity-lsn-persistence]
         start_server [list overrides [list dir $sp appendonly yes appendfsync always aof-integrity-check yes aof-use-rdb-preamble yes] keep_persistence true] {
             set rd [valkey [srv host] [srv port] 0 $::tls]
@@ -229,8 +200,8 @@ tags {"aof-integrity external:skip"} {
             set content [read $fp]
             close $fp
             
-            # set c should be sequence 3.
-            assert_match {*seq:3;*} $content
+            # set c should have an integrity header.
+            assert_match {*#HDR:v1;*checksum:*} $content
             set sp_actual [dict get [srv config] dir]
         }
 
@@ -261,17 +232,14 @@ tags {"aof-integrity external:skip"} {
         catch {exec ./src/valkey-check-aof $::am6_path} output
         assert_match {*All AOF files and manifest are valid*} $output
         
-        # Corrupt sequence in the NEWEST increment file
+        # Corrupt the NEWEST increment file by appending a manual entry with a wrong checksum.
         set fp [open $::ai6_path a]
         fconfigure $fp -translation binary
-        # Previous was seq:2 (from 'set b 2'). Use seq:4 to skip 3.
-        # Header prefix: #HDR:v1;len:22;seq:4;
-        # Data: *3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n
-        # Calculated CRC: e17786ee4bfe72ca
-        puts -nonewline $fp "#HDR:v1;len:22;seq:4;checksum:e17786ee4bfe72ca\r\n*3\r\n\$3\r\nSET\r\n\$1\r\nc\r\n\$1\r\n3\r\n"
+        # We use a wrong checksum value here to simulate an integrity failure.
+        puts -nonewline $fp "#HDR:v1;len:22;checksum:deadbeefdeadbeef\r\n*3\r\n\$3\r\nSET\r\n\$1\r\nc\r\n\$1\r\n3\r\n"
         close $fp
         
         catch {exec ./src/valkey-check-aof $::am6_path} output
-        assert_match {*AOF sequence mismatch*} $output
+        assert_match {*AOF checksum mismatch*} $output
     }
 }

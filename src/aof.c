@@ -1477,15 +1477,14 @@ void feedAppendOnlyFile(int dictid, robj **argv, int argc) {
      * positive reply about the operation performed. */
     if (server.aof_state == AOF_ON || (server.aof_state == AOF_WAIT_REWRITE && server.child_type == CHILD_TYPE_AOF)) {
         if (server.aof_integrity_check && sdslen(buf) > 0) {
-            server.aof_seq_number++;
             char hdr_prefix[128];
-            int hdr_prefix_len =
-                snprintf(hdr_prefix, sizeof(hdr_prefix), "#HDR:v1;len:%zu;seq:%lld;", sdslen(buf), server.aof_seq_number);
-            uint64_t checksum = crc64(0, (unsigned char *)hdr_prefix, hdr_prefix_len);
-            checksum = crc64(checksum, (unsigned char *)buf, sdslen(buf));
+            int hdr_prefix_len = snprintf(hdr_prefix, sizeof(hdr_prefix), "#HDR:v1;len:%zu;", sdslen(buf));
+            server.aof_running_checksum = crc64(server.aof_running_checksum, (unsigned char *)hdr_prefix, hdr_prefix_len);
+            server.aof_running_checksum = crc64(server.aof_running_checksum, (unsigned char *)buf, sdslen(buf));
 
             server.aof_buf = sdscatlen(server.aof_buf, hdr_prefix, hdr_prefix_len);
-            server.aof_buf = sdscatprintf(server.aof_buf, "checksum:%llx\r\n", (unsigned long long)checksum);
+            server.aof_buf =
+                sdscatprintf(server.aof_buf, "checksum:%llx\r\n", (unsigned long long)server.aof_running_checksum);
         }
         server.aof_buf = sdscatlen(server.aof_buf, buf, sdslen(buf));
     }
@@ -1543,7 +1542,7 @@ int loadSingleAppendOnlyFile(char *filename) {
 
     /* integrity_hdr_expected tracks if we are currently in a region of the AOF where integrity headers
      * are expected. Once enabled, all subsequent commands must have a valid header. */
-    int integrity_hdr_expected = server.aof_integrity_check && (server.aof_seq_number > 0);
+    int integrity_hdr_expected = server.aof_integrity_check && (server.aof_running_checksum != 0);
     /* integrity_validated_until tracks the file offset up to which data has been verified by a header checksum.
      * Commands must start before this offset to be considered validated. */
     off_t integrity_validated_until = 0;
@@ -1640,11 +1639,9 @@ int loadSingleAppendOnlyFile(char *filename) {
         if (buf[0] == '#') {
             if (server.aof_integrity_check && !strncmp(buf, "#HDR:v1;", 8)) {
                 size_t hdr_len = 0;
-                long long hdr_seq = 0;
                 uint64_t hdr_checksum = 0;
                 char *field;
                 if ((field = strstr(buf, "len:")) != NULL) hdr_len = strtoull(field + 4, NULL, 10);
-                if ((field = strstr(buf, "seq:")) != NULL) hdr_seq = strtoll(field + 4, NULL, 10);
                 if ((field = strstr(buf, "checksum:")) != NULL) hdr_checksum = strtoull(field + 9, NULL, 16);
 
                 /* Check data integrity */
@@ -1653,7 +1650,7 @@ int loadSingleAppendOnlyFile(char *filename) {
                     serverLog(LL_WARNING, "AOF integrity header in %s lacks a checksum", filename);
                     goto fmterr;
                 }
-                uint64_t computed_checksum = crc64(0, (unsigned char *)buf, checksum_tag - buf);
+                uint64_t computed_checksum = crc64(server.aof_running_checksum, (unsigned char *)buf, checksum_tag - buf);
                 off_t current_pos = ftello(fp);
 
                 size_t remaining = hdr_len;
@@ -1677,19 +1674,12 @@ int loadSingleAppendOnlyFile(char *filename) {
                 fseek(fp, current_pos, SEEK_SET);
                 integrity_validated_until = current_pos + hdr_len;
 
-                /* Check sequence continuity */
-                if (hdr_seq != server.aof_seq_number + 1) {
-                    serverLog(LL_WARNING, "AOF sequence mismatch in %s. Expected %lld, got %lld", filename,
-                              server.aof_seq_number + 1, hdr_seq);
-                    ret = AOF_FAILED;
-                    goto cleanup;
-                }
                 integrity_hdr_expected = 1;
-                server.aof_seq_number = hdr_seq;
+                server.aof_running_checksum = computed_checksum;
             } else if (server.aof_integrity_check && strstr(buf, "#INTEGRITY_OFF")) {
                 serverLog(LL_NOTICE, "AOF loading: encountered INTEGRITY_OFF");
                 integrity_hdr_expected = 0;
-                server.aof_seq_number = 0;
+                server.aof_running_checksum = 0;
             }
             continue;
         }

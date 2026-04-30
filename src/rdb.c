@@ -1257,6 +1257,13 @@ ssize_t rdbSaveAuxFieldStrInt(rio *rdb, char *key, long long val) {
     return rdbSaveAuxField(rdb, key, strlen(key), buf, vlen);
 }
 
+/* Wrapper for strlen(key) + unsigned long long type. */
+ssize_t rdbSaveAuxFieldStrUll(rio *rdb, char *key, unsigned long long val) {
+    char buf[LONG_STR_SIZE];
+    int vlen = ull2string(buf, sizeof(buf), val);
+    return rdbSaveAuxField(rdb, key, strlen(key), buf, vlen);
+}
+
 /* Save a few default AUX fields with information about the RDB generated. */
 int rdbSaveInfoAuxFields(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
     int redis_bits = (sizeof(void *) == 8) ? 64 : 32;
@@ -1275,7 +1282,8 @@ int rdbSaveInfoAuxFields(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
         if (rdbSaveAuxFieldStrInt(rdb, "repl-offset", server.primary_repl_offset) == -1) return -1;
     }
     if (rdbSaveAuxFieldStrInt(rdb, "aof-base", aof_base) == -1) return -1;
-    if (server.aof_integrity_check && rdbSaveAuxFieldStrInt(rdb, "aof-seq", server.aof_seq_number) == -1) return -1;
+    if (server.aof_integrity_check && rdbSaveAuxFieldStrUll(rdb, "aof-checksum", server.aof_running_checksum) == -1)
+        return -1;
 
     /* Handle additional dynamic aux fields */
     if (rdbAuxFields != NULL) {
@@ -3317,8 +3325,8 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             } else if (!strcasecmp(objectGetVal(auxkey), "aof-base")) {
                 long long isbase = strtoll(objectGetVal(auxval), NULL, 10);
                 if (isbase) serverLog(LL_NOTICE, "RDB is base AOF");
-            } else if (!strcasecmp(objectGetVal(auxkey), "aof-seq")) {
-                server.aof_seq_number = strtoll(objectGetVal(auxval), NULL, 10);
+            } else if (!strcasecmp(objectGetVal(auxkey), "aof-checksum")) {
+                server.aof_running_checksum = strtoull(objectGetVal(auxval), NULL, 10);
             } else if (!strcasecmp(objectGetVal(auxkey), "redis-bits")) {
                 /* Just ignored. */
             } else if (!strcasecmp(objectGetVal(auxkey), "slot-info")) {
