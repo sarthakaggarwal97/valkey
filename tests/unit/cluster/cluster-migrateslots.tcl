@@ -2445,7 +2445,7 @@ start_cluster 3 3 {tags {logreqres:skip external:skip cluster aofrw} overrides {
     }
 }
 
-start_cluster 3 0 {tags {logreqres:skip external:skip cluster} overrides {cluster-require-full-coverage no slot-migration-max-failover-repl-bytes 0}} {
+start_cluster 3 0 {tags {logreqres:skip external:skip cluster} overrides {cluster-require-full-coverage no slot-migration-max-failover-repl-bytes 0 repl-timeout 300}} {
     test "Slot migration remaining_repl_size on the source node" {
         set 16383_slot_tag "{6ZJ}"
         set_debug_prevent_pause 1
@@ -2488,7 +2488,7 @@ start_cluster 3 0 {tags {logreqres:skip external:skip cluster} overrides {cluste
     }
 }
 
-start_cluster 3 0 {tags {logreqres:skip external:skip cluster} overrides {cluster-require-full-coverage no slot-migration-max-failover-repl-bytes -1}} {
+start_cluster 3 0 {tags {logreqres:skip external:skip cluster} overrides {cluster-require-full-coverage no slot-migration-max-failover-repl-bytes -1 repl-timeout 300}} {
     test "slot-migration-max-failover-repl-bytes -1 disables repl bytes limit" {
         set 16383_slot_tag "{6ZJ}"
 
