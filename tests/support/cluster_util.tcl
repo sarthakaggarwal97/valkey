@@ -464,7 +464,11 @@ proc get_open_slots {srv_idx} {
 }
 
 proc wait_for_slot_state {srv_idx pattern} {
-    wait_for_condition 100 100 {
+    # Slot migration state (migrating_slots_to / importing_slots_from) propagates
+    # via PING/PONG gossip separately from primary ownership. After a failover,
+    # wait_for_role may return before the updated state has been gossiped to all
+    # nodes, so allow plenty of time, especially under valgrind.
+    wait_for_condition 1000 50 {
         [get_open_slots $srv_idx] eq $pattern
     } else {
         fail "incorrect slot state on R $srv_idx: expected $pattern; got [get_open_slots $srv_idx]"
