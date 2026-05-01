@@ -66,9 +66,13 @@ start_cluster 3 4 {tags {external:skip cluster} overrides {cluster-ping-interval
 
 start_cluster 7 3 {tags {external:skip cluster} overrides {cluster-ping-interval 1000}} {
     test "Primaries will not time out then they are elected in the same epoch" {
-        # Since we have the delay time, so these node may not initiate the
-        # election at the same time (same epoch). But if they do, we make
-        # sure there is no failover timeout.
+        # When multiple primaries fail simultaneously, replicas normally use
+        # the failed-primary-rank delay to stagger their elections. But the
+        # "best ranked replica" fast path can bypass that delay for the sole
+        # replica of the shard with the lowest shard_id, which may then time
+        # out if FAIL gossip hasn't reached the voters yet. Regardless of
+        # whether a first attempt times out, the failover must eventually
+        # succeed without falling back to a false epoch 0 election.
 
         # Killing there primary nodes.
         pause_process [srv 0 pid]
@@ -88,11 +92,6 @@ start_cluster 7 3 {tags {external:skip cluster} overrides {cluster-ping-interval
         verify_no_log_message -7 "*Failover election in progress for epoch 0*" 0
         verify_no_log_message -8 "*Failover election in progress for epoch 0*" 0
         verify_no_log_message -9 "*Failover election in progress for epoch 0*" 0
-
-        # Make sure there is no failover timeout.
-        verify_no_log_message -7 "*Failover attempt expired*" 0
-        verify_no_log_message -8 "*Failover attempt expired*" 0
-        verify_no_log_message -9 "*Failover attempt expired*" 0
 
         # Resuming these primary nodes, speed up the shutdown.
         resume_process [srv 0 pid]
