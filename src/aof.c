@@ -1479,6 +1479,7 @@ void feedAppendOnlyFile(int dictid, robj **argv, int argc) {
         if (server.aof_integrity_check && sdslen(buf) > 0) {
             char hdr_prefix[128];
             int hdr_prefix_len = snprintf(hdr_prefix, sizeof(hdr_prefix), "#HDR:v1;len:%zu;", sdslen(buf));
+            serverAssert(hdr_prefix_len < (int)sizeof(hdr_prefix));
             server.aof_running_checksum = crc64(server.aof_running_checksum, (unsigned char *)hdr_prefix, hdr_prefix_len);
             server.aof_running_checksum = crc64(server.aof_running_checksum, (unsigned char *)buf, sdslen(buf));
 

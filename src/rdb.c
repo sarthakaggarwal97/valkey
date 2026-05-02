@@ -3325,7 +3325,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             } else if (!strcasecmp(objectGetVal(auxkey), "aof-base")) {
                 long long isbase = strtoll(objectGetVal(auxval), NULL, 10);
                 if (isbase) serverLog(LL_NOTICE, "RDB is base AOF");
-            } else if (!strcasecmp(objectGetVal(auxkey), "aof-checksum")) {
+            } else if (server.aof_integrity_check && !strcasecmp(objectGetVal(auxkey), "aof-checksum")) {
                 server.aof_running_checksum = strtoull(objectGetVal(auxval), NULL, 10);
             } else if (!strcasecmp(objectGetVal(auxkey), "redis-bits")) {
                 /* Just ignored. */

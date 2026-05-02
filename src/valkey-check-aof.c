@@ -416,7 +416,7 @@ int fileIsRDB(char *filepath) {
         return 0;
     }
 
-    if (size >= 8) { /* There must be at least room for the RDB header. */
+    if (size >= 9) { /* There must be at least room for the RDB header. */
         char sig[6];
         if (fread(sig, 1, 6, fp) == 6 && (memcmp(sig, "REDIS", 5) == 0 || memcmp(sig, "VALKEY", 6) == 0)) {
             fclose(fp);
