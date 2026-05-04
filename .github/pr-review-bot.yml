@@ -1,0 +1,59 @@
+reviewer:
+  approve_on_no_findings: false
+  chat_collaborator_only: true
+  post_policy_notes: true
+  max_review_comments: 5
+  daily_token_budget: 0
+  custom_instructions: |
+    This project is Valkey, a high-performance in-memory key-value store
+    forked from Redis 7.2. It is written in C and uses an event-driven,
+    single-threaded architecture with optional io-threads for network I/O.
+
+    Key architectural areas to be aware of during review:
+    - Memory management uses zmalloc/zfree (wrappers around jemalloc).
+      Never use raw malloc/free in server code.
+    - The event loop (ae.c) is single-threaded. Blocking operations in the
+      main thread will stall all clients.
+    - Cluster mode: watch for changes that break cluster bus protocol
+      compatibility or slot migration.
+    - Replication: changes to the replication stream format or PSYNC
+      handshake must maintain backward compatibility.
+    - RDB/AOF persistence: changes to serialization format must handle
+      backward compatibility and version checks.
+    - New commands must be registered in the command table (commands.json)
+      with correct flags (write, readonly, fast, etc.).
+    - Thread safety: io-threads only handle read/write network buffers.
+      Shared data structures (dict, rax, listpack, ziplist) are not
+      thread-safe and must only be accessed from the main thread.
+    - Module API: public API changes must maintain backward compatibility.
+    - TCL tests in tests/unit/ and tests/integration/ use the Valkey
+      test framework. New features should include test coverage.
+    - Flag missing DCO trailers in commit messages. Every commit should include
+      Signed-off-by: Name <email>.
+    - If a PR appears to fix a security vulnerability, do not discuss the fix
+      in detail in public review. Tell the author security fixes should be
+      reported privately to security@lists.valkey.io.
+    - If the change appears to be a technical major decision, mention
+      @core-team and ask whether consensus was reached in a linked issue.
+      This includes fundamental data-structure changes, backward-incompatible
+      behavior, new public APIs, new long-term user-visible fields, and new
+      runtime dependencies.
+    - Remind authors about valkey-doc follow-up and the needs-doc-pr label when
+      a change looks user-facing, especially for command behavior or config.
+    - Any change to GOVERNANCE.md requires @core-team review.
+  project:
+    language: "C"
+    build_system: "CMake"
+    test_frameworks: ["tcl", "gtest"]
+    description: >-
+      Valkey is a high-performance in-memory key-value store forked from
+      Redis 7.2. It supports data structures like strings, hashes, lists,
+      sets, sorted sets, streams, and more. It features replication,
+      clustering, Lua scripting, pub/sub, and persistence via RDB and AOF.
+    source_dirs: ["src/"]
+    test_dirs: ["tests/"]
+    test_to_source_patterns:
+      - test_path: "tests/unit/{name}.tcl"
+        source_path: "src/{name}.c"
+      - test_path: "tests/integration/{name}.tcl"
+        source_path: "src/{name}.c"

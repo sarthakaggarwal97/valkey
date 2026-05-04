@@ -1,0 +1,82 @@
+# Caller workflow for the Valkey CI Agent PR reviewer.
+#
+# This is the demo installation on sarthakaggarwal97/valkey.
+# It reuses the review-pr.yml reusable workflow from sarthakaggarwal97/valkey-ci-agent.
+#
+# Events:
+#   - pull_request_target: run a full review on open/sync/reopen/ready_for_review
+#   - pull_request_review_comment: answer chat on inline comments
+#   - issue_comment: respond to `/reviewagent ...` invocations on PR threads
+#
+# Required secrets on this fork:
+#   - AWS_ROLE_ARN                OIDC role ARN for Bedrock access
+#
+# Optional secrets (falls back to GITHUB_TOKEN when absent):
+#   - VALKEY_GITHUB_TOKEN         PAT with issues+pull-requests:write
+#   - VALKEY_GITHUB_APP_PRIVATE_KEY  GitHub App private key for app-token auth
+#
+# Optional variables:
+#   - AWS_REGION                  defaults to us-east-1
+#   - VALKEY_GITHUB_APP_ID        GitHub App ID for app-token auth
+name: PR Review Agent
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review_comment:
+    types: [created]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      mode: ${{ steps.classify.outputs.mode }}
+      allowed: ${{ steps.classify.outputs.allowed }}
+    steps:
+      - id: classify
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const eventName = context.eventName;
+            if (eventName === "pull_request_target") {
+              core.setOutput("mode", "review");
+              core.setOutput("allowed", "true");
+              return;
+            }
+            if (eventName === "pull_request_review_comment") {
+              core.setOutput("mode", "chat");
+              core.setOutput("allowed", "true");
+              return;
+            }
+            const issue = context.payload.issue;
+            const isPr = !!issue?.pull_request;
+            const body = context.payload.comment?.body || "";
+            const invoked = body.includes("/reviewagent");
+            core.setOutput("mode", isPr && invoked ? "chat" : "skip");
+            core.setOutput("allowed", isPr && invoked ? "true" : "false");
+
+  review:
+    needs: preflight
+    if: needs.preflight.outputs.allowed == 'true'
+    uses: sarthakaggarwal97/valkey-ci-agent/.github/workflows/review-pr.yml@5164d8c11734a0200aa51585fd8708d1f24b0930
+    with:
+      config_path: .github/pr-review-bot.yml
+      aws_region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      github_app_id: ${{ vars.VALKEY_GITHUB_APP_ID || '' }}
+      mode: ${{ needs.preflight.outputs.mode }}
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      VALKEY_GITHUB_TOKEN: ${{ secrets.VALKEY_GITHUB_TOKEN }}
+      VALKEY_GITHUB_APP_PRIVATE_KEY: ${{ secrets.VALKEY_GITHUB_APP_PRIVATE_KEY }}
