@@ -98,9 +98,9 @@ start_server {} {
         # send incomplete command (n - 1) to make sure we don't use the shared qb
         $rr write [join [list "*1\r\n\$$n\r\n" [string repeat v [expr {$n - 1}]]] ""]
         $rr flush
-        # Wait for the client to start using a private query buffer. 
-        wait_for_condition 10 10 {
-            [client_field $cname qbuf] > 0
+        # Wait for the server to read the full payload into the private query buffer.
+        wait_for_condition 200 10 {
+            [client_field $cname qbuf] >= [expr {$n - 1}]
         } else {
             fail "client should start using a private query buffer"
         }
