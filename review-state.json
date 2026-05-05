@@ -72,5 +72,15 @@
     "summary_comment_id": 4381979744,
     "review_comment_ids": [],
     "updated_at": "2026-05-05T18:48:42.862451+00:00"
+  },
+  "sarthakaggarwal97/valkey#238": {
+    "repo": "sarthakaggarwal97/valkey",
+    "pr_number": 238,
+    "last_reviewed_head_sha": "1f1bff692e26436d02d5af3941f946cc18a1cdf8",
+    "summary_comment_id": 4382055392,
+    "review_comment_ids": [
+      4230876850
+    ],
+    "updated_at": "2026-05-05T19:04:34.488687+00:00"
   }
 }
