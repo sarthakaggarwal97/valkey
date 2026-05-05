@@ -1493,9 +1493,7 @@ int rdbSaveRio(int req, int rdbver, rio *rdb, int *error, int rdbflags, rdbSaveI
     long key_counter = 0;
     int j;
 
-    /* Track the RDB checksum whenever checksums are enabled and codec
-     * checksums are not the authoritative integrity mechanism. */
-    if (server.rdb_checksum && !(rdb->flags & RIO_FLAG_STREAMING_CODEC_CHECKSUM))
+    if (server.rdb_checksum && !(rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM))
         rdb->update_cksum = rioGenericUpdateChecksum;
     const char *magic_prefix = rdbUseValkeyMagic(rdbver) ? "VALKEY" : "REDIS0";
     serverAssert(rdbver >= 0 && rdbver <= RDB_VERSION);
@@ -3117,9 +3115,7 @@ void stopSaving(int success) {
 /* Track loading progress in order to serve client's from time to time
    and if needed calculate rdb checksum  */
 void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
-    /* Track the RDB checksum only when codec checksums are not authoritative
-     * for this stream. */
-    if (server.rdb_checksum && !(r->flags & RIO_FLAG_STREAMING_CODEC_CHECKSUM))
+    if (server.rdb_checksum && !(r->flags & RIO_FLAG_SKIP_RDB_CHECKSUM))
         rioGenericUpdateChecksum(r, buf, len);
 
     /* Event scheduling uses decoded (logical) bytes so that
@@ -3180,6 +3176,11 @@ void rdbInputStreamDestroy(rdbInputStream *input) {
         input->initialized = false;
     }
     input->rdb_rio = input->raw_rio;
+}
+
+int rdbInputStreamValidateEnd(rdbInputStream *input) {
+    if (!input || !input->initialized) return C_OK;
+    return decompressRioValidateEnd(&input->decompressor) == 0 ? C_OK : C_ERR;
 }
 
 bool rdbRioHasCorruptCompressedInput(const rio *rdb) {
@@ -3682,10 +3683,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         if (rioRead(rdb, &cksum, 8) == 0) goto eoferr;
         if (server.rdb_checksum && !server.skip_checksum_validation) {
             memrev64ifbe(&cksum);
-            if (rdb->flags & RIO_FLAG_STREAMING_CODEC_CHECKSUM) {
-                serverLog(LL_NOTICE,
-                          "Streaming-compressed RDB: integrity validated by codec checksums.");
-            } else if (rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) {
+            if (rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) {
                 serverLog(LL_NOTICE, "RDB file was saved with checksum disabled: skipped checksum for this transfer");
             } else if (cksum == 0) {
                 serverLog(LL_NOTICE, "RDB file was saved with checksum disabled: no check performed.");
@@ -3769,6 +3767,10 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     }
 
     retval = rdbLoadRio(input.rdb_rio, rdbflags, rsi);
+    if (retval == RDB_OK && rdbInputStreamValidateEnd(&input) != C_OK) {
+        serverLog(LL_WARNING, "Compressed RDB stream in %s did not end cleanly", filename);
+        retval = RDB_FAILED;
+    }
 
 done:
     rdbInputStreamDestroy(&input);
