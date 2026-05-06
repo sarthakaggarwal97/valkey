@@ -1612,7 +1612,9 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
         save_rio = (rio *)&cr;
         cr_initialized = true;
     }
-    if (!server.rdb_checksum) {
+    /* Streaming-compressed RDBs rely on codec checksums and clean frame-end
+     * validation instead of the logical RDB CRC64 trailer. */
+    if (use_streaming_compression || !server.rdb_checksum) {
         save_rio->flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
         save_rio->update_cksum = NULL;
         save_rio->cksum = 0;
@@ -3165,6 +3167,9 @@ decompressRioInitResult rdbInputStreamPrepare(rdbInputStream *input) {
     if (init_rc == DECOMPRESS_RIO_INIT_OK) {
         input->initialized = true;
         input->rdb_rio = (rio *)&input->decompressor;
+        /* Streaming compression validates the encoded frame; avoid also
+         * hashing decoded logical RDB bytes with CRC64. */
+        if (input->stream_info.compressed) input->rdb_rio->flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
     }
     return init_rc;
 }
