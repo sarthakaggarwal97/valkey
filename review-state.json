@@ -110,5 +110,15 @@
       4232475766
     ],
     "updated_at": "2026-05-06T00:48:16.048959+00:00"
+  },
+  "sarthakaggarwal97/valkey#243": {
+    "repo": "sarthakaggarwal97/valkey",
+    "pr_number": 243,
+    "last_reviewed_head_sha": "b837ba8f787298e7beed1fb0400a0b9c57b4d6a5",
+    "summary_comment_id": 4384063814,
+    "review_comment_ids": [
+      4232487076
+    ],
+    "updated_at": "2026-05-06T00:52:12.151154+00:00"
   }
 }
