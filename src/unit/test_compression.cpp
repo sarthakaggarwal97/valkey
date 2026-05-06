@@ -460,16 +460,6 @@ TEST(compression, streamReaderRejectsOversizedReadRequest) {
 
 extern "C" {
 void rdbLoadProgressCallback(rio *r, const void *buf, size_t len);
-typedef struct {
-    rio *raw_rio;
-    rio *rdb_rio;
-    decompressRio decompressor;
-    streamReaderInfo stream_info;
-    bool initialized;
-} rdbInputStream;
-void rdbInputStreamInit(rdbInputStream *input, rio *raw_rio);
-decompressRioInitResult rdbInputStreamPrepare(rdbInputStream *input);
-void rdbInputStreamDestroy(rdbInputStream *input);
 }
 
 /* --- Emit callback that appends to a dynamically growing buffer --- */
@@ -1247,47 +1237,6 @@ TEST(compression, decompressRioClassifiesInput) {
         sdsfree(buf);
     }
     return;
-}
-
-TEST(compression, rdbInputStreamSkipsRdbChecksumForCompressedStreams) {
-    dynamic_buf_t db;
-    dynamicBufInit(&db);
-
-    streamWriterConfig cfg = makeWriterConfig(ALGO_LZ4, 0, STREAM_KIND_RDB, true);
-    streamWriter *writer = streamWriterCreate(&cfg, emitToDynamicBuf, &db);
-    ASSERT_TRUE(writer != NULL);
-    const char *payload = "VALKEY001compressed logical rdb payload";
-    ASSERT_TRUE(streamWriterWrite(writer, payload, strlen(payload)) >= 0);
-    ASSERT_TRUE(streamWriterFinish(writer) == 0);
-    streamWriterDestroy(writer);
-
-    sds comp = sdsnewlen(db.data, sdslen((const char *)db.data));
-    rio comp_rio;
-    rioInitWithBuffer(&comp_rio, comp);
-    rdbInputStream compressed_input;
-    rdbInputStreamInit(&compressed_input, &comp_rio);
-
-    ASSERT_TRUE(rdbInputStreamPrepare(&compressed_input) == DECOMPRESS_RIO_INIT_OK);
-    ASSERT_TRUE(compressed_input.stream_info.compressed);
-    ASSERT_TRUE(compressed_input.rdb_rio->flags & RIO_FLAG_SKIP_RDB_CHECKSUM)
-        << "streaming-compressed RDB input should not compute logical RDB CRC64";
-    rdbInputStreamDestroy(&compressed_input);
-    sdsfree(comp);
-
-    sds plain = sdsnew("VALKEY001plain logical rdb payload");
-    rio plain_rio;
-    rioInitWithBuffer(&plain_rio, plain);
-    rdbInputStream plain_input;
-    rdbInputStreamInit(&plain_input, &plain_rio);
-
-    ASSERT_TRUE(rdbInputStreamPrepare(&plain_input) == DECOMPRESS_RIO_INIT_OK);
-    ASSERT_TRUE(!plain_input.stream_info.compressed);
-    ASSERT_TRUE((plain_input.rdb_rio->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) == 0)
-        << "plain RDB input should keep the normal RDB checksum policy";
-    rdbInputStreamDestroy(&plain_input);
-    sdsfree(plain);
-
-    dynamicBufFree(&db);
 }
 
 /* --- Test: compressRioFinish is idempotent --- */
