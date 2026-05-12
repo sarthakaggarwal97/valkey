@@ -6,12 +6,11 @@
 
 /* Tests for the compression streaming and rio decorator layers. */
 
-#include <cassert>
-#include <cstdio>
-#include <cstdlib>
+#include "generated_wrappers.hpp"
+
 #include <cstring>
-#include <gtest/gtest.h>
 #include <limits>
+#include <string>
 
 extern "C" {
 #include "../../deps/lz4/lz4frame.h"
@@ -42,6 +41,7 @@ typedef struct {
     size_t len;
     size_t pos;
     size_t max_chunk;
+    size_t fail_after_pos;
     int fail_after_success_reads;
     int success_reads;
 } flaky_reader_t;
@@ -82,6 +82,20 @@ static bool lz4FrameHasBlockChecksum(const uint8_t *data, size_t len) {
     return has_block_checksum;
 }
 
+static bool lz4FrameUsesIndependentBlocks(const uint8_t *data, size_t len) {
+    LZ4F_dctx *dctx = NULL;
+    EXPECT_FALSE(LZ4F_isError(LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION)));
+    if (dctx == NULL) return false;
+
+    LZ4F_frameInfo_t frame_info = {};
+    size_t src_size = len;
+    size_t ret = LZ4F_getFrameInfo(dctx, &frame_info, data, &src_size);
+    bool has_independent_blocks = !LZ4F_isError(ret) &&
+                                  frame_info.blockMode == LZ4F_blockIndependent;
+    LZ4F_freeDecompressionContext(dctx);
+    return has_independent_blocks;
+}
+
 static ssize_t memReaderRead(void *ctx, void *buf, size_t len) {
     mem_reader_t *r = (mem_reader_t *)ctx;
     if (!r || !buf) return -1;
@@ -100,11 +114,16 @@ static ssize_t flakyReaderRead(void *ctx, void *buf, size_t len) {
     flaky_reader_t *r = (flaky_reader_t *)ctx;
     if (!r || !buf) return -1;
     if (r->success_reads >= r->fail_after_success_reads) return -1;
+    if (r->fail_after_pos > 0 && r->pos >= r->fail_after_pos) return -1;
     if (r->pos >= r->len) return 0;
 
     size_t avail = r->len - r->pos;
     size_t n = len < avail ? len : avail;
     if (r->max_chunk && n > r->max_chunk) n = r->max_chunk;
+    if (r->fail_after_pos > 0) {
+        size_t until_failure = r->fail_after_pos - r->pos;
+        if (n > until_failure) n = until_failure;
+    }
 
     memcpy(buf, r->data + r->pos, n);
     r->pos += n;
@@ -144,8 +163,6 @@ TEST(compression, streamDecompressorInitDestroy) {
     streamDecompressorDestroy(&sd);
     ASSERT_TRUE(sd.ctx == NULL) << "ctx should be NULL after destroy";
     ASSERT_TRUE(sd.algo == ALGO_NONE) << "algo should be NONE after destroy";
-
-    return;
 }
 
 /* --- Test: LZ4 compress → decompress round-trip --- */
@@ -185,7 +202,6 @@ TEST(compression, streamCompressDecompressRoundTrip) {
 
     streamDecompressorDestroy(&sd);
     zfree(compressed);
-    return;
 }
 
 /* --- Test: streamCompressOutputBound returns sane values --- */
@@ -214,7 +230,6 @@ TEST(compression, streamCompressOutputBound) {
 
     zfree(seed_buf);
     streamCompressorDestroy(&sc);
-    return;
 }
 
 /* --- Test: streamCompressFeed error paths --- */
@@ -232,8 +247,6 @@ TEST(compression, streamCompressFeedErrors) {
                                    (const uint8_t *)"x", 1, FLUSH_CONTINUE) == -1)
         << "NULL output should return -1";
     streamCompressorDestroy(&sc);
-
-    return;
 }
 
 /* --- Test: streamDecompressFeed error paths --- */
@@ -255,6 +268,14 @@ TEST(compression, streamDecompressFeedErrors) {
                                      (const uint8_t *)"x", 1, NULL) == -1)
         << "NULL input_consumed should return -1";
     ASSERT_TRUE(sd.errored == false) << "decompressor should not be errored by NULL bookkeeping arg";
+
+    streamDecompressor sd_null_input;
+    ASSERT_TRUE(streamDecompressorInit(&sd_null_input, ALGO_LZ4) == 0);
+    ASSERT_TRUE(streamDecompressFeed(&sd_null_input, buf, sizeof(buf),
+                                     NULL, 1, &consumed) == -1)
+        << "NULL input with non-zero input_len should return -1";
+    ASSERT_TRUE(sd_null_input.errored == true) << "NULL input should latch a sticky decompressor error";
+    streamDecompressorDestroy(&sd_null_input);
 
     /* Zero output capacity should return -1 (no-progress prevention) */
     ASSERT_TRUE(streamDecompressFeed(&sd, buf, 0,
@@ -281,7 +302,6 @@ TEST(compression, streamDecompressFeedErrors) {
     zfree(compressed);
 
     streamDecompressorDestroy(&sd);
-    return;
 }
 
 /* --- Test: pre-frame errors are recoverable, mid-frame errors are permanent --- */
@@ -336,8 +356,6 @@ TEST(compression, streamCompressFeedErrorRecovery) {
     zfree(buf3);
     zfree(buf2);
     streamCompressorDestroy(&sc2);
-
-    return;
 }
 
 TEST(compression, streamReaderClassifiesProbeInputs) {
@@ -423,7 +441,6 @@ TEST(compression, streamReaderClassifiesProbeInputs) {
 
         streamReaderDestroy(t);
     }
-    return;
 }
 
 TEST(compression, streamReaderRejectsOversizedReadRequest) {
@@ -438,7 +455,7 @@ TEST(compression, streamReaderRejectsOversizedReadRequest) {
     ASSERT_TRUE(t != NULL) << "streamReaderCreate should succeed";
 
     uint8_t out[8] = {0};
-    size_t oversized = (size_t)std::numeric_limits<ssize_t>::max() + 1;
+    size_t oversized = (size_t)(std::numeric_limits<ssize_t>::max)() + 1;
     ASSERT_TRUE(streamReaderRead(t, out, oversized) == -1)
         << "oversized reads should fail before touching stream state";
 
@@ -451,7 +468,6 @@ TEST(compression, streamReaderRejectsOversizedReadRequest) {
     ASSERT_TRUE(memcmp(out, input, sizeof(input)) == 0) << "subsequent valid read should still succeed";
 
     streamReaderDestroy(t);
-    return;
 }
 
 /* ===================================================================
@@ -571,7 +587,6 @@ TEST(compression, streamReaderValidatesCompressedStreamKinds) {
         streamReaderDestroy(r);
         dynamicBufFree(&db);
     }
-    return;
 }
 
 /* --- Test: stream_reader marks errored on partial output + read error.
@@ -593,7 +608,11 @@ TEST(compression, streamReaderPartialThenErrorSetsErrored) {
     streamWriterConfig wcfg = makeWriterConfig(ALGO_LZ4, 0, STREAM_KIND_RDB);
     streamWriter *w = streamWriterCreate(&wcfg, emitToDynamicBuf, &db);
     ASSERT_TRUE(w != NULL) << "streamWriterCreate should succeed";
-    ASSERT_TRUE(streamWriterWrite(w, payload, payload_len) >= 0);
+    const size_t first_chunk_len = 4 * 1024;
+    ASSERT_TRUE(streamWriterWrite(w, payload, first_chunk_len) >= 0);
+    ASSERT_TRUE(streamWriterFlush(w) == 0);
+    size_t fail_after_pos = sdslen((const char *)db.data);
+    ASSERT_TRUE(streamWriterWrite(w, payload + first_chunk_len, payload_len - first_chunk_len) >= 0);
     ASSERT_TRUE(streamWriterFinish(w) == 0);
     streamWriterDestroy(w);
 
@@ -601,9 +620,8 @@ TEST(compression, streamReaderPartialThenErrorSetsErrored) {
     fr.data = db.data;
     fr.len = sdslen((const char *)db.data);
     fr.max_chunk = 4096;
-    /* One probe read plus two 4 KB payload reads is enough to produce some
-     * output with an 8 KB window, but not enough to satisfy the full request. */
-    fr.fail_after_success_reads = 3;
+    fr.fail_after_pos = fail_after_pos;
+    fr.fail_after_success_reads = (std::numeric_limits<int>::max)();
     streamReaderConfig rcfg = makeReaderConfig(STREAM_KIND_RDB, false, 8 * 1024);
     streamReader *r = streamReaderCreate(&rcfg, flakyReaderRead, &fr);
     ASSERT_TRUE(r != NULL) << "streamReaderCreate should succeed";
@@ -613,6 +631,8 @@ TEST(compression, streamReaderPartialThenErrorSetsErrored) {
     ASSERT_TRUE(out != NULL);
     ssize_t n1 = streamReaderRead(r, out, out_len);
     ASSERT_TRUE(n1 > 0) << "first read should return partial output";
+    ASSERT_TRUE(n1 < (ssize_t)out_len) << "injected read error should stop the first read early";
+    ASSERT_TRUE(memcmp(out, payload, (size_t)n1) == 0);
     ASSERT_TRUE(streamReaderRead(r, out, out_len) == -1) << "second read should fail immediately";
 
     streamReaderDestroy(r);
@@ -639,7 +659,6 @@ TEST(compression, streamReaderPartialThenErrorSetsErrored) {
 
     dynamicBufFree(&db);
     zfree(payload);
-    return;
 }
 
 /* --- Test: streamWriterCreate/destroy --- */
@@ -675,8 +694,6 @@ TEST(compression, streamWriterCreateDestroy) {
 
     /* destroy NULL should be safe */
     streamWriterDestroy(NULL);
-
-    return;
 }
 
 /* --- Test: stream_writer write + finish round-trip --- */
@@ -739,7 +756,6 @@ TEST(compression, streamWriterRoundTrip) {
     streamDecompressorDestroy(&sd);
     streamWriterDestroy(t);
     dynamicBufFree(&db);
-    return;
 }
 
 /* --- Test: a single large write is chunked internally without changing
@@ -783,7 +799,6 @@ TEST(compression, streamWriterLargeSingleWrite) {
     zfree(payload);
     streamReaderDestroy(r);
     dynamicBufFree(&db);
-    return;
 }
 
 /* --- Test: small caller reads should still drain a compressed stream
@@ -832,7 +847,6 @@ TEST(compression, streamReaderSmallReadsRoundTrip) {
     zfree(payload);
     streamReaderDestroy(r);
     dynamicBufFree(&db);
-    return;
 }
 
 /* --- Test: streamWriterFlush semantics (no-op before writes, valid mid-stream) --- */
@@ -881,7 +895,6 @@ TEST(compression, streamWriterFlushBehavior) {
     streamDecompressorDestroy(&sd);
     streamWriterDestroy(t);
     dynamicBufFree(&db);
-    return;
 }
 
 TEST(compression, streamWriterFlushAfterFinishIsNoop) {
@@ -901,7 +914,6 @@ TEST(compression, streamWriterFlushAfterFinishIsNoop) {
 
     streamWriterDestroy(t);
     dynamicBufFree(&db);
-    return;
 }
 
 TEST(compression, streamWriterCodecChecksumToggle) {
@@ -981,6 +993,34 @@ TEST(compression, streamReaderValidateEndRejectsTrailingBytes) {
     dynamicBufFree(&db);
 }
 
+TEST(compression, streamReaderValidateEndRejectsUnreadDecodedBytes) {
+    const char *payload = "payload with unread decoded suffix";
+    const size_t payload_len = strlen(payload);
+    dynamic_buf_t db;
+    dynamicBufInit(&db);
+
+    streamWriterConfig wcfg = makeWriterConfig(ALGO_LZ4, 0, STREAM_KIND_RDB, true);
+    streamWriter *w = streamWriterCreate(&wcfg, emitToDynamicBuf, &db);
+    ASSERT_TRUE(w != NULL);
+    ASSERT_TRUE(streamWriterWrite(w, payload, payload_len) >= 0);
+    ASSERT_TRUE(streamWriterFinish(w) == 0);
+
+    mem_reader_t reader_ctx = {db.data, sdslen((const char *)db.data), 0, 0};
+    streamReaderConfig rcfg = makeReaderConfig(STREAM_KIND_RDB, false, 0);
+    streamReader *reader = streamReaderCreate(&rcfg, memReaderRead, &reader_ctx);
+    ASSERT_TRUE(reader != NULL);
+
+    char out[8];
+    ASSERT_TRUE(streamReaderRead(reader, out, sizeof(out)) == (ssize_t)sizeof(out));
+    ASSERT_TRUE(memcmp(out, payload, sizeof(out)) == 0);
+    ASSERT_TRUE(streamReaderValidateEnd(reader) == -1);
+    ASSERT_TRUE(streamReaderGetError(reader) == STREAM_READER_ERROR_CORRUPT);
+
+    streamReaderDestroy(reader);
+    streamWriterDestroy(w);
+    dynamicBufFree(&db);
+}
+
 /* --- Test: compressRio write + finish round-trip --- */
 TEST(compression, compressRioRoundTrip) {
     /* Use a buffer rio as the inner rio */
@@ -997,7 +1037,7 @@ TEST(compression, compressRioRoundTrip) {
     ASSERT_TRUE(rioWrite((rio *)&cr, test_data, data_len) != 0) << "rioWrite should succeed";
 
     /* Finalize and destroy */
-    compressRioFinish(&cr);
+    ASSERT_TRUE(compressRioFinish(&cr) == 0);
 
     /* Get the compressed output from the buffer rio */
     sds compressed = buffer_rio.io.buffer.ptr;
@@ -1039,7 +1079,6 @@ TEST(compression, compressRioRoundTrip) {
     streamDecompressorDestroy(&sd);
     compressRioDestroy(&cr);
     sdsfree(compressed);
-    return;
 }
 
 TEST(compression, compressRioDoesNotInstallRdbChecksum) {
@@ -1061,7 +1100,6 @@ TEST(compression, compressRioDoesNotInstallRdbChecksum) {
     ASSERT_TRUE(compressRioFinish(&cr) == 0);
     compressRioDestroy(&cr);
     sdsfree(buffer_rio.io.buffer.ptr);
-    return;
 }
 
 TEST(compression, compressRioDoesNotCopyRdbChecksumFlags) {
@@ -1082,7 +1120,6 @@ TEST(compression, compressRioDoesNotCopyRdbChecksumFlags) {
     ASSERT_TRUE(compressRioFinish(&cr) == 0);
     compressRioDestroy(&cr);
     sdsfree(buffer_rio.io.buffer.ptr);
-    return;
 }
 
 TEST(compression, compressRioCodecChecksumDoesNotInstallRdbChecksum) {
@@ -1102,7 +1139,6 @@ TEST(compression, compressRioCodecChecksumDoesNotInstallRdbChecksum) {
     ASSERT_TRUE(compressRioFinish(&cr) == 0);
     compressRioDestroy(&cr);
     sdsfree(buffer_rio.io.buffer.ptr);
-    return;
 }
 
 TEST(compression, rioDecoratorsPreserveInnerType) {
@@ -1143,8 +1179,8 @@ TEST(compression, decompressRioRoundTrip) {
     const char *test_data = "Decompression rio test data. "
                             "This should round-trip through compress then decompress.";
     size_t data_len = strlen(test_data);
-    streamWriterWrite(t, test_data, data_len);
-    streamWriterFinish(t);
+    ASSERT_TRUE(streamWriterWrite(t, test_data, data_len) >= 0);
+    ASSERT_TRUE(streamWriterFinish(t) == 0);
     streamWriterDestroy(t);
 
     /* Create a buffer rio with the full VKCS-wrapped stream. */
@@ -1165,7 +1201,6 @@ TEST(compression, decompressRioRoundTrip) {
     decompressRioDestroy(&dr);
     sdsfree(comp_sds);
     dynamicBufFree(&db);
-    return;
 }
 
 TEST(compression, decompressRioTellTracksSourceProgress) {
@@ -1236,7 +1271,6 @@ TEST(compression, decompressRioClassifiesInput) {
 
         sdsfree(buf);
     }
-    return;
 }
 
 /* --- Test: compressRioFinish is idempotent --- */
@@ -1249,18 +1283,17 @@ TEST(compression, compressRioFinishIdempotent) {
     compressRio cr;
     ASSERT_TRUE(rioInitWithCompress(&cr, &buffer_rio, &cfg) == 0);
 
-    rioWrite((rio *)&cr, "test", 4);
-    compressRioFinish(&cr);
+    ASSERT_TRUE(rioWrite((rio *)&cr, "test", 4) != 0);
+    ASSERT_TRUE(compressRioFinish(&cr) == 0);
     size_t len_after_first = sdslen(buffer_rio.io.buffer.ptr);
 
     /* Second finish should be a no-op */
-    compressRioFinish(&cr);
+    ASSERT_TRUE(compressRioFinish(&cr) == 0);
     size_t len_after_second = sdslen(buffer_rio.io.buffer.ptr);
     ASSERT_TRUE(len_after_first == len_after_second) << "second finish should not produce more output";
 
     compressRioDestroy(&cr);
     sdsfree(buffer_rio.io.buffer.ptr);
-    return;
 }
 
 /* --- Test: compress_rio flush mid-stream does not end frame --- */
@@ -1283,7 +1316,7 @@ TEST(compression, compressRioFlushMidStream) {
     ASSERT_TRUE(rioWrite((rio *)&cr, "second chunk", 12) != 0) << "write after flush should succeed";
 
     /* Now finalize */
-    compressRioFinish(&cr);
+    ASSERT_TRUE(compressRioFinish(&cr) == 0);
 
     /* Verify the entire stream decompresses correctly */
     sds compressed = buffer_rio.io.buffer.ptr;
@@ -1318,7 +1351,6 @@ TEST(compression, compressRioFlushMidStream) {
     streamDecompressorDestroy(&sd);
     compressRioDestroy(&cr);
     sdsfree(compressed);
-    return;
 }
 
 /* --- Test: rdbLoadProgressCallback does not cast write-side streaming rios
@@ -1340,7 +1372,6 @@ TEST(compression, rdbLoadProgressCallbackStreamingGuard) {
 
     compressRioDestroy(&cr);
     sdsfree(inner.io.buffer.ptr);
-    return;
 }
 
 /* --- Test: decompress_rio with large payload (>64KB) exercises partial
@@ -1365,8 +1396,8 @@ TEST(compression, decompressRioLargePayload) {
     streamWriter *t = streamWriterCreate(&cfg, emitToDynamicBuf, &db);
     ASSERT_TRUE(t != NULL);
 
-    streamWriterWrite(t, payload, payload_len);
-    streamWriterFinish(t);
+    ASSERT_TRUE(streamWriterWrite(t, payload, payload_len) >= 0);
+    ASSERT_TRUE(streamWriterFinish(t) == 0);
     streamWriterDestroy(t);
 
     /* Decompress via decompress_rio using the full VKCS-wrapped stream. */
@@ -1396,7 +1427,6 @@ TEST(compression, decompressRioLargePayload) {
     zfree(result);
     zfree(payload);
     dynamicBufFree(&db);
-    return;
 }
 
 /* --- Test: decompressRioRead handles a large single rioRead request.
@@ -1417,8 +1447,8 @@ TEST(compression, decompressRioDirectPath) {
     streamWriter *t = streamWriterCreate(&cfg, emitToDynamicBuf, &db);
     ASSERT_TRUE(t != NULL);
 
-    streamWriterWrite(t, payload, payload_len);
-    streamWriterFinish(t);
+    ASSERT_TRUE(streamWriterWrite(t, payload, payload_len) >= 0);
+    ASSERT_TRUE(streamWriterFinish(t) == 0);
     streamWriterDestroy(t);
 
     /* Decompress via decompress_rio with a single large read. */
@@ -1439,7 +1469,6 @@ TEST(compression, decompressRioDirectPath) {
     zfree(result);
     zfree(payload);
     dynamicBufFree(&db);
-    return;
 }
 
 /* --- Test: stream_reader stops at the end of the compressed frame even if
@@ -1460,6 +1489,7 @@ TEST(compression, streamReaderStopsAtFrameEndBeforeTrailingBytes) {
     ASSERT_TRUE(streamWriterWrite(w, payload, payload_len) >= 0);
     ASSERT_TRUE(streamWriterFinish(w) == 0);
     streamWriterDestroy(w);
+    size_t frame_len = sdslen((const char *)db.data);
 
     sds input = sdsnewlen(db.data, sdslen((const char *)db.data));
     input = sdscatlen(input, trailer, trailer_len);
@@ -1480,11 +1510,11 @@ TEST(compression, streamReaderStopsAtFrameEndBeforeTrailingBytes) {
     /* The reader must stop cleanly at frame end instead of trying to decode
      * trailing bytes as part of the same compressed frame. */
     ASSERT_TRUE(streamReaderRead(r, out, sizeof(out)) == 0);
+    ASSERT_TRUE(mr.pos == frame_len) << "streamReader must not consume bytes after the LZ4 frame";
 
     streamReaderDestroy(r);
     sdsfree(input);
     dynamicBufFree(&db);
-    return;
 }
 
 TEST(compression, streamReaderRejectsTruncatedFrameTrailer) {
@@ -1522,7 +1552,6 @@ TEST(compression, streamReaderRejectsTruncatedFrameTrailer) {
 
     streamReaderDestroy(r);
     dynamicBufFree(&db);
-    return;
 }
 
 /* --- Test: streamWriterWrite after finish is rejected.
@@ -1535,8 +1564,8 @@ TEST(compression, streamWriterWriteAfterFinish) {
     streamWriter *t = streamWriterCreate(&cfg, emitToDynamicBuf, &db);
     ASSERT_TRUE(t != NULL);
 
-    streamWriterWrite(t, "hello", 5);
-    streamWriterFinish(t);
+    ASSERT_TRUE(streamWriterWrite(t, "hello", 5) >= 0);
+    ASSERT_TRUE(streamWriterFinish(t) == 0);
     size_t len_after_finish = sdslen((const char *)db.data);
 
     /* Write after finish must fail and emit no output. */
@@ -1544,7 +1573,7 @@ TEST(compression, streamWriterWriteAfterFinish) {
     ASSERT_TRUE(sdslen((const char *)db.data) == len_after_finish) << "write after finish should not produce output";
 
     /* Second finish — should also be a no-op */
-    streamWriterFinish(t);
+    ASSERT_TRUE(streamWriterFinish(t) == 0);
     ASSERT_TRUE(sdslen((const char *)db.data) == len_after_finish) << "second finish should not produce output";
 
     /* Verify the stream is still valid: one envelope + one frame */
@@ -1573,7 +1602,6 @@ TEST(compression, streamWriterWriteAfterFinish) {
     streamDecompressorDestroy(&sd);
     streamWriterDestroy(t);
     dynamicBufFree(&db);
-    return;
 }
 
 /* Test that two independent compress/decompress streams can coexist
@@ -1593,13 +1621,13 @@ TEST(compression, independentStreamsCoexist) {
     const char *data2 = "Stream two data - different content for second stream BBBB";
 
     /* Interleave writes to both streams */
-    streamWriterWrite(t1, data1, strlen(data1));
-    streamWriterWrite(t2, data2, strlen(data2));
-    streamWriterWrite(t1, data1, strlen(data1)); /* write again to stream 1 */
-    streamWriterWrite(t2, data2, strlen(data2)); /* write again to stream 2 */
+    ASSERT_TRUE(streamWriterWrite(t1, data1, strlen(data1)) >= 0);
+    ASSERT_TRUE(streamWriterWrite(t2, data2, strlen(data2)) >= 0);
+    ASSERT_TRUE(streamWriterWrite(t1, data1, strlen(data1)) >= 0); /* write again to stream 1 */
+    ASSERT_TRUE(streamWriterWrite(t2, data2, strlen(data2)) >= 0); /* write again to stream 2 */
 
-    streamWriterFinish(t1);
-    streamWriterFinish(t2);
+    ASSERT_TRUE(streamWriterFinish(t1) == 0);
+    ASSERT_TRUE(streamWriterFinish(t2) == 0);
 
     /* Decompress both and verify independently */
     for (int i = 0; i < 2; i++) {
@@ -1628,7 +1656,6 @@ TEST(compression, independentStreamsCoexist) {
     streamWriterDestroy(t2);
     dynamicBufFree(&db1);
     dynamicBufFree(&db2);
-    return;
 }
 
 TEST(compression, streamWriterRepetitivePayloadRoundTrip) {
@@ -1648,6 +1675,9 @@ TEST(compression, streamWriterRepetitivePayloadRoundTrip) {
         ASSERT_TRUE(streamWriterWrite(t, pattern, sizeof(pattern)) >= 0);
     }
     ASSERT_TRUE(streamWriterFinish(t) == 0);
+    ASSERT_TRUE(lz4FrameUsesIndependentBlocks(db.data + VKCS_ENVELOPE_SIZE,
+                                              sdslen((const char *)db.data) - VKCS_ENVELOPE_SIZE))
+        << "stream writer should use independent LZ4 blocks";
 
     sds comp = sdsnewlen(db.data, sdslen((const char *)db.data));
     rio buf_rio;
@@ -1670,5 +1700,4 @@ TEST(compression, streamWriterRepetitivePayloadRoundTrip) {
     zfree(result);
     streamWriterDestroy(t);
     dynamicBufFree(&db);
-    return;
 }
