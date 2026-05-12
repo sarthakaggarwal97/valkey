@@ -184,7 +184,7 @@ TEST_F(CompressionTest, streamCompressDecompressRoundTrip) {
     ssize_t compressed_len = streamCompressFeed(&sc, compressed, bound,
                                                 (const uint8_t *)input, input_len,
                                                 FLUSH_END);
-    ASSERT_GT(compressed_len, 0u) << "compress should succeed";
+    ASSERT_GT(compressed_len, 0) << "compress should succeed";
     ASSERT_EQ(sc.stream_started, false) << "frame should be closed after FLUSH_END";
     streamCompressorDestroy(&sc);
 
@@ -294,7 +294,7 @@ TEST_F(CompressionTest, streamDecompressFeedErrors) {
     ssize_t compressed_len = streamCompressFeed(&sc, compressed, bound,
                                                 (const uint8_t *)payload, strlen(payload),
                                                 FLUSH_END);
-    ASSERT_GT(compressed_len, 0u);
+    ASSERT_GT(compressed_len, 0);
     streamCompressorDestroy(&sc);
 
     ASSERT_TRUE(streamDecompressFeed(&sd, out, sizeof(out),
@@ -1044,7 +1044,7 @@ TEST_F(CompressionTest, compressRioRoundTrip) {
     /* Get the compressed output from the buffer rio */
     sds compressed = buffer_rio.io.buffer.ptr;
     size_t compressed_len = sdslen(compressed);
-    ASSERT_GT(compressed_len, VKCS_ENVELOPE_SIZE) << "compressed output should exist";
+    ASSERT_GT(compressed_len, (size_t)VKCS_ENVELOPE_SIZE) << "compressed output should exist";
 
     /* Verify VKCS envelope */
     ASSERT_EQ(compressed[0], (char)VKCS_MAGIC_0) << "magic V";
@@ -1323,7 +1323,7 @@ TEST_F(CompressionTest, compressRioFlushMidStream) {
     /* Verify the entire stream decompresses correctly */
     sds compressed = buffer_rio.io.buffer.ptr;
     size_t compressed_len = sdslen(compressed);
-    ASSERT_GT(compressed_len, VKCS_ENVELOPE_SIZE);
+    ASSERT_GT(compressed_len, (size_t)VKCS_ENVELOPE_SIZE);
 
     streamDecompressor sd;
     ASSERT_EQ(streamDecompressorInit(&sd, ALGO_LZ4), 0);
