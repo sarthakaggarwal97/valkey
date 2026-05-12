@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   determine-release-branches:
-    if: github.repository == 'valkey-io/valkey'
+    # TEST BRANCH: removed 'valkey-io/valkey' guard so this can run on a fork.
     runs-on: ubuntu-latest
     outputs:
       branches: ${{ steps.release-branches.outputs.branches }}
@@ -49,7 +49,8 @@ jobs:
             core.setOutput('has-branches', releaseBranches.length > 0 ? 'true' : 'false');
   run-daily-for-release-branches:
     needs: determine-release-branches
-    if: needs.determine-release-branches.outputs.has-branches == 'true' && github.repository == 'valkey-io/valkey'
+    # TEST BRANCH: removed 'valkey-io/valkey' guard so this can run on a fork.
+    if: needs.determine-release-branches.outputs.has-branches == 'true'
     permissions:
       actions: write
       contents: read
@@ -57,12 +58,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        release-branch: ${{ fromJson(needs.determine-release-branches.outputs.branches) }}
+        # TEST BRANCH: narrow matrix to a single release branch to keep CI cheap.
+        release-branch: ["9.0"]
       max-parallel: 1
     uses: ./.github/workflows/daily.yml
     with:
-      use_repo: valkey-io/valkey
+      # TEST BRANCH: point at the fork so daily.yml checkouts hit a repo we own.
+      use_repo: sarthakaggarwal97/valkey
       use_git_ref: ${{ matrix.release-branch }}
-      skipjobs: ""
-      skiptests: ""
+      # TEST BRANCH: skip every job and every test so we only validate that
+      # the reusable workflow chain starts (permissions + inputs are valid).
+      skipjobs: "valgrind,sanitizer,tls,freebsd,macos,alpine,32bit,iothreads,ubuntu,rpm-distros,malloc,specific,fortify,reply-schema,arm,s390x,lttng"
+      skiptests: "valkey,modules,sentinel,cluster,unittest,large-memory"
     secrets: inherit
