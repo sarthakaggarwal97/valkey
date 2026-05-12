@@ -1124,7 +1124,7 @@ TEST_F(CompressionTest, compressRioDoesNotCopyRdbChecksumFlags) {
     streamWriterConfig cfg = makeWriterConfig(ALGO_LZ4, 0, STREAM_KIND_RDB);
     compressRio cr;
     ASSERT_EQ(rioInitWithCompress(&cr, &buffer_rio, &cfg), 0);
-    ASSERT_EQ(((rio *)&cr)->flags & RIO_FLAG_SKIP_RDB_CHECKSUM, 0);
+    ASSERT_FALSE(((rio *)&cr)->flags & RIO_FLAG_SKIP_RDB_CHECKSUM);
 
     const char *payload = "skip-checksum-payload";
     ASSERT_NE(rioWrite((rio *)&cr, payload, strlen(payload)), 0u);
@@ -1382,7 +1382,7 @@ TEST_F(CompressionTest, rdbLoadProgressCallbackStreamingGuard) {
     const char sample[] = "progress-guard";
     rdbLoadProgressCallback((rio *)&cr, sample, sizeof(sample) - 1);
 
-    ASSERT_EQ(cr.base.flags & RIO_FLAG_READ_ERROR, 0) << "write-side streaming rio must not set read error";
+    ASSERT_FALSE(cr.base.flags & RIO_FLAG_READ_ERROR) << "write-side streaming rio must not set read error";
 
     compressRioDestroy(&cr);
     sdsfree(inner.io.buffer.ptr);
