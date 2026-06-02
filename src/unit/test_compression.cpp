@@ -50,7 +50,7 @@ typedef struct {
 
 static streamReaderConfig makeReaderConfig(uint8_t expected_stream_kind,
                                            bool allow_passthrough,
-                                           size_t buffer_size) {
+                                           size_t buffer_size = STREAM_READER_BUFFER_SIZE_DEFAULT) {
     streamReaderConfig cfg = {};
     cfg.expected_stream_kind = expected_stream_kind;
     cfg.allow_passthrough = allow_passthrough;
@@ -417,7 +417,7 @@ TEST_F(CompressionTest, streamReaderClassifiesProbeInputs) {
         mr.data = cases[i].input;
         mr.len = cases[i].input_len;
         mr.max_chunk = cases[i].max_chunk;
-        streamReaderConfig cfg = makeReaderConfig(STREAM_KIND_RDB, cases[i].allow_passthrough, 0);
+        streamReaderConfig cfg = makeReaderConfig(STREAM_KIND_RDB, cases[i].allow_passthrough);
         streamReader *t = streamReaderCreate(&cfg, memReaderRead, &mr);
         ASSERT_NE(t, nullptr) << cases[i].name;
 
@@ -451,7 +451,7 @@ TEST_F(CompressionTest, streamReaderRejectsOversizedReadRequest) {
     mr.data = input;
     mr.len = sizeof(input);
     mr.max_chunk = 2;
-    streamReaderConfig cfg = makeReaderConfig(STREAM_KIND_RDB, true, 0);
+    streamReaderConfig cfg = makeReaderConfig(STREAM_KIND_RDB, true);
 
     streamReader *t = streamReaderCreate(&cfg, memReaderRead, &mr);
     ASSERT_NE(t, nullptr) << "streamReaderCreate should succeed";
@@ -501,7 +501,7 @@ static int emitToDynamicBuf(void *ctx, const uint8_t *data, size_t len) {
 }
 
 static int initVkcsRdbDecompressRio(decompressRio *dr, rio *inner) {
-    streamReaderConfig cfg = makeReaderConfig(STREAM_KIND_RDB, false, 0);
+    streamReaderConfig cfg = makeReaderConfig(STREAM_KIND_RDB, false);
     return rioInitWithDecompression(dr, inner, &cfg, nullptr) == DECOMPRESS_RIO_INIT_OK ? 0 : -1;
 }
 
@@ -527,21 +527,21 @@ TEST_F(CompressionTest, streamReaderValidatesCompressedStreamKinds) {
          0x7f,
          0x7f,
          0,
-         0,
+         STREAM_READER_BUFFER_SIZE_DEFAULT,
          true},
         {"custom stream when RDB expected",
          "stream-kind mismatch",
          0x7f,
          STREAM_KIND_RDB,
          0,
-         0,
+         STREAM_READER_BUFFER_SIZE_DEFAULT,
          false},
         {"RDB stream when custom expected",
          "stream-kind mismatch",
          STREAM_KIND_RDB,
          0x7f,
          0,
-         0,
+         STREAM_READER_BUFFER_SIZE_DEFAULT,
          false},
     };
 
@@ -647,7 +647,7 @@ TEST_F(CompressionTest, streamReaderPartialThenErrorSetsErrored) {
     fr_passthrough.len = sizeof(plain) - 1;
     fr_passthrough.max_chunk = 0;
     fr_passthrough.fail_after_success_reads = 1; /* probe succeeds, next read fails */
-    streamReaderConfig pass_cfg = makeReaderConfig(STREAM_KIND_RDB, true, 0);
+    streamReaderConfig pass_cfg = makeReaderConfig(STREAM_KIND_RDB, true);
     streamReader *rp = streamReaderCreate(&pass_cfg, flakyReaderRead, &fr_passthrough);
     ASSERT_NE(rp, nullptr) << "passthrough reader create should succeed";
 
@@ -961,7 +961,7 @@ TEST_F(CompressionTest, streamReaderValidateEndAcceptsClosedFrame) {
     ASSERT_EQ(streamWriterFinish(w), 0);
 
     MemReader reader_ctx = {db.data, sdslen((const char *)db.data), 0, 7};
-    streamReaderConfig rcfg = makeReaderConfig(STREAM_KIND_RDB, false, 0);
+    streamReaderConfig rcfg = makeReaderConfig(STREAM_KIND_RDB, false);
     streamReader *reader = streamReaderCreate(&rcfg, memReaderRead, &reader_ctx);
     ASSERT_NE(reader, nullptr);
 
@@ -988,7 +988,7 @@ TEST_F(CompressionTest, streamReaderValidateEndRejectsTrailingBytes) {
     db.data = (uint8_t *)sdscatlen((sds)db.data, "x", 1);
 
     MemReader reader_ctx = {db.data, sdslen((const char *)db.data), 0, 0};
-    streamReaderConfig rcfg = makeReaderConfig(STREAM_KIND_RDB, false, 0);
+    streamReaderConfig rcfg = makeReaderConfig(STREAM_KIND_RDB, false);
     streamReader *reader = streamReaderCreate(&rcfg, memReaderRead, &reader_ctx);
     ASSERT_NE(reader, nullptr);
 
@@ -1015,7 +1015,7 @@ TEST_F(CompressionTest, streamReaderValidateEndRejectsUnreadDecodedBytes) {
     ASSERT_EQ(streamWriterFinish(w), 0);
 
     MemReader reader_ctx = {db.data, sdslen((const char *)db.data), 0, 0};
-    streamReaderConfig rcfg = makeReaderConfig(STREAM_KIND_RDB, false, 0);
+    streamReaderConfig rcfg = makeReaderConfig(STREAM_KIND_RDB, false);
     streamReader *reader = streamReaderCreate(&rcfg, memReaderRead, &reader_ctx);
     ASSERT_NE(reader, nullptr);
 
@@ -1198,7 +1198,7 @@ TEST_F(CompressionTest, rioDecoratorsPreserveTransportType) {
     sds raw = sdsnew("plain-rdb-prefix");
     rio raw_rio;
     rioInitWithBuffer(&raw_rio, raw);
-    streamReaderConfig rcfg = makeReaderConfig(STREAM_KIND_RDB, true, 0);
+    streamReaderConfig rcfg = makeReaderConfig(STREAM_KIND_RDB, true);
     decompressRio dr;
     ASSERT_EQ(rioInitWithDecompression(&dr, &raw_rio, &rcfg, nullptr), DECOMPRESS_RIO_INIT_OK);
     ASSERT_EQ(rioGetTransportType((rio *)&dr), (uint8_t)RIO_TYPE_BUFFER);
@@ -1281,7 +1281,7 @@ TEST_F(CompressionTest, decompressRioClassifiesInput) {
         rio buffer_rio;
         rioInitWithBuffer(&buffer_rio, buf);
 
-        streamReaderConfig cfg = makeReaderConfig(STREAM_KIND_RDB, true, 0);
+        streamReaderConfig cfg = makeReaderConfig(STREAM_KIND_RDB, true);
         decompressRio dr;
         streamReaderInfo info;
         ASSERT_EQ(rioInitWithDecompression(&dr, &buffer_rio, &cfg, &info), DECOMPRESS_RIO_INIT_OK);
@@ -1304,7 +1304,7 @@ TEST_F(CompressionTest, decompressRioClassifiesInput) {
         rio buffer_rio;
         rioInitWithBuffer(&buffer_rio, buf);
 
-        streamReaderConfig cfg = makeReaderConfig(STREAM_KIND_RDB, true, 0);
+        streamReaderConfig cfg = makeReaderConfig(STREAM_KIND_RDB, true);
         decompressRio dr;
         ASSERT_EQ(rioInitWithDecompression(&dr, &buffer_rio, &cfg, nullptr),
                   DECOMPRESS_RIO_INIT_INCOMPATIBLE);

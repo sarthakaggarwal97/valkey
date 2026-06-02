@@ -457,7 +457,7 @@ streamReader *streamReaderCreate(const streamReaderConfig *cfg,
     t->probe_cfg.allow_passthrough = cfg->allow_passthrough;
     t->probe_cfg.expected_stream_kind = cfg->expected_stream_kind;
     vkcsProbeInit(&t->probe);
-    t->buffer_size = cfg->buffer_size ? cfg->buffer_size : STREAM_READER_BUFFER_SIZE_DEFAULT;
+    t->buffer_size = cfg->buffer_size;
     if (t->buffer_size < STREAM_READER_BUFFER_SIZE_MIN) {
         t->buffer_size = STREAM_READER_BUFFER_SIZE_MIN;
     }

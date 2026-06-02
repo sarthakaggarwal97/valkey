@@ -51,6 +51,8 @@ static void rioInitBase(rio *base,
 
 static int compressRioEmit(void *ctx, const uint8_t *data, size_t len) {
     compressRio *cr = (compressRio *)ctx;
+    /* Bridge streamWriter's 0/-1 sink contract to rioWrite's nonzero/zero
+     * success contract while keeping streamWriter sink-agnostic. */
     return rioWrite(cr->inner, data, len) == 0 ? -1 : 0;
 }
 

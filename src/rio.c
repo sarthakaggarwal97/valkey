@@ -545,6 +545,10 @@ uint8_t rioGetTransportType(const rio *r) {
     return r->transport_type;
 }
 
+int rioIsConnTransport(const rio *r) {
+    return r && r->transport_type == RIO_TYPE_CONN;
+}
+
 /* --------------------------- Higher level interface --------------------------
  *
  * The following higher level functions use lower level rio.c functions to help

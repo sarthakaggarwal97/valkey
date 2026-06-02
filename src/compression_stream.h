@@ -38,9 +38,9 @@ typedef enum {
 
 typedef int (*vkcsEmitFn)(void *ctx, const uint8_t *data, size_t len);
 
-/* Reader compressed-input/decompressed-output buffer size when cfg->buffer_size
- * is unset. Tiny caller values are clamped up so the LZ4 decoder can always
- * make forward progress without growing internal state. */
+/* Default reader compressed-input/decompressed-output buffer size. Tiny caller
+ * values are clamped up so the LZ4 decoder can always make forward progress
+ * without growing internal state. */
 #define STREAM_READER_BUFFER_SIZE_DEFAULT (1024 * 1024)
 #define STREAM_READER_BUFFER_SIZE_MIN (128 * 1024)
 
@@ -56,7 +56,7 @@ typedef struct {
 typedef struct {
     uint8_t expected_stream_kind;
     bool allow_passthrough;
-    size_t buffer_size; /* 0 means use STREAM_READER_BUFFER_SIZE_DEFAULT. */
+    size_t buffer_size; /* Clamped to STREAM_READER_BUFFER_SIZE_MIN. */
 } streamReaderConfig;
 
 typedef struct streamWriter streamWriter;
