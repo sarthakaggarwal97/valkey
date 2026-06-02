@@ -14,7 +14,11 @@
  *   [4]    version (currently VKCS_VERSION)
  *   [5]    codec id
  *   [6]    flags (bit 0 = codec checksum enabled; other bits reserved)
- *   [7]    stream kind */
+ *   [7]    stream kind
+ *
+ * The stream kind identifies the decompressed payload, so readers can reject a
+ * valid compressed stream that is meant for a different logical consumer before
+ * handing bytes to RDB, replication, or another parser. */
 #define VKCS_MAGIC_0 0x56 /* 'V' */
 #define VKCS_MAGIC_1 0x4B /* 'K' */
 #define VKCS_MAGIC_2 0x43 /* 'C' */
@@ -23,7 +27,10 @@
 #define VKCS_ENVELOPE_SIZE 8
 #define VKCS_VERSION 1
 #define VKCS_FLAG_CODEC_CHECKSUM (1 << 0)
-#define STREAM_KIND_RDB 0x00
+
+typedef enum {
+    STREAM_KIND_RDB = 0x00,
+} streamKind;
 
 typedef enum {
     VKCS_CODEC_LZ4 = 0x01,
@@ -49,7 +56,7 @@ typedef struct {
 typedef struct {
     uint8_t expected_stream_kind;
     bool allow_passthrough;
-    size_t buffer_size; /* 0 selects STREAM_READER_BUFFER_SIZE_DEFAULT. */
+    size_t buffer_size; /* 0 means use STREAM_READER_BUFFER_SIZE_DEFAULT. */
 } streamReaderConfig;
 
 typedef struct streamWriter streamWriter;
@@ -73,7 +80,7 @@ typedef enum {
 typedef ssize_t (*streamReaderReadFn)(void *ctx, void *buf, size_t len);
 
 streamWriter *streamWriterCreate(const streamWriterConfig *cfg,
-                                 vkcsEmitFn emit_cb,
+                                 vkcsEmitFn emit_fn,
                                  void *emit_ctx);
 
 /* Returns compressed bytes emitted to the sink (not input bytes consumed),

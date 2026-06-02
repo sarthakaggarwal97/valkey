@@ -1726,10 +1726,11 @@ int rdbSave(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
         return C_ERR;
     }
 
-    serverLog(LL_NOTICE, "DB saved on disk");
     if (isRdbStreamingCompressionEnabled()) {
-        serverLog(LL_VERBOSE, "RDB saved with %s streaming compression",
+        serverLog(LL_NOTICE, "DB saved on disk with %s streaming compression",
                   compressionAlgoName((compressionAlgo)server.rdb_compression_algo));
+    } else {
+        serverLog(LL_NOTICE, "DB saved on disk");
     }
     server.dirty = 0;
     server.lastsave = time(NULL);

@@ -65,8 +65,10 @@ ssize_t streamCompressFeed(streamCompressor *sc,
                            size_t input_len,
                            compressFlushMode flush_mode);
 
-/* Returns bytes written, or -1 on error. *input_consumed is set so the caller
- * can retain any unconsumed suffix and retry with more output space. */
+/* Returns decompressed bytes written, or -1 on error. *input_consumed is set to
+ * the number of compressed input bytes consumed. If it is less than input_len,
+ * the caller must keep the unconsumed suffix and pass it again with more output
+ * space. */
 ssize_t streamDecompressFeed(streamDecompressor *sd,
                              uint8_t *output,
                              size_t output_capacity,
