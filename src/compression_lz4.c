@@ -27,7 +27,7 @@ int compressionLz4CompressorInit(streamCompressor *sc) {
     return 0;
 }
 
-void compressionLz4CompressorDestroy(streamCompressor *sc) {
+void compressionLz4CompressorFree(streamCompressor *sc) {
     if (!sc || !sc->ctx) return;
     LZ4F_freeCompressionContext((LZ4F_cctx *)sc->ctx);
     sc->ctx = NULL;
@@ -41,7 +41,7 @@ int compressionLz4DecompressorInit(streamDecompressor *sd) {
     return 0;
 }
 
-void compressionLz4DecompressorDestroy(streamDecompressor *sd) {
+void compressionLz4DecompressorFree(streamDecompressor *sd) {
     if (!sd || !sd->ctx) return;
     LZ4F_freeDecompressionContext((LZ4F_dctx *)sd->ctx);
     sd->ctx = NULL;

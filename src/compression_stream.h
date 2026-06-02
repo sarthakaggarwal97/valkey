@@ -88,7 +88,7 @@ streamWriter *streamWriterCreate(const streamWriterConfig *cfg,
 ssize_t streamWriterWrite(streamWriter *t, const void *buf, size_t len);
 int streamWriterFlush(streamWriter *t);
 int streamWriterFinish(streamWriter *t);
-void streamWriterDestroy(streamWriter *t);
+void streamWriterFree(streamWriter *t);
 int streamWriterIsErrored(const streamWriter *t);
 void streamWriterSetError(streamWriter *t);
 int streamReadEnvelopeInfo(const uint8_t *buf,
@@ -109,6 +109,6 @@ ssize_t streamReaderRead(streamReader *t, void *buf, size_t len);
 int streamReaderGetInfo(streamReader *t, streamReaderInfo *info);
 streamReaderError streamReaderGetError(const streamReader *t);
 int streamReaderValidateEnd(streamReader *t);
-void streamReaderDestroy(streamReader *t);
+void streamReaderFree(streamReader *t);
 
 #endif /* COMPRESSION_STREAM_H */

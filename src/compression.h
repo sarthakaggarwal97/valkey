@@ -48,10 +48,10 @@ bool compressionAlgoSupportsStreaming(compressionAlgo algo);
 const char *compressionAlgoName(compressionAlgo algo);
 
 int streamCompressorInit(streamCompressor *sc, compressionAlgo algo, int level);
-void streamCompressorDestroy(streamCompressor *sc);
+void streamCompressorFree(streamCompressor *sc);
 
 int streamDecompressorInit(streamDecompressor *sd, compressionAlgo algo);
-void streamDecompressorDestroy(streamDecompressor *sd);
+void streamDecompressorFree(streamDecompressor *sd);
 
 /* Conservative bound covering header + data + flush/end overhead, so the
  * caller can size one scratch buffer for all flush modes. */

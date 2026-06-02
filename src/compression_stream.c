@@ -293,7 +293,7 @@ static int streamWriterFeedAndEmit(streamWriter *t,
 }
 
 static void streamWriterReleaseContext(streamWriter *t) {
-    streamCompressorDestroy(&t->compressor);
+    streamCompressorFree(&t->compressor);
     if (t->out_buf) {
         zfree(t->out_buf);
         t->out_buf = NULL;
@@ -362,7 +362,7 @@ int streamWriterFinish(streamWriter *t) {
     return streamWriterFeedAndEmit(t, NULL, 0, FLUSH_END);
 }
 
-void streamWriterDestroy(streamWriter *t) {
+void streamWriterFree(streamWriter *t) {
     if (!t) return;
     streamWriterReleaseContext(t);
     zfree(t);
@@ -429,7 +429,7 @@ static int streamReaderInitCompressedState(streamReader *t, size_t buffer_size) 
 
 static void streamReaderResetCompressedState(streamReader *t) {
     if (t->decompressor_initialized) {
-        streamDecompressorDestroy(&t->decompressor);
+        streamDecompressorFree(&t->decompressor);
         t->decompressor_initialized = false;
     }
     if (t->compressed_buf) {
@@ -746,7 +746,7 @@ int streamReaderValidateEnd(streamReader *t) {
     return 0;
 }
 
-void streamReaderDestroy(streamReader *t) {
+void streamReaderFree(streamReader *t) {
     if (!t) return;
     streamReaderResetCompressedState(t);
     zfree(t);
