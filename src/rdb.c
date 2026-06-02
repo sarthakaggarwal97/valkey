@@ -3188,8 +3188,8 @@ int rdbInputStreamValidateEnd(rdbInputStream *input) {
  * `rio base`). Anyone introducing a second producer of the flag must add a
  * type discriminator before relying on this. */
 bool rdbRioHasCorruptCompressedInput(const rio *rdb) {
-    return (rdb->flags & RIO_FLAG_STREAMING_DECOMPRESSION) &&
-           decompressRioGetError((const decompressRio *)rdb) == STREAM_READER_ERROR_CORRUPT;
+    const decompressRio *dr = rioAsDecompressRio(rdb);
+    return dr && decompressRioGetError(dr) == STREAM_READER_ERROR_CORRUPT;
 }
 
 /* Save the given functions_ctx to the rdb.

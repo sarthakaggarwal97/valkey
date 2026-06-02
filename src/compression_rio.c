@@ -186,6 +186,16 @@ streamReaderError decompressRioGetError(const decompressRio *dr) {
     return streamReaderGetError(dr->reader);
 }
 
+/* Type discriminator for the decompressRio decorator.
+ * Returns the typed pointer only when `r` is genuinely a decompressRio, NULL
+ * otherwise. Identity is established by the read-vtable pointer, which is
+ * unique to this concrete type — this stays sound even if another stream
+ * decorator sets RIO_FLAG_STREAMING_DECOMPRESSION on a different struct. */
+const decompressRio *rioAsDecompressRio(const rio *r) {
+    if (!r || r->read != decompressRioRead) return NULL;
+    return (const decompressRio *)r;
+}
+
 int decompressRioValidateEnd(decompressRio *dr) {
     if (!dr || !dr->reader) return -1;
     return streamReaderValidateEnd(dr->reader);
