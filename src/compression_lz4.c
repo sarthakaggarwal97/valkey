@@ -77,7 +77,7 @@ ssize_t compressionLz4CompressFeed(streamCompressor *sc,
                                                   ? LZ4F_contentChecksumEnabled
                                                   : LZ4F_noContentChecksum;
         size_t r = LZ4F_compressBegin(cctx, output, output_capacity, &prefs);
-        if (LZ4F_isError(r)) return -1;
+        if (LZ4F_isError(r)) return -1; /* No frame bytes emitted yet: retriable, don't latch errored. */
         offset = r;
         sc->stream_started = true;
     }
