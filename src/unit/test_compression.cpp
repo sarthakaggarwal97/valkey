@@ -472,6 +472,15 @@ TEST_F(CompressionTest, streamReaderRejectsOversizedReadRequest) {
     streamReaderFree(t);
 }
 
+TEST_F(CompressionTest, streamReaderRejectsZeroBufferSize) {
+    MemReader mr = {};
+    streamReaderConfig cfg = makeReaderConfig(STREAM_KIND_RDB, true);
+    cfg.buffer_size = 0;
+
+    streamReader *t = streamReaderCreate(&cfg, memReaderRead, &mr);
+    ASSERT_EQ(t, nullptr) << "zero buffer size is a caller configuration error";
+}
+
 /* ===================================================================
  * Tests for stream writer API and rio decorators
  * =================================================================== */

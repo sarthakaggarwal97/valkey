@@ -449,7 +449,7 @@ static void streamReaderResetCompressedState(streamReader *t) {
 streamReader *streamReaderCreate(const streamReaderConfig *cfg,
                                  streamReaderReadFn read_cb,
                                  void *read_ctx) {
-    if (!cfg || !read_cb) return NULL;
+    if (!cfg || !read_cb || cfg->buffer_size == 0) return NULL;
 
     streamReader *t = zcalloc(sizeof(*t));
     t->read_cb = read_cb;
