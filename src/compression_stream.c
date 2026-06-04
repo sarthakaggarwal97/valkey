@@ -273,7 +273,6 @@ void streamWriterFree(streamWriter *writer) {
 }
 
 ssize_t streamWriterWrite(streamWriter *writer, const void *buf, size_t len) {
-    if (writer->errored) return -1;
     /* Writes after finish are a caller bug; silently dropping them would
      * corrupt the consumer's view of the stream. */
     if (writer->finished) return -1;
@@ -301,7 +300,6 @@ ssize_t streamWriterWrite(streamWriter *writer, const void *buf, size_t len) {
 }
 
 int streamWriterFlush(streamWriter *writer) {
-    if (writer->errored) return -1;
     /* Flush after finish is a no-op: frame is already closed. */
     if (writer->finished) return 0;
 
@@ -310,7 +308,6 @@ int streamWriterFlush(streamWriter *writer) {
 }
 
 int streamWriterFinish(streamWriter *writer) {
-    if (writer->errored) return -1;
     if (writer->finished) return 0;
     writer->finished = true;
 
