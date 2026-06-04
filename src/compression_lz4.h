@@ -9,20 +9,20 @@
 
 #include "compression.h"
 
-int compressionLz4CompressorInit(streamCompressor *sc);
-void compressionLz4CompressorFree(streamCompressor *sc);
-int compressionLz4DecompressorInit(streamDecompressor *sd);
-void compressionLz4DecompressorFree(streamDecompressor *sd);
+int compressionLz4CompressorInit(streamCompressor *compressor);
+void compressionLz4CompressorFree(streamCompressor *compressor);
+int compressionLz4DecompressorInit(streamDecompressor *decompressor);
+void compressionLz4DecompressorFree(streamDecompressor *decompressor);
 size_t compressionLz4OutputBound(size_t input_len);
 
-ssize_t compressionLz4CompressFeed(streamCompressor *sc,
+ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
                                    uint8_t *output,
                                    size_t output_capacity,
                                    const uint8_t *input,
                                    size_t input_len,
                                    compressFlushMode flush_mode);
 
-ssize_t compressionLz4DecompressFeed(streamDecompressor *sd,
+ssize_t compressionLz4DecompressFeed(streamDecompressor *decompressor,
                                      uint8_t *output,
                                      size_t output_capacity,
                                      const uint8_t *input,

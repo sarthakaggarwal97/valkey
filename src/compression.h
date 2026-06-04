@@ -30,9 +30,6 @@ typedef struct {
     int level;
     void *ctx;
     bool stream_started;
-    /* Sticky failure. Already-emitted frame bytes cannot be unsent, so the
-     * caller must tear the stream down rather than retry. */
-    bool errored;
     bool codec_checksum;
 } streamCompressor;
 
@@ -47,18 +44,18 @@ typedef struct {
 bool compressionAlgoSupportsStreaming(compressionAlgo algo);
 const char *compressionAlgoName(compressionAlgo algo);
 
-int streamCompressorInit(streamCompressor *sc, compressionAlgo algo, int level);
-void streamCompressorFree(streamCompressor *sc);
+int streamCompressorInit(streamCompressor *compressor, compressionAlgo algo, int level);
+void streamCompressorFree(streamCompressor *compressor);
 
-int streamDecompressorInit(streamDecompressor *sd, compressionAlgo algo);
-void streamDecompressorFree(streamDecompressor *sd);
+int streamDecompressorInit(streamDecompressor *decompressor, compressionAlgo algo);
+void streamDecompressorFree(streamDecompressor *decompressor);
 
 /* Conservative bound covering header + data + flush/end overhead, so the
  * caller can size one scratch buffer for all flush modes. */
-size_t streamCompressOutputBound(const streamCompressor *sc, size_t input_len);
+size_t streamCompressOutputBound(streamCompressor *compressor, size_t input_len);
 
 /* Returns bytes written, or -1 on error. */
-ssize_t streamCompressFeed(streamCompressor *sc,
+ssize_t streamCompressFeed(streamCompressor *compressor,
                            uint8_t *output,
                            size_t output_capacity,
                            const uint8_t *input,
@@ -69,7 +66,7 @@ ssize_t streamCompressFeed(streamCompressor *sc,
  * the number of compressed input bytes consumed. If it is less than input_len,
  * the caller must keep the unconsumed suffix and pass it again with more output
  * space. */
-ssize_t streamDecompressFeed(streamDecompressor *sd,
+ssize_t streamDecompressFeed(streamDecompressor *decompressor,
                              uint8_t *output,
                              size_t output_capacity,
                              const uint8_t *input,

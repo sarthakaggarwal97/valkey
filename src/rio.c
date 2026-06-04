@@ -495,7 +495,6 @@ void rioGenericUpdateChecksum(rio *r, const void *buf, size_t len) {
  * -  0 on EOF
  * - -1 on error (sticky read error is latched on the rio) */
 ssize_t rioReadPartial(rio *r, void *buf, size_t len) {
-    if (!r || !buf) return -1;
     if (r->flags & (RIO_FLAG_READ_ERROR | RIO_FLAG_CLOSE_ASAP)) return -1;
     if (len == 0) return 0;
     if (!r->read_some) {
@@ -541,12 +540,12 @@ void rioSetReclaimCache(rio *r, int enabled) {
 }
 
 /* Return the underlying transport type of the rio. */
-uint8_t rioGetTransportType(const rio *r) {
+uint8_t rioGetTransportType(rio *r) {
     return r->transport_type;
 }
 
-int rioIsConnTransport(const rio *r) {
-    return r && r->transport_type == RIO_TYPE_CONN;
+int rioIsConnTransport(rio *r) {
+    return r->transport_type == RIO_TYPE_CONN;
 }
 
 /* --------------------------- Higher level interface --------------------------
