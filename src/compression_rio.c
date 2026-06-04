@@ -32,8 +32,7 @@ static void rioInitBase(rio *base,
                         size_t (*write_fn)(rio *, const void *, size_t),
                         off_t (*tell_fn)(rio *),
                         int (*flush_fn)(rio *),
-                        uint64_t flags,
-                        uint8_t transport_type) {
+                        uint64_t flags) {
     base->read = read_fn;
     base->write = write_fn;
     base->tell = tell_fn;
@@ -44,7 +43,6 @@ static void rioInitBase(rio *base,
     base->flags = flags;
     base->processed_bytes = 0;
     base->max_processing_chunk = 0;
-    base->transport_type = transport_type;
 }
 
 /* ===== compressRio ===== */
@@ -98,7 +96,8 @@ static int compressRioFlush(rio *r) {
 int rioInitWithCompression(compressRio *cr, rio *inner, streamWriterConfig *cfg) {
     memset(cr, 0, sizeof(*cr));
     rioInitBase(&cr->base, rioReadUnsupported, compressRioWrite, compressRioTell,
-                compressRioFlush, RIO_FLAG_STREAMING_COMPRESSION, rioGetTransportType(inner));
+                compressRioFlush,
+                RIO_FLAG_STREAMING_COMPRESSION | (inner->flags & RIO_FLAG_CONN_BACKED));
 
     cr->inner = inner;
     return streamWriterInit(&cr->writer, cfg, compressRioEmit, cr);
@@ -184,8 +183,8 @@ decompressRioInitResult rioInitWithDecompression(decompressRio *dr,
     memset(dr, 0, sizeof(*dr));
     rioInitBase(&dr->base, decompressRioRead, rioWriteUnsupported, decompressRioTell,
                 rioFlushNoop,
-                RIO_FLAG_STREAMING_DECOMPRESSION | (inner->flags & RIO_FLAG_SKIP_RDB_CHECKSUM),
-                rioGetTransportType(inner));
+                RIO_FLAG_STREAMING_DECOMPRESSION |
+                    (inner->flags & (RIO_FLAG_SKIP_RDB_CHECKSUM | RIO_FLAG_CONN_BACKED)));
     dr->inner = inner;
 
     if (streamReaderInit(&dr->reader, cfg, decompressRioReadPartial, dr) != 0) return DECOMPRESS_RIO_INIT_ERROR;

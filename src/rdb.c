@@ -3132,7 +3132,7 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
         processEventsWhileBlocked();
         processModuleLoadingProgressEvent(0);
     }
-    if (server.repl_state == REPL_STATE_TRANSFER && rioIsConnTransport(r)) {
+    if (server.repl_state == REPL_STATE_TRANSFER && rioIsConnBacked(r)) {
         server.stat_net_repl_input_bytes += len;
     }
 }

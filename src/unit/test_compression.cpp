@@ -166,7 +166,6 @@ static void initFailingFlushRio(rio *r) {
     r->write = discardRioWrite;
     r->tell = discardRioTell;
     r->flush = failRioFlush;
-    r->transport_type = RIO_TYPE_BUFFER;
 }
 
 /* ===================================================================
@@ -1160,7 +1159,7 @@ TEST_F(CompressionTest, compressRioFinishFailureSetsWriteError) {
     compressRioFree(&cr);
 }
 
-TEST_F(CompressionTest, rioDecoratorsPreserveTransportType) {
+TEST_F(CompressionTest, rioDecoratorsPreserveConnBackedFlag) {
     sds buf = sdsempty();
     rio buffer_rio;
     rioInitWithBuffer(&buffer_rio, buf);
@@ -1168,8 +1167,7 @@ TEST_F(CompressionTest, rioDecoratorsPreserveTransportType) {
     streamWriterConfig wcfg = makeWriterConfig(ALGO_LZ4, 0, STREAM_KIND_RDB);
     compressRio cr;
     ASSERT_EQ(rioInitWithCompression(&cr, &buffer_rio, &wcfg), 0);
-    /* Decorators preserve the wrapped rio transport type. */
-    ASSERT_EQ(rioGetTransportType((rio *)&cr), (uint8_t)RIO_TYPE_BUFFER);
+    ASSERT_FALSE(rioIsConnBacked((rio *)&cr));
     compressRioFree(&cr);
     sdsfree(buffer_rio.io.buffer.ptr);
 
@@ -1179,9 +1177,29 @@ TEST_F(CompressionTest, rioDecoratorsPreserveTransportType) {
     streamReaderConfig rcfg = makeReaderConfig(STREAM_KIND_RDB, true);
     decompressRio dr;
     ASSERT_EQ(rioInitWithDecompression(&dr, &raw_rio, &rcfg, nullptr), DECOMPRESS_RIO_INIT_OK);
-    ASSERT_EQ(rioGetTransportType((rio *)&dr), (uint8_t)RIO_TYPE_BUFFER);
+    ASSERT_FALSE(rioIsConnBacked((rio *)&dr));
     decompressRioFree(&dr);
     sdsfree(raw_rio.io.buffer.ptr);
+
+    sds conn_backed_buf = sdsempty();
+    rio conn_backed_rio;
+    rioInitWithBuffer(&conn_backed_rio, conn_backed_buf);
+    conn_backed_rio.flags |= RIO_FLAG_CONN_BACKED;
+
+    ASSERT_EQ(rioInitWithCompression(&cr, &conn_backed_rio, &wcfg), 0);
+    ASSERT_TRUE(rioIsConnBacked((rio *)&cr));
+    compressRioFree(&cr);
+
+    sds conn_backed_raw = sdsnew("plain-rdb-prefix");
+    rio conn_backed_raw_rio;
+    rioInitWithBuffer(&conn_backed_raw_rio, conn_backed_raw);
+    conn_backed_raw_rio.flags |= RIO_FLAG_CONN_BACKED;
+    ASSERT_EQ(rioInitWithDecompression(&dr, &conn_backed_raw_rio, &rcfg, nullptr), DECOMPRESS_RIO_INIT_OK);
+    ASSERT_TRUE(rioIsConnBacked((rio *)&dr));
+    decompressRioFree(&dr);
+
+    sdsfree(conn_backed_rio.io.buffer.ptr);
+    sdsfree(conn_backed_raw_rio.io.buffer.ptr);
 }
 
 /* --- Test: decompressRio read round-trip --- */
