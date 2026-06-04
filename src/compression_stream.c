@@ -209,7 +209,7 @@ int streamWriterInit(streamWriter *writer, streamWriterConfig *cfg, streamWriter
 }
 
 /* Envelope is emitted lazily so a writer that's created but never written
- * doesn'writer leave a stub envelope on the sink. */
+ * doesn't leave a stub envelope on the sink. */
 static int streamWriterEnsureEnvelope(streamWriter *writer) {
     if (writer->envelope_written) return 0;
     vkcsCodec codec;
