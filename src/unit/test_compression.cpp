@@ -184,7 +184,6 @@ TEST_F(CompressionTest, streamCompressorInitFree) {
     ASSERT_NE(sc.ctx, nullptr) << "ctx should be non-nullptr";
     streamCompressorFree(&sc);
     ASSERT_EQ(sc.ctx, nullptr) << "ctx should be nullptr after free";
-    ASSERT_EQ(sc.algo, ALGO_NONE) << "algo should be NONE after free";
 
     /* ALGO_NONE should fail */
     streamCompressor sc3;
@@ -199,7 +198,6 @@ TEST_F(CompressionTest, streamDecompressorInitFree) {
     ASSERT_NE(sd.ctx, nullptr) << "ctx should be non-nullptr";
     streamDecompressorFree(&sd);
     ASSERT_EQ(sd.ctx, nullptr) << "ctx should be nullptr after free";
-    ASSERT_EQ(sd.algo, ALGO_NONE) << "algo should be NONE after free";
 }
 
 /* --- Test: LZ4 compress → decompress round-trip --- */

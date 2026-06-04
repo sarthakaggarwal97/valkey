@@ -1572,7 +1572,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
     char *err_op; /* For a detailed log */
     bool use_streaming_compression = isRdbStreamingCompressionEnabled();
     compressRio cr;
-    bool cr_initialized = false;
+    compressRio *crp = NULL;
 
     FILE *fp = fopen(filename, "w");
     if (!fp) {
@@ -1614,8 +1614,8 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
             err_op = "rioInitWithCompression";
             goto werr;
         }
-        save_rio = (rio *)&cr;
-        cr_initialized = true;
+        crp = &cr;
+        save_rio = (rio *)crp;
     }
     /* Streaming-compressed RDBs use the frame checksum policy recorded in the
      * VKCS envelope instead of the logical RDB CRC64 trailer. */
@@ -1632,16 +1632,16 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
     }
 
     /* Finalize the compression frame before flushing to disk. */
-    if (cr_initialized) {
-        if (compressRioFinish(&cr) != 0) {
+    if (crp) {
+        if (compressRioFinish(crp) != 0) {
             errno = EIO; /* Compression finalization failure */
             err_op = "compressRioFinish";
-            compressRioFree(&cr);
-            cr_initialized = false;
+            compressRioFree(crp);
+            crp = NULL;
             goto werr;
         }
-        compressRioFree(&cr);
-        cr_initialized = false;
+        compressRioFree(crp);
+        crp = NULL;
     }
 
     /* Make sure data will not remain on the OS's output buffers */
@@ -1667,10 +1667,10 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
 werr:
     saved_errno = errno;
     serverLog(LL_WARNING, "Write error while saving DB to the disk(%s): %s", err_op, strerror(errno));
-    if (cr_initialized) {
+    if (crp) {
         /* Skip finish on error, output is being discarded (unlink below).
          * Just release resources. */
-        compressRioFree(&cr);
+        compressRioFree(crp);
     }
     if (fp) fclose(fp);
     unlink(filename);

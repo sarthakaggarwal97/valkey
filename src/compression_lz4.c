@@ -28,9 +28,10 @@ int compressionLz4CompressorInit(streamCompressor *sc) {
 }
 
 void compressionLz4CompressorFree(streamCompressor *sc) {
-    if (!sc || !sc->ctx) return;
-    LZ4F_freeCompressionContext((LZ4F_cctx *)sc->ctx);
-    sc->ctx = NULL;
+    if (sc->ctx) {
+        LZ4F_freeCompressionContext((LZ4F_cctx *)sc->ctx);
+        sc->ctx = NULL;
+    }
 }
 
 int compressionLz4DecompressorInit(streamDecompressor *sd) {
@@ -42,9 +43,10 @@ int compressionLz4DecompressorInit(streamDecompressor *sd) {
 }
 
 void compressionLz4DecompressorFree(streamDecompressor *sd) {
-    if (!sd || !sd->ctx) return;
-    LZ4F_freeDecompressionContext((LZ4F_dctx *)sd->ctx);
-    sd->ctx = NULL;
+    if (sd->ctx) {
+        LZ4F_freeDecompressionContext((LZ4F_dctx *)sd->ctx);
+        sd->ctx = NULL;
+    }
 }
 
 size_t compressionLz4OutputBound(size_t input_len) {
