@@ -134,7 +134,7 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
         break;
     }
     default:
-        return -1;
+        assert(0 && "invalid compressFlushMode");
     }
 
     if (offset > (size_t)SSIZE_MAX) return -1;
