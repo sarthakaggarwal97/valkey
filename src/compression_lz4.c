@@ -67,8 +67,8 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
 
     /* All capacity-shortage early returns below are retriable: they happen
      * before LZ4F mutates its own state, so the caller can grow the buffer
-     * and retry without breaking the frame. LZ4F errors after that point
-     * latch compressor->errored, no mid-stream retry is possible. */
+     * and retry without breaking the frame. LZ4F errors after that point are
+     * permanent: the frame is partially emitted and cannot be retried. */
 
     if (!compressor->stream_started) {
         LZ4F_preferences_t prefs = lz4f_prefs;
@@ -88,7 +88,7 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
     if (input_len > 0) {
         if (offset >= output_capacity) return -1;
         size_t r = LZ4F_compressUpdate(cctx, output + offset, output_capacity - offset, input, input_len, NULL);
-        if (LZ4F_isError(r)) goto lz4_error;
+        if (LZ4F_isError(r)) return -1;
         offset += r;
     }
 
@@ -98,28 +98,24 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
     case FLUSH_SYNC: {
         if (offset >= output_capacity) return -1;
         size_t r = LZ4F_flush(cctx, output + offset, output_capacity - offset, NULL);
-        if (LZ4F_isError(r)) goto lz4_error;
+        if (LZ4F_isError(r)) return -1;
         offset += r;
         break;
     }
     case FLUSH_END: {
         if (offset >= output_capacity) return -1;
         size_t r = LZ4F_compressEnd(cctx, output + offset, output_capacity - offset, NULL);
-        if (LZ4F_isError(r)) goto lz4_error;
+        if (LZ4F_isError(r)) return -1;
         offset += r;
         compressor->stream_started = false;
         break;
     }
     default:
-        goto lz4_error;
+        return -1;
     }
 
-    if (offset > (size_t)SSIZE_MAX) goto lz4_error;
+    if (offset > (size_t)SSIZE_MAX) return -1;
     return (ssize_t)offset;
-
-lz4_error:
-    compressor->errored = true;
-    return -1;
 }
 
 ssize_t compressionLz4DecompressFeed(streamDecompressor *decompressor,

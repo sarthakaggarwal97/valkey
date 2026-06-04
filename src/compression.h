@@ -30,9 +30,6 @@ typedef struct {
     int level;
     void *ctx;
     bool stream_started;
-    /* Sticky failure. Already-emitted frame bytes cannot be unsent, so the
-     * caller must tear the stream down rather than retry. */
-    bool errored;
     bool codec_checksum;
 } streamCompressor;
 

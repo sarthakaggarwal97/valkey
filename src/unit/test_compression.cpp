@@ -313,7 +313,6 @@ TEST_F(CompressionTest, streamCompressFeedErrorRecovery) {
     ssize_t ret = streamCompressFeed(&sc, tiny, 1,
                                      (const uint8_t *)"test data", 9, FLUSH_END);
     ASSERT_EQ(ret, -1) << "should fail with tiny buffer";
-    ASSERT_EQ(sc.errored, false) << "errored should NOT be set (pre-frame failure)";
     ASSERT_EQ(sc.stream_started, false) << "stream_started should still be false";
 
     /* Retry with a proper buffer — should succeed */
@@ -325,11 +324,10 @@ TEST_F(CompressionTest, streamCompressFeedErrorRecovery) {
     zfree(buf);
     streamCompressorFree(&sc);
 
-    /* Mid-frame error: start a frame, then force an error — this is permanent. */
+    /* Mid-frame error: start a frame, then force an error with a tiny buffer. */
     streamCompressor sc2;
     ASSERT_EQ(streamCompressorInit(&sc2, ALGO_LZ4, 0), 0);
 
-    /* First call with enough space to start the frame */
     size_t bound2 = streamCompressOutputBound(&sc2, 5);
     uint8_t *buf2 = (uint8_t *)zmalloc(bound2);
     ssize_t ret3 = streamCompressFeed(&sc2, buf2, bound2,
@@ -337,21 +335,12 @@ TEST_F(CompressionTest, streamCompressFeedErrorRecovery) {
     ASSERT_GE(ret3, 0) << "first write should succeed";
     ASSERT_EQ(sc2.stream_started, true) << "stream should be started";
 
-    /* Now force a mid-frame error with a tiny buffer */
     uint8_t tiny2[1];
     ssize_t ret4 = streamCompressFeed(&sc2, tiny2, 1,
                                       (const uint8_t *)"more data to compress", 21,
                                       FLUSH_END);
     ASSERT_EQ(ret4, -1) << "mid-frame error should fail";
-    ASSERT_EQ(sc2.errored, true) << "errored should be set (mid-frame failure)";
 
-    /* Subsequent calls must fail immediately */
-    size_t bound3 = streamCompressOutputBound(&sc2, 5);
-    uint8_t *buf3 = (uint8_t *)zmalloc(bound3);
-    ssize_t ret5 = streamCompressFeed(&sc2, buf3, bound3,
-                                      (const uint8_t *)"hello", 5, FLUSH_END);
-    ASSERT_EQ(ret5, -1) << "must fail on errored compressor";
-    zfree(buf3);
     zfree(buf2);
     streamCompressorFree(&sc2);
 }

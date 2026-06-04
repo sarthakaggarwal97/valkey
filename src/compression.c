@@ -120,8 +120,6 @@ ssize_t streamCompressFeed(streamCompressor *compressor,
                            const uint8_t *input,
                            size_t input_len,
                            compressFlushMode flush_mode) {
-    if (compressor->errored) return -1;
-
     const compressionCodec *impl = compressionCodecForAlgo(compressor->algo);
     assert(impl != NULL);
     return impl->compress_feed(compressor, output, output_capacity, input, input_len, flush_mode);
