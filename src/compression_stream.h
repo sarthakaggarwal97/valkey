@@ -75,21 +75,6 @@ typedef enum {
     STREAM_READER_ERROR_CORRUPT = 3,
 } streamReaderError;
 
-typedef struct {
-    bool allow_passthrough;
-    uint8_t expected_stream_kind;
-} vkcsProbeConfig;
-
-typedef struct {
-    uint8_t header[VKCS_ENVELOPE_SIZE];
-    size_t header_len;
-    bool ready;
-    bool compressed;
-    bool codec_checksum_enabled;
-    compressionAlgo algo;
-    uint8_t stream_kind;
-} vkcsProbe;
-
 typedef struct streamWriter {
     streamCompressor compressor;
     uint8_t *out_buf;
@@ -107,8 +92,19 @@ typedef struct streamReader {
     streamReaderReadFn read_cb;
     void *read_ctx;
 
-    vkcsProbeConfig probe_cfg;
-    vkcsProbe probe;
+    struct {
+        bool allow_passthrough;
+        uint8_t expected_stream_kind;
+    } probe_cfg;
+    struct {
+        uint8_t header[VKCS_ENVELOPE_SIZE];
+        size_t header_len;
+        bool ready;
+        bool compressed;
+        bool codec_checksum_enabled;
+        compressionAlgo algo;
+        uint8_t stream_kind;
+    } probe;
     size_t probe_replay_pos; /* Passthrough bytes left to replay from probe. */
     size_t buffer_size;
     bool errored;
