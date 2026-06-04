@@ -128,32 +128,32 @@ typedef struct streamReader {
  * truncated. The reader probes the envelope on the first read, so
  * streamReaderProbe and streamReaderGetInfo are only needed to classify the
  * stream up front. */
-int streamWriterInit(streamWriter *t, streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx);
+int streamWriterInit(streamWriter *writer, streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx);
 
 /* Returns compressed bytes emitted to the sink (not input bytes consumed),
  * including the envelope on the first successful write. -1 on error. */
-ssize_t streamWriterWrite(streamWriter *t, const void *buf, size_t len);
-int streamWriterFlush(streamWriter *t);
-int streamWriterFinish(streamWriter *t);
-void streamWriterFree(streamWriter *t);
-int streamWriterHasError(streamWriter *t);
-void streamWriterSetError(streamWriter *t);
+ssize_t streamWriterWrite(streamWriter *writer, const void *buf, size_t len);
+int streamWriterFlush(streamWriter *writer);
+int streamWriterFinish(streamWriter *writer);
+void streamWriterFree(streamWriter *writer);
+int streamWriterHasError(streamWriter *writer);
+void streamWriterSetError(streamWriter *writer);
 int streamReadEnvelopeInfo(const uint8_t *buf,
                            size_t len,
                            uint8_t expected_stream_kind,
                            streamReaderInfo *info);
 
-int streamReaderInit(streamReader *t, streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx);
+int streamReaderInit(streamReader *reader, streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx);
 
 /* Drives the wrapped read callback synchronously. Caller must ensure the
  * source can block (file rios are fine; non-blocking sources are not). */
-int streamReaderProbe(streamReader *t);
+int streamReaderProbe(streamReader *reader);
 
 /* Full or fail: returns len on success, 0 on EOF, -1 on error. */
-ssize_t streamReaderRead(streamReader *t, void *buf, size_t len);
-int streamReaderGetInfo(streamReader *t, streamReaderInfo *info);
-streamReaderError streamReaderGetError(streamReader *t);
-int streamReaderValidateEnd(streamReader *t);
-void streamReaderFree(streamReader *t);
+ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len);
+int streamReaderGetInfo(streamReader *reader, streamReaderInfo *info);
+streamReaderError streamReaderGetError(streamReader *reader);
+int streamReaderValidateEnd(streamReader *reader);
+void streamReaderFree(streamReader *reader);
 
 #endif /* COMPRESSION_STREAM_H */
