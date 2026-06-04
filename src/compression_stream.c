@@ -62,7 +62,7 @@ static int vkcsCodecToCompressionAlgo(vkcsCodec codec, compressionAlgo *algo) {
     }
 }
 
-static int writeVkcsEnvelope(vkcsEmitFn emit_fn,
+static int writeVkcsEnvelope(streamWriterEmitFn emit_fn,
                              void *ctx,
                              vkcsCodec codec,
                              uint8_t stream_kind,
@@ -195,7 +195,7 @@ static vkcsProbeResult streamReaderProbeFeed(streamReader *t,
 
 #define STREAM_WRITER_INPUT_CHUNK_SIZE (1024 * 1024)
 
-int streamWriterInit(streamWriter *t, streamWriterConfig *cfg, vkcsEmitFn emit_fn, void *emit_ctx) {
+int streamWriterInit(streamWriter *t, streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx) {
     if (!compressionAlgoSupportsStreaming(cfg->algo)) return -1;
 
     memset(t, 0, sizeof(*t));

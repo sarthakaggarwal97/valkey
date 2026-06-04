@@ -3178,7 +3178,9 @@ int rdbInputStreamValidateEnd(rdbInputStream *input) {
 }
 
 bool rdbRioHasCorruptCompressedInput(rio *rdb) {
-    return rioGetDecompressionError(rdb) == STREAM_READER_ERROR_CORRUPT;
+    /* rdbLoadRio also accepts raw rios, for example AOF preamble loads. */
+    if (!(rdb->flags & RIO_FLAG_STREAMING_DECOMPRESSION)) return false;
+    return decompressRioGetError((decompressRio *)rdb) == STREAM_READER_ERROR_CORRUPT;
 }
 
 /* Save the given functions_ctx to the rdb.

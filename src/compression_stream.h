@@ -36,7 +36,7 @@ typedef enum {
     VKCS_CODEC_LZ4 = 0x01,
 } vkcsCodec;
 
-typedef int (*vkcsEmitFn)(void *ctx, const uint8_t *data, size_t len);
+typedef int (*streamWriterEmitFn)(void *ctx, const uint8_t *data, size_t len);
 /* Returns >0 bytes read, 0 on EOF, -1 on error. Partial reads allowed. */
 typedef ssize_t (*streamReaderReadFn)(void *ctx, void *buf, size_t len);
 
@@ -79,7 +79,7 @@ typedef struct streamWriter {
     streamCompressor compressor;
     uint8_t *out_buf;
     size_t out_buf_size;
-    vkcsEmitFn emit_fn;
+    streamWriterEmitFn emit_fn;
     void *emit_ctx;
     uint8_t stream_kind;
     bool envelope_written;
@@ -122,12 +122,13 @@ typedef struct streamReader {
     size_t decompressed_buf_len;
 } streamReader;
 
-/* The writer pushes compressed bytes to a vkcsEmitFn sink; the reader pulls
- * from a streamReaderReadFn source. streamWriterFinish must run before freeing,
- * since it emits the frame end; a writer freed without it is truncated. The
- * reader probes the envelope on the first read, so streamReaderProbe and
- * streamReaderGetInfo are only needed to classify the stream up front. */
-int streamWriterInit(streamWriter *t, streamWriterConfig *cfg, vkcsEmitFn emit_fn, void *emit_ctx);
+/* The writer pushes compressed bytes to a streamWriterEmitFn sink; the reader
+ * pulls from a streamReaderReadFn source. streamWriterFinish must run before
+ * freeing, since it emits the frame end; a writer freed without it is
+ * truncated. The reader probes the envelope on the first read, so
+ * streamReaderProbe and streamReaderGetInfo are only needed to classify the
+ * stream up front. */
+int streamWriterInit(streamWriter *t, streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx);
 
 /* Returns compressed bytes emitted to the sink (not input bytes consumed),
  * including the envelope on the first successful write. -1 on error. */

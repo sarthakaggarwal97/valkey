@@ -167,15 +167,7 @@ static off_t decompressRioTell(rio *r) {
     return (off_t)dr->inner->processed_bytes;
 }
 
-/* Identifies a decompressRio by its read vtable, which is unique to the type. */
-static decompressRio *rioGetDecompressor(rio *r) {
-    if (r->read != decompressRioRead) return NULL;
-    return (decompressRio *)r;
-}
-
-streamReaderError rioGetDecompressionError(rio *r) {
-    decompressRio *dr = rioGetDecompressor(r);
-    if (!dr) return STREAM_READER_ERROR_IO;
+streamReaderError decompressRioGetError(decompressRio *dr) {
     return streamReaderGetError(&dr->reader);
 }
 
