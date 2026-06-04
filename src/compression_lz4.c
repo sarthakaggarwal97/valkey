@@ -6,8 +6,33 @@
 
 #include "compression_lz4.h"
 #include "serverassert.h"
+#include "zmalloc.h"
 #include <limits.h>
+
+#define LZ4F_STATIC_LINKING_ONLY
 #include <lz4frame.h>
+
+static void *lz4Zmalloc(void *opaque, size_t size) {
+    (void)opaque;
+    return zmalloc(size);
+}
+
+static void *lz4Zcalloc(void *opaque, size_t size) {
+    (void)opaque;
+    return zcalloc(size);
+}
+
+static void lz4Zfree(void *opaque, void *address) {
+    (void)opaque;
+    zfree(address);
+}
+
+static const LZ4F_CustomMem lz4f_mem = {
+    .customAlloc = lz4Zmalloc,
+    .customCalloc = lz4Zcalloc,
+    .customFree = lz4Zfree,
+    .opaqueState = NULL,
+};
 
 /* Shared bound-calc preferences. The actual compress level and checksum mode
  * are overridden per stream before LZ4F_compressBegin. */
@@ -22,9 +47,8 @@ static const LZ4F_preferences_t lz4f_prefs = {
 };
 
 int compressionLz4CompressorInit(streamCompressor *compressor) {
-    LZ4F_cctx *cctx = NULL;
-    if (LZ4F_isError(LZ4F_createCompressionContext(&cctx, LZ4F_VERSION))) return -1;
-    compressor->ctx = cctx;
+    compressor->ctx = LZ4F_createCompressionContext_advanced(lz4f_mem, LZ4F_VERSION);
+    assert(compressor->ctx != NULL);
     return 0;
 }
 
@@ -36,9 +60,8 @@ void compressionLz4CompressorFree(streamCompressor *compressor) {
 }
 
 int compressionLz4DecompressorInit(streamDecompressor *decompressor) {
-    LZ4F_dctx *dctx = NULL;
-    if (LZ4F_isError(LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION))) return -1;
-    decompressor->ctx = dctx;
+    decompressor->ctx = LZ4F_createDecompressionContext_advanced(lz4f_mem, LZ4F_VERSION);
+    assert(decompressor->ctx != NULL);
     decompressor->input_hint = LZ4F_HEADER_SIZE_MIN;
     return 0;
 }
