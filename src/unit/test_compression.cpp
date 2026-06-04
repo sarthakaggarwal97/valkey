@@ -114,7 +114,6 @@ static bool lz4FrameUsesLinkedBlocks(const uint8_t *data, size_t len) {
 
 static ssize_t memReaderRead(void *ctx, void *buf, size_t len) {
     MemReader *r = (MemReader *)ctx;
-    if (!r || !buf) return -1;
     if (r->pos >= r->len) return 0;
 
     size_t avail = r->len - r->pos;
@@ -128,7 +127,6 @@ static ssize_t memReaderRead(void *ctx, void *buf, size_t len) {
 
 static ssize_t flakyReaderRead(void *ctx, void *buf, size_t len) {
     FlakyReader *r = (FlakyReader *)ctx;
-    if (!r || !buf) return -1;
     if (r->success_reads >= r->fail_after_success_reads) return -1;
     if (r->fail_after_pos > 0 && r->pos >= r->fail_after_pos) return -1;
     if (r->pos >= r->len) return 0;
@@ -470,15 +468,6 @@ TEST_F(CompressionTest, streamReaderRejectsOversizedReadRequest) {
     streamReaderFree(t);
 }
 
-TEST_F(CompressionTest, streamReaderRejectsZeroBufferSize) {
-    MemReader mr = {};
-    streamReaderConfig cfg = makeReaderConfig(STREAM_KIND_RDB, true);
-    cfg.buffer_size = 0;
-
-    streamReader *t = streamReaderCreate(&cfg, memReaderRead, &mr);
-    ASSERT_EQ(t, nullptr) << "zero buffer size is a caller configuration error";
-}
-
 /* ===================================================================
  * Tests for stream writer API and rio decorators
  * =================================================================== */
@@ -684,12 +673,6 @@ TEST_F(CompressionTest, streamWriterCreateFree) {
     streamWriterFree(t);
     dynamicBufFree(&db);
 
-    /* nullptr config should fail */
-    ASSERT_EQ(streamWriterCreate(nullptr, emitToDynamicBuf, &db), nullptr) << "nullptr config should return nullptr";
-
-    /* nullptr emit_fn should fail */
-    ASSERT_EQ(streamWriterCreate(&cfg, nullptr, nullptr), nullptr) << "nullptr emit_fn should return nullptr";
-
     /* ALGO_NONE should fail */
     streamWriterConfig bad_cfg = makeWriterConfig(ALGO_NONE, 0, STREAM_KIND_RDB);
     ASSERT_EQ(streamWriterCreate(&bad_cfg, emitToDynamicBuf, &db), nullptr) << "ALGO_NONE should return nullptr";
@@ -701,9 +684,6 @@ TEST_F(CompressionTest, streamWriterCreateFree) {
     streamWriter *future_t = streamWriterCreate(&future_kind_cfg, emitToDynamicBuf, &db);
     ASSERT_NE(future_t, nullptr) << "custom stream_kind should succeed with envelope";
     streamWriterFree(future_t);
-
-    /* free nullptr should be safe */
-    streamWriterFree(nullptr);
 }
 
 /* --- Test: stream_writer write + finish round-trip --- */

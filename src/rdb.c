@@ -3152,8 +3152,6 @@ decompressRioInitResult rdbInputStreamPrepare(rdbInputStream *input) {
         .buffer_size = STREAM_READER_BUFFER_SIZE_DEFAULT,
     };
 
-    if (!input || !input->raw_rio) return DECOMPRESS_RIO_INIT_ERROR;
-
     decompressRioInitResult init_rc =
         rioInitWithDecompression(&input->decompressor, input->raw_rio, &reader_cfg, &input->stream_info);
     if (init_rc == DECOMPRESS_RIO_INIT_OK) {
@@ -3167,7 +3165,6 @@ decompressRioInitResult rdbInputStreamPrepare(rdbInputStream *input) {
 }
 
 void rdbInputStreamFree(rdbInputStream *input) {
-    if (!input) return;
     if (input->initialized) {
         decompressRioFree(&input->decompressor);
         input->initialized = false;
@@ -3176,7 +3173,7 @@ void rdbInputStreamFree(rdbInputStream *input) {
 }
 
 int rdbInputStreamValidateEnd(rdbInputStream *input) {
-    if (!input || !input->initialized) return C_OK;
+    serverAssert(input->initialized);
     return decompressRioValidateEnd(&input->decompressor) == 0 ? C_OK : C_ERR;
 }
 

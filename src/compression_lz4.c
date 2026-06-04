@@ -5,6 +5,7 @@
  */
 
 #include "compression_lz4.h"
+#include "serverassert.h"
 #include <limits.h>
 #include <lz4frame.h>
 
@@ -59,7 +60,7 @@ ssize_t compressionLz4CompressFeed(streamCompressor *sc,
                                    const uint8_t *input,
                                    size_t input_len,
                                    compressFlushMode flush_mode) {
-    if (!sc->ctx) return -1;
+    assert(sc->ctx != NULL);
 
     LZ4F_cctx *cctx = (LZ4F_cctx *)sc->ctx;
     size_t offset = 0;
@@ -127,7 +128,7 @@ ssize_t compressionLz4DecompressFeed(streamDecompressor *sd,
                                      const uint8_t *input,
                                      size_t input_len,
                                      size_t *input_consumed) {
-    if (!sd->ctx) return -1;
+    assert(sd->ctx != NULL);
 
     LZ4F_dctx *dctx = (LZ4F_dctx *)sd->ctx;
     size_t dst_size = output_capacity;
