@@ -52,25 +52,25 @@ void streamDecompressorFree(streamDecompressor *decompressor);
 
 /* Conservative bound covering header + data + flush/end overhead, so the
  * caller can size one scratch buffer for all flush modes. */
-size_t streamCompressOutputBound(streamCompressor *compressor, size_t input_len);
+size_t streamCompressorOutputBound(streamCompressor *compressor, size_t input_len);
 
 /* Returns bytes written, or -1 on error. */
-ssize_t streamCompressFeed(streamCompressor *compressor,
-                           uint8_t *output,
-                           size_t output_capacity,
-                           const uint8_t *input,
-                           size_t input_len,
-                           compressFlushMode flush_mode);
+ssize_t streamCompressorFeed(streamCompressor *compressor,
+                             uint8_t *output,
+                             size_t output_capacity,
+                             const uint8_t *input,
+                             size_t input_len,
+                             compressFlushMode flush_mode);
 
 /* Returns decompressed bytes written, or -1 on error. *input_consumed is set to
  * the number of compressed input bytes consumed. If it is less than input_len,
  * the caller must keep the unconsumed suffix and pass it again with more output
  * space. */
-ssize_t streamDecompressFeed(streamDecompressor *decompressor,
-                             uint8_t *output,
-                             size_t output_capacity,
-                             const uint8_t *input,
-                             size_t input_len,
-                             size_t *input_consumed);
+ssize_t streamDecompressorFeed(streamDecompressor *decompressor,
+                               uint8_t *output,
+                               size_t output_capacity,
+                               const uint8_t *input,
+                               size_t input_len,
+                               size_t *input_consumed);
 
 #endif /* COMPRESSION_H */

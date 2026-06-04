@@ -235,7 +235,7 @@ static int streamWriterEmit(streamWriter *writer, const uint8_t *buf, size_t len
 }
 
 static int streamWriterEnsureOutBuf(streamWriter *writer, size_t input_len) {
-    size_t needed = streamCompressOutputBound(&writer->compressor, input_len);
+    size_t needed = streamCompressorOutputBound(&writer->compressor, input_len);
     if (needed == 0) {
         writer->errored = true;
         return -1;
@@ -253,9 +253,9 @@ static int streamWriterFeedAndEmit(streamWriter *writer,
                                    compressFlushMode flush_mode) {
     if (streamWriterEnsureOutBuf(writer, input_len) != 0) return -1;
 
-    ssize_t compressed = streamCompressFeed(&writer->compressor, writer->out_buf,
-                                            writer->out_buf_size,
-                                            input, input_len, flush_mode);
+    ssize_t compressed = streamCompressorFeed(&writer->compressor, writer->out_buf,
+                                              writer->out_buf_size,
+                                              input, input_len, flush_mode);
     if (compressed < 0) {
         writer->errored = true;
         return -1;
@@ -315,14 +315,6 @@ int streamWriterFinish(streamWriter *writer) {
      * loader sees a well-formed file. */
     if (streamWriterEnsureEnvelope(writer) != 0) return -1;
     return streamWriterFeedAndEmit(writer, NULL, 0, FLUSH_END);
-}
-
-int streamWriterHasError(streamWriter *writer) {
-    return writer->errored;
-}
-
-void streamWriterSetError(streamWriter *writer) {
-    writer->errored = true;
 }
 
 /* ===== Streaming reader ===== */
@@ -467,7 +459,7 @@ static int streamReaderDrainCompressedBuf(streamReader *reader,
         size_t feed_len = reader->compressed_buf_len;
         size_t input_hint = reader->decompressor.input_hint;
         if (input_hint > 0 && feed_len > input_hint) feed_len = input_hint;
-        ssize_t produced = streamDecompressFeed(
+        ssize_t produced = streamDecompressorFeed(
             &reader->decompressor,
             out + *out_written, out_size - *out_written,
             reader->compressed_buf + reader->compressed_buf_pos,
@@ -625,10 +617,6 @@ int streamReaderGetInfo(streamReader *reader, streamReaderInfo *info) {
     info->algo = reader->probe.compressed ? reader->probe.algo : ALGO_NONE;
     info->stream_kind = reader->probe.stream_kind;
     return 0;
-}
-
-streamReaderError streamReaderGetError(streamReader *reader) {
-    return reader->error_kind;
 }
 
 int streamReaderValidateEnd(streamReader *reader) {

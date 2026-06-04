@@ -108,29 +108,29 @@ void streamDecompressorFree(streamDecompressor *decompressor) {
     impl->decompressor_free(decompressor);
 }
 
-size_t streamCompressOutputBound(streamCompressor *compressor, size_t input_len) {
+size_t streamCompressorOutputBound(streamCompressor *compressor, size_t input_len) {
     const compressionCodec *impl = compressionCodecForAlgo(compressor->algo);
     assert(impl != NULL);
     return impl->compress_output_bound(input_len);
 }
 
-ssize_t streamCompressFeed(streamCompressor *compressor,
-                           uint8_t *output,
-                           size_t output_capacity,
-                           const uint8_t *input,
-                           size_t input_len,
-                           compressFlushMode flush_mode) {
+ssize_t streamCompressorFeed(streamCompressor *compressor,
+                             uint8_t *output,
+                             size_t output_capacity,
+                             const uint8_t *input,
+                             size_t input_len,
+                             compressFlushMode flush_mode) {
     const compressionCodec *impl = compressionCodecForAlgo(compressor->algo);
     assert(impl != NULL);
     return impl->compress_feed(compressor, output, output_capacity, input, input_len, flush_mode);
 }
 
-ssize_t streamDecompressFeed(streamDecompressor *decompressor,
-                             uint8_t *output,
-                             size_t output_capacity,
-                             const uint8_t *input,
-                             size_t input_len,
-                             size_t *input_consumed) {
+ssize_t streamDecompressorFeed(streamDecompressor *decompressor,
+                               uint8_t *output,
+                               size_t output_capacity,
+                               const uint8_t *input,
+                               size_t input_len,
+                               size_t *input_consumed) {
     *input_consumed = 0;
     if (decompressor->errored) return -1;
     if (decompressor->frame_done) return 0;

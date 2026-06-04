@@ -136,8 +136,6 @@ ssize_t streamWriterWrite(streamWriter *writer, const void *buf, size_t len);
 int streamWriterFlush(streamWriter *writer);
 int streamWriterFinish(streamWriter *writer);
 void streamWriterFree(streamWriter *writer);
-int streamWriterHasError(streamWriter *writer);
-void streamWriterSetError(streamWriter *writer);
 int streamReadEnvelopeInfo(const uint8_t *buf,
                            size_t len,
                            uint8_t expected_stream_kind,
@@ -152,7 +150,6 @@ int streamReaderProbe(streamReader *reader);
 /* Full or fail: returns len on success, 0 on EOF, -1 on error. */
 ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len);
 int streamReaderGetInfo(streamReader *reader, streamReaderInfo *info);
-streamReaderError streamReaderGetError(streamReader *reader);
 int streamReaderValidateEnd(streamReader *reader);
 void streamReaderFree(streamReader *reader);
 

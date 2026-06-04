@@ -77,7 +77,7 @@ static off_t compressRioTell(rio *r) {
  * that flush mid-stream don't accidentally close it. */
 static int compressRioFlush(rio *r) {
     compressRio *cr = (compressRio *)r;
-    if (streamWriterHasError(&cr->writer)) {
+    if (cr->writer.errored) {
         r->flags |= RIO_FLAG_WRITE_ERROR;
         return 0;
     }
@@ -88,7 +88,7 @@ static int compressRioFlush(rio *r) {
         return 0;
     }
     if (cr->inner->flush && cr->inner->flush(cr->inner) == 0) {
-        streamWriterSetError(&cr->writer);
+        cr->writer.errored = true;
         r->flags |= RIO_FLAG_WRITE_ERROR;
         return 0;
     }
@@ -107,7 +107,7 @@ int rioInitWithCompression(compressRio *cr, rio *inner, streamWriterConfig *cfg)
 /* Idempotent: subsequent calls report cached error state. */
 int compressRioFinish(compressRio *cr) {
     if (cr->finalized) {
-        if (streamWriterHasError(&cr->writer)) {
+        if (cr->writer.errored) {
             cr->base.flags |= RIO_FLAG_WRITE_ERROR;
             return -1;
         }
@@ -120,10 +120,10 @@ int compressRioFinish(compressRio *cr) {
         return -1;
     }
     if (cr->inner->flush && cr->inner->flush(cr->inner) == 0) {
-        streamWriterSetError(&cr->writer);
+        cr->writer.errored = true;
         cr->base.flags |= RIO_FLAG_WRITE_ERROR;
     }
-    if (streamWriterHasError(&cr->writer)) {
+    if (cr->writer.errored) {
         cr->base.flags |= RIO_FLAG_WRITE_ERROR;
         return -1;
     }
@@ -168,7 +168,7 @@ static off_t decompressRioTell(rio *r) {
 }
 
 streamReaderError decompressRioGetError(decompressRio *dr) {
-    return streamReaderGetError(&dr->reader);
+    return dr->reader.error_kind;
 }
 
 int decompressRioValidateEnd(decompressRio *dr) {
@@ -190,7 +190,7 @@ decompressRioInitResult rioInitWithDecompression(decompressRio *dr,
 
     if (streamReaderInit(&dr->reader, cfg, decompressRioReadPartial, dr) != 0) return DECOMPRESS_RIO_INIT_ERROR;
     if (streamReaderGetInfo(&dr->reader, &local_info) != 0) {
-        streamReaderError error_kind = streamReaderGetError(&dr->reader);
+        streamReaderError error_kind = dr->reader.error_kind;
         decompressRioFree(dr);
         return error_kind == STREAM_READER_ERROR_INCOMPATIBLE
                    ? DECOMPRESS_RIO_INIT_INCOMPATIBLE
