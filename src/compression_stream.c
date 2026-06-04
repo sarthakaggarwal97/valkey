@@ -522,8 +522,8 @@ static int streamReaderRefillCompressedBuf(streamReader *reader) {
     if (read_size == 0) return -1;
 
     ssize_t got = reader->read_cb(reader->read_ctx,
-                             reader->compressed_buf + reader->compressed_buf_pos + reader->compressed_buf_len,
-                             read_size);
+                                  reader->compressed_buf + reader->compressed_buf_pos + reader->compressed_buf_len,
+                                  read_size);
     if (got < 0 || (size_t)got > read_size) return -1;
     if (got == 0) return 0;
     reader->compressed_buf_len += (size_t)got;
@@ -592,7 +592,7 @@ static ssize_t streamReaderReadCompressed(streamReader *reader, uint8_t *dst, si
                 return streamReaderFailWithError(
                     reader, total,
                     reader->error_kind == STREAM_READER_ERROR_NONE ? STREAM_READER_ERROR_IO
-                                                              : reader->error_kind);
+                                                                   : reader->error_kind);
             }
             if (filled == 0 && !reader->decompressor.frame_done) {
                 return streamReaderFailWithError(reader, total, STREAM_READER_ERROR_CORRUPT);
