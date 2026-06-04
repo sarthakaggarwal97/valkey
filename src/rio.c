@@ -540,12 +540,12 @@ void rioSetReclaimCache(rio *r, int enabled) {
 }
 
 /* Return the underlying transport type of the rio. */
-uint8_t rioGetTransportType(const rio *r) {
+uint8_t rioGetTransportType(rio *r) {
     return r->transport_type;
 }
 
-int rioIsConnTransport(const rio *r) {
-    return r && r->transport_type == RIO_TYPE_CONN;
+int rioIsConnTransport(rio *r) {
+    return r->transport_type == RIO_TYPE_CONN;
 }
 
 /* --------------------------- Higher level interface --------------------------

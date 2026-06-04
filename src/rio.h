@@ -214,8 +214,8 @@ void rioGenericUpdateChecksum(rio *r, const void *buf, size_t len);
 ssize_t rioReadPartial(rio *r, void *buf, size_t len);
 void rioSetAutoSync(rio *r, off_t bytes);
 void rioSetReclaimCache(rio *r, int enabled);
-uint8_t rioGetTransportType(const rio *r);
-int rioIsConnTransport(const rio *r);
+uint8_t rioGetTransportType(rio *r);
+int rioIsConnTransport(rio *r);
 void rioInitWithConnset(rio *r, connection **conns, int numconns);
 void rioFreeConnset(rio *r);
 #endif

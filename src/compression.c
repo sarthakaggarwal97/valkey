@@ -108,7 +108,7 @@ void streamDecompressorFree(streamDecompressor *sd) {
     impl->decompressor_free(sd);
 }
 
-size_t streamCompressOutputBound(const streamCompressor *sc, size_t input_len) {
+size_t streamCompressOutputBound(streamCompressor *sc, size_t input_len) {
     const compressionCodec *impl = compressionCodecForAlgo(sc->algo);
     assert(impl != NULL);
     return impl->compress_output_bound(input_len);

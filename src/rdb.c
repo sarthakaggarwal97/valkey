@@ -3177,7 +3177,7 @@ int rdbInputStreamValidateEnd(rdbInputStream *input) {
     return decompressRioValidateEnd(&input->decompressor) == 0 ? C_OK : C_ERR;
 }
 
-bool rdbRioHasCorruptCompressedInput(const rio *rdb) {
+bool rdbRioHasCorruptCompressedInput(rio *rdb) {
     return rioGetDecompressionError(rdb) == STREAM_READER_ERROR_CORRUPT;
 }
 

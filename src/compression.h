@@ -55,7 +55,7 @@ void streamDecompressorFree(streamDecompressor *sd);
 
 /* Conservative bound covering header + data + flush/end overhead, so the
  * caller can size one scratch buffer for all flush modes. */
-size_t streamCompressOutputBound(const streamCompressor *sc, size_t input_len);
+size_t streamCompressOutputBound(streamCompressor *sc, size_t input_len);
 
 /* Returns bytes written, or -1 on error. */
 ssize_t streamCompressFeed(streamCompressor *sc,
