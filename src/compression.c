@@ -83,7 +83,7 @@ int streamCompressorInit(streamCompressor *compressor, compressionAlgo algo, int
 
 void streamCompressorFree(streamCompressor *compressor) {
     const compressionCodec *codec = compressionCodecForAlgo(compressor->algo);
-    assert(codec != NULL);
+    if (codec == NULL) return; /* Nothing to release on a zeroed instance. */
     codec->compressor_free(compressor);
 }
 
@@ -104,7 +104,7 @@ int streamDecompressorInit(streamDecompressor *decompressor, compressionAlgo alg
 
 void streamDecompressorFree(streamDecompressor *decompressor) {
     const compressionCodec *codec = compressionCodecForAlgo(decompressor->algo);
-    assert(codec != NULL);
+    if (codec == NULL) return; /* Nothing to release on a zeroed instance. */
     codec->decompressor_free(decompressor);
 }
 
