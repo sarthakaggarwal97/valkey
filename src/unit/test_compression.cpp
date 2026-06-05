@@ -626,7 +626,7 @@ TEST_F(CompressionTest, streamReadEnvelopeInfoRejectsBadEnvelopes) {
     /* Reserved flag bit set. */
     uint8_t bad_flags[VKCS_ENVELOPE_SIZE];
     memcpy(bad_flags, good, VKCS_ENVELOPE_SIZE);
-    bad_flags[VKCS_OFFSET_FLAGS] |= ~VKCS_FLAG_CODEC_CHECKSUM;
+    bad_flags[VKCS_OFFSET_FLAGS] |= (1 << 1);
     ASSERT_EQ(streamReadEnvelopeInfo(bad_flags, VKCS_ENVELOPE_SIZE, STREAM_KIND_RDB, &info), -1)
         << "reserved flag bits must be rejected";
 }
