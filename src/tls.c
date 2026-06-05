@@ -989,10 +989,6 @@ static int connTLSSetReadHandler(connection *conn, ConnectionCallbackFunc func) 
     return C_OK;
 }
 
-static int isBlocking(tls_connection *conn) {
-    return anetIsBlock(NULL, conn->c.fd);
-}
-
 static void setBlockingTimeout(tls_connection *conn, long long timeout) {
     anetBlock(NULL, conn->c.fd);
     anetSendTimeout(NULL, conn->c.fd, timeout);
@@ -1031,30 +1027,26 @@ static int connTLSBlockingConnect(connection *conn_, const char *addr, int port,
 
 static ssize_t connTLSSyncWrite(connection *conn_, char *ptr, ssize_t size, long long timeout) {
     tls_connection *conn = (tls_connection *)conn_;
-    int blocking = isBlocking(conn);
+
     setBlockingTimeout(conn, timeout);
     SSL_clear_mode(conn->ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
     ERR_clear_error();
     int ret = SSL_write(conn->ssl, ptr, size);
     ret = updateStateAfterSSLIO(conn, ret, 0);
     SSL_set_mode(conn->ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
-    if (!blocking) {
-        unsetBlockingTimeout(conn);
-    }
+    unsetBlockingTimeout(conn);
 
     return ret;
 }
 
 static ssize_t connTLSSyncRead(connection *conn_, char *ptr, ssize_t size, long long timeout) {
     tls_connection *conn = (tls_connection *)conn_;
-    int blocking = isBlocking(conn);
+
     setBlockingTimeout(conn, timeout);
     ERR_clear_error();
     int ret = SSL_read(conn->ssl, ptr, size);
     ret = updateStateAfterSSLIO(conn, ret, 0);
-    if (!blocking) {
-        unsetBlockingTimeout(conn);
-    }
+    unsetBlockingTimeout(conn);
 
     return ret;
 }
@@ -1063,7 +1055,6 @@ static ssize_t connTLSSyncReadLine(connection *conn_, char *ptr, ssize_t size, l
     tls_connection *conn = (tls_connection *)conn_;
     ssize_t nread = 0;
 
-    int blocking = isBlocking(conn);
     setBlockingTimeout(conn, timeout);
 
     size--;
@@ -1089,9 +1080,7 @@ static ssize_t connTLSSyncReadLine(connection *conn_, char *ptr, ssize_t size, l
         size--;
     }
 exit:
-    if (!blocking) {
-        unsetBlockingTimeout(conn);
-    }
+    unsetBlockingTimeout(conn);
     return nread;
 }
 
