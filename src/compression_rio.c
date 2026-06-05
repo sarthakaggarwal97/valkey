@@ -102,7 +102,7 @@ int rioInitWithCompression(compressRio *cr, rio *inner, streamWriterConfig *cfg)
     cr->inner = inner;
     if (streamWriterInit(&cr->writer, cfg, compressRioEmit, cr) != 0) {
         /* Self-clean so the failure contract matches rioInitWithDecompression:
-         * on a nonzero return the compressRio is left untouched and the caller
+         * on a nonzero return the compressRio is left zeroed and the caller
          * must not call compressRioFree. */
         memset(cr, 0, sizeof(*cr));
         return -1;

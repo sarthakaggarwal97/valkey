@@ -30,17 +30,14 @@
 #define VKCS_VERSION 1
 #define VKCS_FLAG_CODEC_CHECKSUM (1 << 0)
 
-/* Byte offsets of each envelope field after the magic. */
+/* Byte offsets of each envelope field. */
 #define VKCS_OFFSET_VERSION 4
 #define VKCS_OFFSET_ALGO 5
 #define VKCS_OFFSET_FLAGS 6
 #define VKCS_OFFSET_STREAM_KIND 7
 
-/* Identifies what the compressed bytes decode to, letting a reader reject a
- * stream meant for a different consumer. Full-sync replication still carries
- * an RDB image, so it keeps STREAM_KIND_RDB; a future incremental command
- * stream would use its own kind, and the RDB loader rejects anything that is
- * not STREAM_KIND_RDB. */
+/* Identifies what the compressed bytes decode to. The RDB loader rejects any
+ * stream whose kind is not STREAM_KIND_RDB. */
 typedef enum {
     STREAM_KIND_RDB = 0x00,
 } streamKind;

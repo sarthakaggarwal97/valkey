@@ -19,8 +19,9 @@ static const uint8_t VKCS_MAGIC[VKCS_MAGIC_SIZE] = {
     VKCS_MAGIC_3,
 };
 
-/* True when the first len bytes of buf match the VKCS magic prefix. */
-static bool vkcsMagicMatches(const uint8_t *buf, size_t len) {
+/* True when the first len bytes of buf match the VKCS magic. When len is below
+ * VKCS_MAGIC_SIZE this only compares that prefix. */
+static bool vkcsHasMagicPrefix(const uint8_t *buf, size_t len) {
     size_t n = len < VKCS_MAGIC_SIZE ? len : VKCS_MAGIC_SIZE;
     return memcmp(buf, VKCS_MAGIC, n) == 0;
 }
@@ -34,7 +35,7 @@ typedef enum {
 
 static bool streamReaderProbeHasMagicPrefix(streamReader *reader) {
     if (reader->probe.header_len == 0) return false;
-    return vkcsMagicMatches(reader->probe.header, reader->probe.header_len);
+    return vkcsHasMagicPrefix(reader->probe.header, reader->probe.header_len);
 }
 
 static void streamReaderProbeSetPassthrough(streamReader *reader) {
@@ -85,7 +86,7 @@ static int readVkcsEnvelope(const uint8_t *buf,
                             bool *codec_checksum_enabled) {
     if (len < VKCS_ENVELOPE_SIZE) return -1;
 
-    if (!vkcsMagicMatches(buf, VKCS_MAGIC_SIZE)) return -1;
+    if (!vkcsHasMagicPrefix(buf, VKCS_MAGIC_SIZE)) return -1;
     if (buf[VKCS_OFFSET_VERSION] != VKCS_VERSION) return -1;
 
     compressionAlgo parsed_algo = (compressionAlgo)buf[VKCS_OFFSET_ALGO];
@@ -144,7 +145,7 @@ static vkcsProbeResult streamReaderProbeFeed(streamReader *reader,
         reader->probe.header_len += take;
         consumed += take;
 
-        if (reader->probe.header_len >= VKCS_MAGIC_SIZE && !vkcsMagicMatches(reader->probe.header, VKCS_MAGIC_SIZE)) {
+        if (reader->probe.header_len >= VKCS_MAGIC_SIZE && !vkcsHasMagicPrefix(reader->probe.header, VKCS_MAGIC_SIZE)) {
             *src_consumed = consumed;
             if (!reader->probe_cfg.allow_passthrough) return VKCS_PROBE_ERROR;
             streamReaderProbeSetPassthrough(reader);

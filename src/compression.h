@@ -21,18 +21,13 @@ typedef enum {
 
 typedef enum {
     FLUSH_CONTINUE = 0, /* Buffer internally. */
-    /* Drain buffered bytes to the sink but leave the frame open so more data
-     * can follow. RDB save only needs FLUSH_END, but a streaming consumer that
-     * must bound latency (e.g. an incremental replication stream) needs to push
-     * what it has without closing the frame, so the rio flush hook maps to this
-     * rather than to FLUSH_END. */
-    FLUSH_SYNC = 1,
-    FLUSH_END = 2, /* Finalize frame. */
+    FLUSH_SYNC = 1,     /* Drain buffered bytes, keep frame open. */
+    FLUSH_END = 2,      /* Finalize frame. */
 } compressFlushMode;
 
 typedef struct {
     compressionAlgo algo;
-    int level; /* 0 selects the codec's default level. */
+    int level; /* 0 selects the codec default. */
     void *ctx;
     bool stream_started;
     bool codec_checksum;
