@@ -16,11 +16,8 @@
  *   [6]    flags (bit 0 = codec checksum enabled; other bits reserved)
  *   [7]    stream kind
  *
- * Every field is a single byte today, so the on-disk form is identical on all
- * architectures. Any multi-byte field added in a future version must be stored
- * in network byte order so a VKCS stream stays portable across architectures,
- * including when it is sent over replication between hosts of differing
- * endianness. */
+ * All fields are single-byte in version 1. Future multi-byte fields must use
+ * network byte order. */
 #define VKCS_MAGIC_0 0x56 /* 'V' */
 #define VKCS_MAGIC_1 0x4B /* 'K' */
 #define VKCS_MAGIC_2 0x43 /* 'C' */
