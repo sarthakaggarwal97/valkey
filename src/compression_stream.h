@@ -14,7 +14,13 @@
  *   [4]    version (currently VKCS_VERSION)
  *   [5]    codec id
  *   [6]    flags (bit 0 = codec checksum enabled; other bits reserved)
- *   [7]    stream kind */
+ *   [7]    stream kind
+ *
+ * Every field is a single byte today, so the on-disk form is identical on all
+ * architectures. Any multi-byte field added in a future version must be stored
+ * in network byte order so a VKCS stream stays portable across architectures,
+ * including when it is sent over replication between hosts of differing
+ * endianness. */
 #define VKCS_MAGIC_0 0x56 /* 'V' */
 #define VKCS_MAGIC_1 0x4B /* 'K' */
 #define VKCS_MAGIC_2 0x43 /* 'C' */
@@ -24,6 +30,17 @@
 #define VKCS_VERSION 1
 #define VKCS_FLAG_CODEC_CHECKSUM (1 << 0)
 
+/* Byte offsets of each envelope field after the magic. */
+#define VKCS_OFFSET_VERSION 4
+#define VKCS_OFFSET_ALGO 5
+#define VKCS_OFFSET_FLAGS 6
+#define VKCS_OFFSET_STREAM_KIND 7
+
+/* Identifies what the compressed bytes decode to, letting a reader reject a
+ * stream meant for a different consumer. Full-sync replication still carries
+ * an RDB image, so it keeps STREAM_KIND_RDB; a future incremental command
+ * stream would use its own kind, and the RDB loader rejects anything that is
+ * not STREAM_KIND_RDB. */
 typedef enum {
     STREAM_KIND_RDB = 0x00,
 } streamKind;
