@@ -36,6 +36,7 @@
 #include "rio.h"
 #include "commands.h"
 #include "allocator_defrag.h"
+#include "compression.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -452,9 +453,14 @@ typedef enum {
 #define REPLICA_CAPA_PSYNC2 (1 << 1)            /* Supports PSYNC2 protocol. */
 #define REPLICA_CAPA_DUAL_CHANNEL (1 << 2)      /* Supports dual channel replication sync */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM (1 << 3) /* Supports skipping RDB checksum for sync requests. */
+#define REPLICA_CAPA_COMPRESSION (1 << 4)       /* Supports replication compression. */
 
 /* Replica capability strings */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR "skip-rdb-checksum" /* Supports skipping RDB checksum for sync requests. */
+#define REPLICA_CAPA_COMPRESSION_STR "compression"             /* Supports replication compression. */
+
+#define REPL_COMPRESSION_ALGO ALGO_LZ4
+#define REPL_COMPRESSION_LEVEL 0 /* Codec default. */
 
 /* Replica requirements */
 #define REPLICA_REQ_NONE 0
@@ -2046,6 +2052,7 @@ struct valkeyServer {
     int rdb_compression;                  /* Use compression in RDB? */
     int rdb_compression_algo;             /* RDB compression algorithm (compressionAlgo):
                                            * ALGO_LZF (default), ALGO_LZ4 */
+    int repl_compression;                 /* Use compression for replication? */
     int rdb_checksum;                     /* Use RDB checksum? */
     int rdb_del_sync_files;               /* Remove RDB files used only for SYNC if
                                              the instance does not use persistence. */
@@ -2168,6 +2175,7 @@ struct valkeyServer {
     off_t repl_transfer_last_fsync_off;   /* Offset when we fsync-ed last time. */
     connection *repl_transfer_s;          /* Replica -> Primary SYNC connection */
     connection *repl_rdb_transfer_s;      /* Primary FULL SYNC connection (RDB download) */
+    int repl_transfer_compression;        /* Compression capability advertised for the current transfer. */
     int repl_transfer_fd;                 /* Replica -> Primary SYNC temp file descriptor */
     char *repl_transfer_tmpfile;          /* Replica-> Primary SYNC temp file name */
     _Atomic(time_t) repl_transfer_lastio; /* Unix time of the latest read, for timeout */

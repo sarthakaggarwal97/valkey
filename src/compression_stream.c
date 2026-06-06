@@ -604,7 +604,7 @@ int streamReaderGetInfo(streamReader *reader, streamReaderInfo *info) {
     return 0;
 }
 
-int streamReaderValidateEnd(streamReader *reader) {
+static int streamReaderValidateEndInternal(streamReader *reader, bool require_source_eof) {
     uint8_t buf[4096];
 
     if (streamReaderProbe(reader) != 0) return -1;
@@ -628,6 +628,8 @@ int streamReaderValidateEnd(streamReader *reader) {
         return -1;
     }
 
+    if (!require_source_eof) return 0;
+
     ssize_t got = reader->read_cb(reader->read_ctx, buf, 1);
     if (got < 0) {
         streamReaderSetError(reader, STREAM_READER_ERROR_IO);
@@ -638,6 +640,14 @@ int streamReaderValidateEnd(streamReader *reader) {
         return -1;
     }
     return 0;
+}
+
+int streamReaderValidateFrameEnd(streamReader *reader) {
+    return streamReaderValidateEndInternal(reader, false);
+}
+
+int streamReaderValidateEnd(streamReader *reader) {
+    return streamReaderValidateEndInternal(reader, true);
 }
 
 void streamReaderFree(streamReader *reader) {

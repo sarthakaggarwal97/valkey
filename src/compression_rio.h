@@ -42,6 +42,7 @@ decompressRioInitResult rioInitWithDecompression(decompressRio *dr,
                                                  streamReaderConfig *cfg,
                                                  streamReaderInfo *info);
 streamReaderError decompressRioGetError(decompressRio *dr);
+int decompressRioValidateFrameEnd(decompressRio *dr);
 int decompressRioValidateEnd(decompressRio *dr);
 void decompressRioFree(decompressRio *dr);
 

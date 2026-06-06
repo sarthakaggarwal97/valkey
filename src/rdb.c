@@ -1543,7 +1543,42 @@ werr:
  * While the suffix is the 40 bytes hex string we announced in the prefix.
  * This way processes receiving the payload can understand when it ends
  * without doing any processing of the content. */
-int rdbSaveRioWithEOFMark(int req, int rdbver, rio *rdb, int *error, rdbSaveInfo *rsi) {
+static int rdbSaveRioWithOptionalCompression(int req,
+                                             int rdbver,
+                                             rio *rdb,
+                                             int *error,
+                                             rdbSaveInfo *rsi,
+                                             int use_streaming_compression) {
+    compressRio cr;
+
+    if (!use_streaming_compression) return rdbSaveRio(req, rdbver, rdb, error, RDBFLAGS_REPLICATION, rsi);
+
+    streamWriterConfig cfg = {
+        .algo = REPL_COMPRESSION_ALGO,
+        .level = REPL_COMPRESSION_LEVEL,
+        .stream_kind = STREAM_KIND_RDB,
+        .codec_checksum_enabled = !(rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM),
+    };
+    if (rioInitWithCompression(&cr, rdb, &cfg) != 0) {
+        if (error && *error == 0) *error = EIO;
+        return C_ERR;
+    }
+
+    rio *save_rio = (rio *)&cr;
+    save_rio->flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
+    save_rio->update_cksum = NULL;
+    save_rio->cksum = 0;
+
+    int retval = rdbSaveRio(req, rdbver, save_rio, error, RDBFLAGS_REPLICATION, rsi);
+    if (retval == C_OK && compressRioFinish(&cr) != 0) {
+        if (error && *error == 0) *error = EIO;
+        retval = C_ERR;
+    }
+    compressRioFree(&cr);
+    return retval;
+}
+
+int rdbSaveRioWithEOFMark(int req, int rdbver, rio *rdb, int *error, rdbSaveInfo *rsi, int use_streaming_compression) {
     char eofmark[RDB_EOF_MARK_SIZE];
 
     startSaving(RDBFLAGS_REPLICATION);
@@ -1552,7 +1587,8 @@ int rdbSaveRioWithEOFMark(int req, int rdbver, rio *rdb, int *error, rdbSaveInfo
     if (rioWrite(rdb, "$EOF:", 5) == 0) goto werr;
     if (rioWrite(rdb, eofmark, RDB_EOF_MARK_SIZE) == 0) goto werr;
     if (rioWrite(rdb, "\r\n", 2) == 0) goto werr;
-    if (rdbSaveRio(req, rdbver, rdb, error, RDBFLAGS_REPLICATION, rsi) == C_ERR) goto werr;
+    if (rdbSaveRioWithOptionalCompression(req, rdbver, rdb, error, rsi, use_streaming_compression) == C_ERR)
+        goto werr;
     if (rioWrite(rdb, eofmark, RDB_EOF_MARK_SIZE) == 0) goto werr;
     stopSaving(1);
     return C_OK;
@@ -3174,6 +3210,11 @@ int rdbInputStreamValidateEnd(rdbInputStream *input) {
     return decompressRioValidateEnd(&input->decompressor) == 0 ? C_OK : C_ERR;
 }
 
+int rdbInputStreamValidateFrameEnd(rdbInputStream *input) {
+    serverAssert(input->initialized);
+    return decompressRioValidateFrameEnd(&input->decompressor) == 0 ? C_OK : C_ERR;
+}
+
 bool rdbRioHasCorruptCompressedInput(rio *rdb) {
     /* rdbLoadRio also accepts raw rios, for example AOF preamble loads. */
     if (!(rdb->flags & RIO_FLAG_STREAMING_DECOMPRESSION)) return false;
@@ -3882,7 +3923,7 @@ void killRDBChild(void) {
 
 /* Spawn an RDB child that writes the RDB to the sockets of the replicas
  * that are currently in REPLICA_STATE_WAIT_BGSAVE_START state. */
-int rdbSaveToReplicasSockets(int req, int rdbver, rdbSaveInfo *rsi) {
+int rdbSaveToReplicasSockets(int req, int rdbver, rdbSaveInfo *rsi, int use_streaming_compression) {
     listNode *ln;
     listIter li;
     pid_t childpid;
@@ -3984,7 +4025,7 @@ int rdbSaveToReplicasSockets(int req, int rdbver, rdbSaveInfo *rsi) {
 
         if (skip_rdb_checksum) rdb.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
 
-        retval = rdbSaveRioWithEOFMark(req, rdbver, &rdb, NULL, rsi);
+        retval = rdbSaveRioWithEOFMark(req, rdbver, &rdb, NULL, rsi, use_streaming_compression);
         if (retval == C_OK && rioFlush(&rdb) == 0) retval = C_ERR;
 
         if (retval == C_OK) {

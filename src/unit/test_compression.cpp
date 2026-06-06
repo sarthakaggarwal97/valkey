@@ -1034,6 +1034,35 @@ TEST_F(CompressionTest, streamReaderValidateEndRejectsTrailingBytes) {
     dynamicBufFree(&db);
 }
 
+TEST_F(CompressionTest, streamReaderValidateFrameEndAllowsTrailingBytes) {
+    const char *payload = "payload with caller-managed trailer";
+    const char *trailer = "EOF-MARKER";
+    DynamicBuf db;
+    dynamicBufInit(&db);
+
+    streamWriterConfig wcfg = makeWriterConfig(ALGO_LZ4, 0, STREAM_KIND_RDB, true);
+    streamWriter w;
+    ASSERT_EQ(streamWriterInit(&w, &wcfg, emitToDynamicBuf, &db), 0);
+    ASSERT_GE(streamWriterWrite(&w, payload, strlen(payload)), 0);
+    ASSERT_EQ(streamWriterFinish(&w), 0);
+    size_t frame_len = sdslen((const char *)db.data);
+    db.data = (uint8_t *)sdscatlen((sds)db.data, trailer, strlen(trailer));
+
+    MemReader reader_ctx = {db.data, sdslen((const char *)db.data), 0, 3};
+    streamReaderConfig rcfg = makeReaderConfig(STREAM_KIND_RDB, false);
+    streamReader reader;
+    ASSERT_EQ(streamReaderInit(&reader, &rcfg, memReaderRead, &reader_ctx), 0);
+
+    char out[64];
+    ASSERT_EQ(streamReaderRead(&reader, out, strlen(payload)), (ssize_t)strlen(payload));
+    ASSERT_EQ(streamReaderValidateFrameEnd(&reader), 0);
+    ASSERT_EQ(reader_ctx.pos, frame_len);
+
+    streamReaderFree(&reader);
+    streamWriterFree(&w);
+    dynamicBufFree(&db);
+}
+
 TEST_F(CompressionTest, streamReaderValidateEndRejectsUnreadDecodedBytes) {
     const char *payload = "payload with unread decoded suffix";
     const size_t payload_len = strlen(payload);

@@ -988,6 +988,7 @@ need_full_resync:
 int startBgsaveForReplication(int mincapa, int req, int rdbver) {
     int retval;
     int socket_target = 0;
+    int use_streaming_compression = 0;
     listIter li;
     listNode *ln;
 
@@ -1002,12 +1003,17 @@ int startBgsaveForReplication(int mincapa, int req, int rdbver) {
     socket_target = (mincapa & REPLICA_CAPA_EOF) && (server.repl_diskless_sync ||
                                                      (req & REPLICA_REQ_RDB_MASK) ||
                                                      rdbver != RDB_VERSION);
+    use_streaming_compression = socket_target && server.repl_compression &&
+                                (mincapa & REPLICA_CAPA_COMPRESSION) &&
+                                compressionAlgoSupportsStreaming(REPL_COMPRESSION_ALGO);
     /* `SYNC` should have failed with error if we don't support socket and require a filter, assert this here */
     serverAssert(socket_target || !(req & REPLICA_REQ_RDB_MASK));
 
-    serverLog(LL_NOTICE, "Starting BGSAVE for SYNC with target: %s using: %s",
+    serverLog(LL_NOTICE, "Starting BGSAVE for SYNC with target: %s using: %s%s%s",
               socket_target ? "replicas sockets" : "disk",
-              (req & REPLICA_REQ_RDB_CHANNEL) ? "dual-channel" : "normal sync");
+              (req & REPLICA_REQ_RDB_CHANNEL) ? "dual-channel" : "normal sync",
+              use_streaming_compression ? " with compression: " : "",
+              use_streaming_compression ? compressionAlgoName(REPL_COMPRESSION_ALGO) : "");
 
     rdbSaveInfo rsi, *rsiptr;
     rsiptr = rdbPopulateSaveInfo(&rsi);
@@ -1015,7 +1021,7 @@ int startBgsaveForReplication(int mincapa, int req, int rdbver) {
      * otherwise replica will miss repl-stream-db. */
     if (rsiptr) {
         if (socket_target)
-            retval = rdbSaveToReplicasSockets(req, rdbver, rsiptr);
+            retval = rdbSaveToReplicasSockets(req, rdbver, rsiptr, use_streaming_compression);
         else {
             /* Keep the page cache since it'll get used soon */
             retval = rdbSaveBackground(req, server.rdb_filename, rsiptr, RDBFLAGS_REPLICATION | RDBFLAGS_KEEP_CACHE);
@@ -1358,13 +1364,14 @@ void freeClientReplicationData(client *c) {
  * the primary can accurately lists replicas and their listening ports in the
  * INFO output.
  *
- * - capa <eof|psync2|dual-channel|skip-rdb-checksum>
+ * - capa <eof|psync2|dual-channel|skip-rdb-checksum|compression>
  * What is the capabilities of this instance.
  * eof: supports EOF-style RDB transfer for diskless replication.
  * psync2: supports PSYNC v2, so understands +CONTINUE <new repl ID>.
  * dual-channel: supports full sync using rdb channel.
  * skip-rdb-checksum: supports skipping RDB checksum calculations during diskless sync using
  *                    a connection that has integrity checks (such as TLS).
+ * compression: supports replication compression.
  *
  * - ack <offset> [fack <aofofs>]
  * Replica informs the primary the amount of replication stream that it
@@ -1446,6 +1453,8 @@ void replconfCommand(client *c) {
                 }
             } else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR))
                 c->repl_data->replica_capa |= REPLICA_CAPA_SKIP_RDB_CHECKSUM;
+            else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_COMPRESSION_STR))
+                c->repl_data->replica_capa |= REPLICA_CAPA_COMPRESSION;
         } else if (!strcasecmp(objectGetVal(c->argv[j]), "ack")) {
             /* REPLCONF ACK is used by replica to inform the primary the amount
              * of replication stream that it processed so far. It is an
@@ -2411,12 +2420,15 @@ void replicaAfterLoadPrimaryRDB(connection *conn, rdbSaveInfo *rsi, int disk_bas
 
 int replicaLoadPrimaryRDBFromSocket(connection *conn, char *buf, char *eofmark, int *usemark, rdbSaveInfo *rsi) {
     rio rdb;
+    rdbInputStream input;
+    rdbInputStream *inputp = NULL;
     serverDb **dbarray;
     functionsLibCtx *functions_lib_ctx;
     serverDb **diskless_load_tempDb = NULL;
     functionsLibCtx *temp_functions_lib_ctx = NULL;
     int empty_db_flags = server.repl_replica_lazy_flush ? EMPTYDB_ASYNC : EMPTYDB_NO_FLAGS;
     int asyncLoading = 0;
+    int loadingFailed = 0;
 
     if (server.repl_diskless_load == REPL_DISKLESS_LOAD_SWAPDB) {
         /* Initialize empty tempDb dictionaries. */
@@ -2452,13 +2464,35 @@ int replicaLoadPrimaryRDBFromSocket(connection *conn, char *buf, char *eofmark, 
     serverLog(LL_NOTICE, "PRIMARY <-> REPLICA sync: Loading DB in memory");
     startLoading(server.repl_transfer_size, RDBFLAGS_REPLICATION, asyncLoading);
     if (replicationSupportSkipRDBChecksum(conn, 1, *usemark)) rdb.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
-    int loadingFailed = 0;
+    rdbInputStreamInit(&input, &rdb);
+    if (server.repl_transfer_compression && *usemark) {
+        decompressRioInitResult init_rc = rdbInputStreamPrepare(&input);
+        if (init_rc == DECOMPRESS_RIO_INIT_INCOMPATIBLE) {
+            serverLog(LL_WARNING,
+                      "Invalid or unsupported RDB stream envelope from primary. "
+                      "The primary may require a Valkey version with streaming RDB "
+                      "compression support.");
+            loadingFailed = 1;
+        } else if (init_rc == DECOMPRESS_RIO_INIT_ERROR) {
+            serverLog(LL_WARNING, "Failed to initialize RDB stream reader from primary");
+            loadingFailed = 1;
+        } else {
+            inputp = &input;
+            if (input.stream_info.compressed) {
+                serverLog(LL_NOTICE, "Loading compressed RDB (algo=%s) from primary",
+                          compressionAlgoName(input.stream_info.algo));
+            }
+        }
+    }
     rdbLoadingCtx loadingCtx = {.dbarray = dbarray, .functions_lib_ctx = functions_lib_ctx};
     /* If we aren't using the swapdb method, then we want to empty the data before loading the rdb */
     int flags = RDBFLAGS_REPLICATION;
     if (server.repl_diskless_load != REPL_DISKLESS_LOAD_SWAPDB) flags |= RDBFLAGS_EMPTY_DATA;
-    int retval = rdbLoadRioWithLoadingCtxScopedRdb(&rdb, flags, rsi, &loadingCtx);
-    if (retval != RDB_OK) {
+    int retval = loadingFailed ? RDB_FAILED : rdbLoadRioWithLoadingCtxScopedRdb(input.rdb_rio, flags, rsi, &loadingCtx);
+    if (retval == RDB_OK && inputp && rdbInputStreamValidateFrameEnd(inputp) != C_OK) {
+        serverLog(LL_WARNING, "Compressed RDB stream from primary did not end cleanly");
+        loadingFailed = 1;
+    } else if (retval != RDB_OK) {
         /* RDB loading failed. */
         serverLog(LL_WARNING, "Failed trying to load the PRIMARY synchronization DB "
                               "from socket, check server logs.");
@@ -2473,6 +2507,7 @@ int replicaLoadPrimaryRDBFromSocket(connection *conn, char *buf, char *eofmark, 
 
     if (loadingFailed) {
         stopLoading(0);
+        rdbInputStreamFree(&input);
         rioFreeConn(&rdb, NULL);
 
         if (server.repl_diskless_load == REPL_DISKLESS_LOAD_SWAPDB) {
@@ -2497,6 +2532,7 @@ int replicaLoadPrimaryRDBFromSocket(connection *conn, char *buf, char *eofmark, 
         /* Note that there's no point in restarting the AOF on SYNC
          * failure, it'll be restarted when sync succeeds or the replica
          * gets promoted. */
+        server.repl_transfer_compression = 0;
         return C_ERR;
     }
 
@@ -2528,14 +2564,17 @@ int replicaLoadPrimaryRDBFromSocket(connection *conn, char *buf, char *eofmark, 
 
     /* Cleanup and restore the socket to the original state to continue
      * with the normal replication. */
+    rdbInputStreamFree(&input);
     rioFreeConn(&rdb, NULL);
     connNonBlock(conn);
     connRecvTimeout(conn, 0);
+    server.repl_transfer_compression = 0;
     return C_OK;
 }
 
 int replicaLoadPrimaryRDBFromDisk(rdbSaveInfo *rsi) {
     int empty_db_flags = server.repl_replica_lazy_flush ? EMPTYDB_ASYNC : EMPTYDB_NO_FLAGS;
+    server.repl_transfer_compression = 0;
     /* Make sure the new file (also used for persistence) is fully synced
      * (not covered by earlier calls to rdb_fsync_range). */
     if (fsync(server.repl_transfer_fd) == -1) {
@@ -3054,8 +3093,37 @@ static int dualChannelReplHandleHandshake(connection *conn, sds *err) {
     }
     /* Send replica listening port to primary for clarification */
     sds portstr = getReplicaPortString();
-    *err = sendCommand(conn, "REPLCONF", "capa", "eof", "rdb-only", "1", "rdb-channel", "1", "listening-port", portstr,
-                       NULL);
+    char *argv[11] = {"REPLCONF", "capa", "eof", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+    size_t lens[11] = {8, 4, 3, 0, 0, 0, 0, 0, 0, 0, 0};
+    int argc = 3;
+    server.repl_transfer_compression = server.repl_compression;
+    if (server.repl_transfer_compression) {
+        argv[argc] = "capa";
+        lens[argc] = strlen("capa");
+        argc++;
+        argv[argc] = REPLICA_CAPA_COMPRESSION_STR;
+        lens[argc] = strlen(REPLICA_CAPA_COMPRESSION_STR);
+        argc++;
+    }
+    argv[argc] = "rdb-only";
+    lens[argc] = strlen("rdb-only");
+    argc++;
+    argv[argc] = "1";
+    lens[argc] = 1;
+    argc++;
+    argv[argc] = "rdb-channel";
+    lens[argc] = strlen("rdb-channel");
+    argc++;
+    argv[argc] = "1";
+    lens[argc] = 1;
+    argc++;
+    argv[argc] = "listening-port";
+    lens[argc] = strlen("listening-port");
+    argc++;
+    argv[argc] = portstr;
+    lens[argc] = sdslen(portstr);
+    argc++;
+    *err = sendCommandArgv(conn, argc, argv, lens);
     sdsfree(portstr);
     if (*err) {
         dualChannelServerLog(LL_WARNING, "Sending command to primary in dual channel replication handshake: %s", *err);
@@ -3855,8 +3923,8 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
 
     // we can ignore primary's conditions when sending capa (is_primary_stream_verified=1)
     int send_skip_rdb_checksum_capa = replicationSupportSkipRDBChecksum(conn, useDisklessLoad(), 1);
-    char *argv[9] = {"REPLCONF", "capa", "eof", "capa", "psync2", NULL, NULL, NULL, NULL};
-    size_t lens[9] = {8, 4, 3, 4, 6, 0, 0, 0, 0};
+    char *argv[11] = {"REPLCONF", "capa", "eof", "capa", "psync2", NULL, NULL, NULL, NULL, NULL, NULL};
+    size_t lens[11] = {8, 4, 3, 4, 6, 0, 0, 0, 0, 0, 0};
     int argc = 5;
     if (send_skip_rdb_checksum_capa) {
         argv[argc] = "capa";
@@ -3872,6 +3940,15 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
         argc++;
         argv[argc] = "dual-channel";
         lens[argc] = strlen("dual-channel");
+        argc++;
+    }
+    server.repl_transfer_compression = server.repl_compression;
+    if (server.repl_transfer_compression) {
+        argv[argc] = "capa";
+        lens[argc] = strlen("capa");
+        argc++;
+        argv[argc] = REPLICA_CAPA_COMPRESSION_STR;
+        lens[argc] = strlen(REPLICA_CAPA_COMPRESSION_STR);
         argc++;
     }
     err = sendCommandArgv(conn, argc, argv, lens);
@@ -4386,6 +4463,7 @@ void undoConnectWithPrimary(void) {
 
     connClose(server.repl_transfer_s);
     server.repl_transfer_s = NULL;
+    server.repl_transfer_compression = 0;
 }
 
 /* Abort the async download of the bulk dataset while SYNC-ing with primary.

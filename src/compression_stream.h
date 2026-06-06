@@ -153,6 +153,11 @@ int streamReaderProbe(streamReader *reader);
 /* Full or fail: returns len on success, 0 on EOF, -1 on error. */
 ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len);
 int streamReaderGetInfo(streamReader *reader, streamReaderInfo *info);
+
+/* Validate a compressed frame without consuming caller-owned trailing framing. */
+int streamReaderValidateFrameEnd(streamReader *reader);
+
+/* Validate a compressed frame and require the wrapped source to be exhausted. */
 int streamReaderValidateEnd(streamReader *reader);
 void streamReaderFree(streamReader *reader);
 
