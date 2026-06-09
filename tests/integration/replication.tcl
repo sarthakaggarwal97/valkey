@@ -196,6 +196,11 @@ start_server {tags {"repl external:skip"}} {
         }
         
         test {Replica output bytes metric} {
+            # Disable periodic PINGs to replicas. Otherwise a background PING
+            # (14 bytes on the wire) can be accounted to total_net_repl_output_bytes
+            # between `config resetstat` and the assertion below, making it non-zero.
+            $A config set repl-ping-replica-period 3600
+
             # reset stats 
             $A config resetstat
             
@@ -217,6 +222,9 @@ start_server {tags {"repl external:skip"}} {
             set info [$A info stats]
             set replica_bytes_output [getInfoProperty $info "total_net_repl_output_bytes"]
             assert_morethan $replica_bytes_output 0
+
+            # Restore the default so subsequent tests are unaffected.
+            $A config set repl-ping-replica-period 10
         }
     }
 }
