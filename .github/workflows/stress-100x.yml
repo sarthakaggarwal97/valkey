@@ -1,0 +1,136 @@
+name: Stress 100x (deflaked tests)
+
+# Runs each deflaked test 100 times in the CI environment that produced its
+# original failure, to verify the fixes hold under repeated execution.
+#
+#   #3891 clusterscan    -> ASAN  (node-timeout race surfaced under sanitizer slowness)
+#   #3932 failover2      -> ASAN  (rank-stagger vote split surfaced under sanitizer slowness)
+#   #3914 cluster-shards -> jemalloc (replica auto-migration race on staggered restart)
+#   #3930 replication    -> jemalloc (periodic PING accounting after resetstat)
+#   #3923 dual-channel    -> TLS   (slow TLS transfer vs low repl-timeout)
+
+on:
+  push:
+    branches:
+      - stress-test-failures-batch
+  workflow_dispatch:
+    inputs:
+      loops:
+        description: "Number of times to repeat each test"
+        required: false
+        default: "100"
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - issue: "3891"
+            unit: unit/cluster/clusterscan
+            env: asan
+            target: "CLUSTERSCAN returns correct errors on cluster down and unassigned slots"
+          - issue: "3932"
+            unit: unit/cluster/failover2
+            env: asan
+            target: "Multiple primary nodes are down, rank them based on the failed primary"
+          - issue: "3914"
+            unit: unit/cluster/cluster-shards
+            env: jemalloc
+            target: "CLUSTER MYSHARDID reports same shard id after cluster restart"
+          - issue: "3930"
+            unit: integration/replication
+            env: jemalloc
+            target: "Replica output bytes metric"
+          - issue: "3923"
+            unit: integration/dual-channel-replication
+            env: tls
+            target: "Dual channel replication buffer memory fields"
+    name: "#${{ matrix.issue }} ${{ matrix.unit }} (${{ matrix.env }})"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install libbacktrace
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ianlancetaylor/libbacktrace
+          ref: b9e40069c0b47a722286b94eb5231f7f05c08713
+          path: libbacktrace
+      - name: Build libbacktrace
+        run: cd libbacktrace && ./configure && make && sudo make install
+
+      - name: Install gtest (unit tests)
+        if: matrix.env == 'asan' || matrix.env == 'jemalloc'
+        run: sudo apt-get install -y pkg-config libgtest-dev libgmock-dev
+
+      - name: make (jemalloc)
+        if: matrix.env == 'jemalloc'
+        run: make all-with-unit-tests SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes
+
+      - name: make (asan)
+        if: matrix.env == 'asan'
+        run: make all-with-unit-tests OPT=-O3 SANITIZER=address SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes
+
+      - name: make (tls)
+        if: matrix.env == 'tls'
+        run: make BUILD_TLS=yes SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes
+
+      - name: testprep (common)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tcl8.6 tclx
+
+      - name: testprep (tls certs)
+        if: matrix.env == 'tls'
+        run: |
+          sudo apt-get install -y tcl-tls
+          ./utils/gen-test-certs.sh
+
+      - name: Run ${{ matrix.unit }} (stress)
+        env:
+          LOOPS: ${{ github.event.inputs.loops || '100' }}
+        run: |
+          # The tally step below is the authoritative pass/fail gate for the
+          # target test, so do not let a neighbor test in the same file fail
+          # this step. Capture all output for the tally.
+          ./runtest \
+            --single ${{ matrix.unit }} \
+            --loops "$LOOPS" \
+            --clients 4 \
+            --verbose \
+            --dump-logs \
+            --failures-output test-failures/valkey.json \
+            ${{ matrix.env == 'tls' && '--tls' || '' }} \
+            2>&1 | tee runtest-output.log || true
+
+      - name: Per-test tally (#${{ matrix.issue }})
+        if: always()
+        env:
+          LOOPS: ${{ github.event.inputs.loops || '100' }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          ok=$(grep -cF "[ok]: ${TARGET}" runtest-output.log || true)
+          err=$(grep -cF "[err]: ${TARGET}" runtest-output.log || true)
+          echo "## Stress tally — #${{ matrix.issue }} ${{ matrix.unit }} (${{ matrix.env }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Target test: \`${TARGET}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| loops | target [ok] | target [err] |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ${LOOPS} | ${ok} | ${err} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "TARGET TEST TALLY: ok=${ok} err=${err} of ${LOOPS} loops"
+          if [ "${ok}" -lt "${LOOPS}" ] || [ "${err}" -ne 0 ]; then
+            echo "::error::Target test #${{ matrix.issue }} did not pass all ${LOOPS} loops (ok=${ok}, err=${err})"
+            exit 1
+          fi
+
+      - name: Upload test failures
+        if: always()
+        uses: ./.github/actions/upload-test-failures
+        with:
+          job-name: stress-${{ matrix.issue }}-${{ matrix.env }}

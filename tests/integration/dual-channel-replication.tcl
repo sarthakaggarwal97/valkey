@@ -1571,7 +1571,9 @@ test "Dual channel replication buffer memory fields" {
             }
 
             # Waiting for data to be transferred from the primary to the replica.
-            wait_for_condition 1000 50 {
+            # Use a wide window: on slow TLS/module CI the ~50MB of writes can take
+            # well over the previous 50s budget to transit the main channel.
+            wait_for_condition 500 1000 {
                [s $primary_srv_id mem_total_replication_buffers] < [expr 1024000 * 10] &&
                [s $replica_srv_id mem_total_replication_buffers] > [expr 1024000 * 40]
             } else {
