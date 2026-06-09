@@ -124,10 +124,10 @@ int streamReadEnvelopeInfo(const uint8_t *buf,
  * bytes per read. Consumed bytes are retained in probe->header so passthrough
  * can replay them exactly. */
 static vcsProbeResult streamReaderProbeFeed(streamReader *reader,
-                                             const uint8_t *src,
-                                             size_t src_len,
-                                             bool input_eof,
-                                             size_t *src_consumed) {
+                                            const uint8_t *src,
+                                            size_t src_len,
+                                            bool input_eof,
+                                            size_t *src_consumed) {
     size_t consumed = 0;
     *src_consumed = 0;
     if (reader->probe.ready) {
@@ -199,7 +199,7 @@ int streamWriterInit(streamWriter *writer, streamWriterConfig *cfg, streamWriter
 static int streamWriterEnsureEnvelope(streamWriter *writer) {
     if (writer->envelope_written) return 0;
     if (writeVcsEnvelope(writer->emit_fn, writer->emit_ctx, writer->compressor.algo,
-                          writer->stream_kind, writer->compressor.codec_checksum) != 0) {
+                         writer->stream_kind, writer->compressor.codec_checksum) != 0) {
         writer->errored = true;
         return -1;
     }
@@ -383,8 +383,8 @@ int streamReaderProbe(streamReader *reader) {
         }
 
         vcsProbeResult status = streamReaderProbeFeed(reader, buf,
-                                                       got > 0 ? (size_t)got : 0,
-                                                       got == 0, &consumed);
+                                                      got > 0 ? (size_t)got : 0,
+                                                      got == 0, &consumed);
         switch (status) {
         case VCS_PROBE_ERROR:
             streamReaderSetError(reader, STREAM_READER_ERROR_INCOMPATIBLE);
