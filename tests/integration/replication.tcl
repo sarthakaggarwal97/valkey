@@ -199,32 +199,38 @@ start_server {tags {"repl external:skip"}} {
             # Disable periodic PINGs to replicas. Otherwise a background PING
             # (14 bytes on the wire) can be accounted to total_net_repl_output_bytes
             # between `config resetstat` and the assertion below, making it non-zero.
+            set old_repl_ping_period [lindex [$A config get repl-ping-replica-period] 1]
             $A config set repl-ping-replica-period 3600
 
-            # reset stats 
-            $A config resetstat
-            
-            set info [$A info stats]
-            set replica_bytes_output [getInfoProperty $info "total_net_repl_output_bytes"]
-            assert_equal $replica_bytes_output 0
-            
-            # sent set command to primary
-            $A set key value
-            
-            # wait for command propagation
-            wait_for_condition 50 100 {
-                [$B get key] eq {value}
-            } else {
-                fail "Replica did not receive the command"
-            }
-            
-            # get the new stats
-            set info [$A info stats]
-            set replica_bytes_output [getInfoProperty $info "total_net_repl_output_bytes"]
-            assert_morethan $replica_bytes_output 0
+            set err_code [catch {
+                # reset stats 
+                $A config resetstat
+                
+                set info [$A info stats]
+                set replica_bytes_output [getInfoProperty $info "total_net_repl_output_bytes"]
+                assert_equal $replica_bytes_output 0
+                
+                # sent set command to primary
+                $A set key value
+                
+                # wait for command propagation
+                wait_for_condition 50 100 {
+                    [$B get key] eq {value}
+                } else {
+                    fail "Replica did not receive the command"
+                }
+                
+                # get the new stats
+                set info [$A info stats]
+                set replica_bytes_output [getInfoProperty $info "total_net_repl_output_bytes"]
+                assert_morethan $replica_bytes_output 0
+            } result]
+            set err_info $::errorInfo
 
-            # Restore the default so subsequent tests are unaffected.
-            $A config set repl-ping-replica-period 10
+            $A config set repl-ping-replica-period $old_repl_ping_period
+            if {$err_code} {
+                error $result $err_info
+            }
         }
     }
 }
