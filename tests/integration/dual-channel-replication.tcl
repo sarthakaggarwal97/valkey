@@ -1538,6 +1538,7 @@ test "Dual channel replication buffer memory fields" {
         $primary config set repl-backlog-size 1
         $primary config set client-output-buffer-limit "replica 0 0 0"
 
+        $primary config set repl-timeout 1000
         $primary config set rdb-key-save-delay 2000000
         for {set j 0} {$j < 1000} {incr j} {
             $primary set "key-$j" $j
@@ -1550,6 +1551,7 @@ test "Dual channel replication buffer memory fields" {
             $replica config set dual-channel-replication-enabled yes
             $replica config set loading-process-events-interval-bytes 1024
             $replica config set client-output-buffer-limit "replica 0 0 0"
+            $replica config set repl-timeout 1000
 
             $replica replicaof $primary_host $primary_port
 
@@ -1571,7 +1573,9 @@ test "Dual channel replication buffer memory fields" {
             }
 
             # Waiting for data to be transferred from the primary to the replica.
-            wait_for_condition 1000 50 {
+            # Use a wide window: on slow TLS/module CI the ~50MB of writes can take
+            # well over the previous 50s budget to transit the main channel.
+            wait_for_condition 500 1000 {
                [s $primary_srv_id mem_total_replication_buffers] < [expr 1024000 * 10] &&
                [s $replica_srv_id mem_total_replication_buffers] > [expr 1024000 * 40]
             } else {
