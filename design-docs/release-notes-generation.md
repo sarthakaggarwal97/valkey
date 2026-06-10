@@ -33,27 +33,16 @@ practical drawbacks:
 - the changelog entry duplicates information already present in the pull request
   title, body, labels, and author metadata
 
-OpenSearch recently moved away from per-pull-request `CHANGELOG.md` updates for
-similar reasons: the file became a frequent conflict point and still had missing
-entries, bad links, and original-versus-backport pull request mismatches. Their
-current release process generates release notes from pull request and commit
-metadata at release time, opens a bot-authored release-notes pull request, and
-keeps human review as the quality gate. Their repository `CHANGELOG.md` now
-points readers to an unreleased-change pull request search instead of accepting
-per-change entries.
-
-Valkey should adopt that operating model rather than the old file-maintenance
-model. Valkey does not need to copy every OpenSearch implementation detail:
-OpenSearch uses a Jenkins job in `opensearch-build` and an LLM prompt to rewrite,
-filter, and categorize entries. Valkey can start with a smaller deterministic
-generator because the release-note volume is lower, `00-RELEASENOTES` has a
-different format, and the existing `release-notes` label already identifies many
-user-facing changes.
+Valkey already has enough metadata to avoid a running changelog: the
+`release-notes` label identifies many user-facing changes, pull request labels
+provide a first category signal, pull request titles usually describe the change,
+and the actual merged commits determine the release range. Generating from that
+metadata avoids the shared-file conflict path and keeps the generated notes tied
+to what actually landed on the release branch.
 
 Related discussion:
 
 - [Valkey issue #3952](https://github.com/valkey-io/valkey/issues/3952)
-- [OpenSearch issue #21071](https://github.com/opensearch-project/OpenSearch/issues/21071)
 
 ## Source of truth
 
@@ -63,8 +52,7 @@ tree file.
 Each pull request should make the user-facing decision during review:
 
 - `release-notes`: include this pull request in generated release notes
-- `skip-changelog`, `skip-release-notes`, or `no-release-notes`: explicitly skip
-  this pull request
+- `no-release-notes`: explicitly skip this pull request
 
 The release-note text should come from:
 
@@ -133,23 +121,11 @@ The workflow should:
 The workflow should not cut a release tag. Tagging remains a human release
 decision and continues to trigger the existing post-release automation.
 
-This intentionally mirrors OpenSearch at the process level:
-
-- release manager triggers generation as part of release preparation
-- generator reads pull request and commit metadata rather than a maintained
-  changelog section
-- bot opens a release-notes pull request
-- reviewers perform the final editorial pass
-
-The first Valkey implementation should differ only where Valkey's release
-process is simpler:
-
-- use GitHub Actions instead of Jenkins
-- use deterministic label/title rendering instead of an LLM dependency
-- update `src/version.h` in the same pull request because Valkey currently does
-  that manually as part of release preparation
-- prepend to `00-RELEASENOTES` rather than generating OpenSearch's
-  `release-notes/opensearch.release-notes-<version>.md` artifact
+The first implementation should stay deterministic: labels decide inclusion and
+category, and the pull request title or `Release-note:` override decides wording.
+This keeps the workflow easy to review, test, and run in forks. If maintainers
+later want generated prose improvements, that can be layered on after the
+metadata workflow proves useful.
 
 ## Security notes
 
@@ -181,8 +157,8 @@ A label gate is useful, but it should be a separate rollout step.
 The first version should generate release notes from available metadata without
 blocking pull requests. After the workflow has been used successfully, add an
 advisory check that asks each pull request to carry either `release-notes` or an
-explicit skip label. Once maintainers are comfortable with the signal quality,
-the check can become required.
+explicit `no-release-notes` label. Once maintainers are comfortable with the
+signal quality, the check can become required.
 
 This keeps the initial automation valuable without making label taxonomy a
 release blocker.

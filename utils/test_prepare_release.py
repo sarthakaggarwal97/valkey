@@ -48,6 +48,19 @@ class PrepareReleaseTest(unittest.TestCase):
         self.assertEqual(groups["Cluster and Replication"], ["Add cluster bus metric by @alice (#10)"])
         self.assertNotIn("Bug Fixes", groups)
 
+    def test_no_release_notes_label_skips_entry(self):
+        prs = [
+            {
+                "number": 30,
+                "title": "Fix visible bug",
+                "body": "",
+                "labels": [{"name": "release-notes"}, {"name": "no-release-notes"}, {"name": "bug"}],
+                "user": {"login": "alice"},
+            },
+        ]
+
+        self.assertEqual(prepare_release.grouped_entries(prs), {})
+
     def test_release_note_override(self):
         pr = {
             "number": 20,
@@ -59,7 +72,7 @@ class PrepareReleaseTest(unittest.TestCase):
 
         self.assertEqual(
             prepare_release.entry_text(pr),
-            "Improve client-visible latency during rehashing. by @alice (#20)",
+            "Improve client-visible latency during rehashing by @alice (#20)",
         )
 
     def test_backport_subject_uses_original_pr_number(self):

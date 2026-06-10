@@ -38,7 +38,7 @@ CATEGORY_LABELS = (
     ("New Features and enhanced behavior", {"enhancement"}),
 )
 
-SKIP_LABELS = {"skip-changelog", "skip-release-notes", "no-release-notes"}
+SKIP_LABELS = {"no-release-notes"}
 INCLUDE_LABEL = "release-notes"
 SECTION_RE = re.compile(r"(?m)^Valkey \d+\.\d+\.\d+(?:[^\n]*)\n-+\n")
 PR_RE = re.compile(r"\(#(\d+)\)")
@@ -157,8 +157,12 @@ def strip_trailing_pr_number(title):
     return re.sub(r"\s+\(#\d+\)$", "", title).strip()
 
 
+def normalize_note(note):
+    return note.strip().rstrip(".")
+
+
 def entry_text(pr):
-    note = release_note_override(pr.get("body")) or strip_trailing_pr_number(pr["title"])
+    note = normalize_note(release_note_override(pr.get("body")) or strip_trailing_pr_number(pr["title"]))
     user = pr.get("user") or {}
     author = user.get("login")
     if author:
