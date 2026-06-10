@@ -148,6 +148,14 @@ The formatting configuration lives in `src/.clang-format`. Use version 18
 specifically — different versions may produce different output and cause the
 CI check to fail.
 
+## Release notes
+
+Release notes are generated from pull request metadata when a release is
+prepared. Add the `release-notes` label to user-facing changes and keep the pull
+request title suitable for a release note. If the title is too implementation
+specific, add a `Release-note: ...` line to the pull request description with the
+wording that should appear in `00-RELEASENOTES`.
+
 ## Running the daily workflow on demand for your branch
 
 Use [`.github/workflows/daily.yml`](.github/workflows/daily.yml) with

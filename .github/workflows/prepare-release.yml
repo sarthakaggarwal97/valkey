@@ -1,0 +1,95 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, for example 9.2.0-rc1 or 9.0.5
+        required: true
+      previous_tag:
+        description: Previous release tag to diff from. Defaults to latest reachable release tag.
+        required: false
+      urgency:
+        description: Upgrade urgency
+        required: true
+        type: choice
+        default: LOW
+        options:
+          - LOW
+          - MODERATE
+          - HIGH
+          - CRITICAL
+          - SECURITY
+      release_date:
+        description: Release date shown in 00-RELEASENOTES
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes and version bump
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          PREVIOUS_TAG: ${{ inputs.previous_tag }}
+          URGENCY: ${{ inputs.urgency }}
+          RELEASE_DATE: ${{ inputs.release_date }}
+        run: |
+          args=(
+            --version "$VERSION"
+            --urgency "$URGENCY"
+          )
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            args+=(--previous-tag "$PREVIOUS_TAG")
+          fi
+          if [[ -n "$RELEASE_DATE" ]]; then
+            args+=(--date "$RELEASE_DATE")
+          fi
+          python3 utils/prepare_release.py "${args[@]}"
+
+      - name: Open pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          BASE_BRANCH: ${{ github.ref_name }}
+        run: |
+          if git diff --quiet; then
+            echo "No release-prep changes were generated."
+            exit 0
+          fi
+
+          branch="prepare-release/${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add 00-RELEASENOTES src/version.h
+          git commit -s -m "Update version to ${VERSION} and add release notes"
+
+          remote_sha="$(git ls-remote --heads origin "$branch" | awk '{print $1}')"
+          if [[ -n "$remote_sha" ]]; then
+            git push --force-with-lease="refs/heads/${branch}:${remote_sha}" origin "$branch"
+          else
+            git push origin "$branch"
+          fi
+
+          if gh pr view "$branch" --json url --jq .url >/tmp/pr-url 2>/dev/null; then
+            echo "Release preparation PR already exists: $(cat /tmp/pr-url)"
+            exit 0
+          fi
+
+          gh pr create \
+            --base "$BASE_BRANCH" \
+            --head "$branch" \
+            --title "Update version to ${VERSION} and add release notes" \
+            --body "Generated release notes from PR metadata and updated src/version.h for ${VERSION}." \
+            --draft
