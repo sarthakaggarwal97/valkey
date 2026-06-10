@@ -35,9 +35,20 @@ practical drawbacks:
 
 OpenSearch recently moved away from per-pull-request `CHANGELOG.md` updates for
 similar reasons: the file became a frequent conflict point and still had missing
-entries, bad links, and original-versus-backport pull request mismatches. Valkey
-has lower change volume, so the conflict pressure is lower, but the generated
-approach avoids the same failure mode and reuses metadata Valkey already tracks.
+entries, bad links, and original-versus-backport pull request mismatches. Their
+current release process generates release notes from pull request and commit
+metadata at release time, opens a bot-authored release-notes pull request, and
+keeps human review as the quality gate. Their repository `CHANGELOG.md` now
+points readers to an unreleased-change pull request search instead of accepting
+per-change entries.
+
+Valkey should adopt that operating model rather than the old file-maintenance
+model. Valkey does not need to copy every OpenSearch implementation detail:
+OpenSearch uses a Jenkins job in `opensearch-build` and an LLM prompt to rewrite,
+filter, and categorize entries. Valkey can start with a smaller deterministic
+generator because the release-note volume is lower, `00-RELEASENOTES` has a
+different format, and the existing `release-notes` label already identifies many
+user-facing changes.
 
 Related discussion:
 
@@ -121,6 +132,24 @@ The workflow should:
 
 The workflow should not cut a release tag. Tagging remains a human release
 decision and continues to trigger the existing post-release automation.
+
+This intentionally mirrors OpenSearch at the process level:
+
+- release manager triggers generation as part of release preparation
+- generator reads pull request and commit metadata rather than a maintained
+  changelog section
+- bot opens a release-notes pull request
+- reviewers perform the final editorial pass
+
+The first Valkey implementation should differ only where Valkey's release
+process is simpler:
+
+- use GitHub Actions instead of Jenkins
+- use deterministic label/title rendering instead of an LLM dependency
+- update `src/version.h` in the same pull request because Valkey currently does
+  that manually as part of release preparation
+- prepend to `00-RELEASENOTES` rather than generating OpenSearch's
+  `release-notes/opensearch.release-notes-<version>.md` artifact
 
 ## Security notes
 
