@@ -8,7 +8,7 @@ in-development changelog file.
 
 The release author should run a manual workflow against the target release
 branch, provide the release version, previous tag, urgency, and release date, and
-receive a draft pull request that:
+receive a pull request that:
 
 - prepends the generated section to `00-RELEASENOTES`
 - updates `VALKEY_VERSION`, `VALKEY_VERSION_NUM`, and
@@ -74,6 +74,9 @@ added over time, but the first generator can use the labels Valkey already has:
 
 Pull requests that have release-note inclusion but no recognized category should
 fall into `Other Changes` so the release author can move them during review.
+If multiple category labels are present, the generator uses the first matching
+category in the documented order above. The release author can adjust the final
+section during review.
 
 ## Branch and range model
 
@@ -116,7 +119,7 @@ The workflow should:
 2. collect pull requests in the requested range
 3. generate the new `00-RELEASENOTES` section
 4. update `src/version.h`
-5. open a draft pull request for review
+5. open a pull request for review
 
 The workflow should not cut a release tag. Tagging remains a human release
 decision and continues to trigger the existing post-release automation.
@@ -133,8 +136,9 @@ Security fixes may come from private or embargoed work that is not fully visible
 through public pull request metadata. The generator should not pretend to solve
 that.
 
-The generated `Security fixes` section should be treated as a draft. The release
-author must still review and add CVE wording manually when needed.
+The generator should not infer security entries from CVE-looking text. Security
+notes must be added through explicit `release-notes` metadata or by manual edits
+in the generated pull request.
 
 ## In-development view
 
@@ -180,9 +184,10 @@ the upstream repository or whether it should push to a dedicated automation fork
 2. Test the generator against a recent patch release and compare the output with
    the manually written release notes.
 3. Use the workflow for one release candidate with human review.
-4. Add missing category labels or mappings based on the review experience.
-5. Add an advisory `release-notes` versus skip-label CI check.
-6. Decide whether the label check should become required.
+4. Add the `no-release-notes` label before enabling any enforcement around it.
+5. Add missing category labels or mappings based on the review experience.
+6. Add an advisory `release-notes` versus skip-label CI check.
+7. Decide whether the label check should become required.
 
 This sequencing gives maintainers useful automation immediately while keeping
 the higher-friction policy changes separate.

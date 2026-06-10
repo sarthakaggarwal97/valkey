@@ -77,6 +77,19 @@ class PrepareReleaseTest(unittest.TestCase):
 
         self.assertEqual(prepare_release.grouped_entries(prs), {})
 
+    def test_no_release_notes_label_skips_entry(self):
+        prs = [
+            {
+                "number": 31,
+                "title": "Fix visible bug",
+                "body": "",
+                "labels": [{"name": "release-notes"}, {"name": "no-release-notes"}, {"name": "bug"}],
+                "user": {"login": "alice"},
+            },
+        ]
+
+        self.assertEqual(prepare_release.grouped_entries(prs), {})
+
     def test_category_priority_first_match_wins(self):
         # A PR with both breaking-change and bug files under Behavior Changes,
         # since that row precedes Bug Fixes in CATEGORY_LABELS.
@@ -133,6 +146,9 @@ class PrepareReleaseTest(unittest.TestCase):
                 "LOW",
                 {"Bug Fixes": ["Fix a bug (#1)"]},
             )
+
+    def test_default_date_is_portable(self):
+        self.assertRegex(prepare_release.default_date(), r"^[A-Z][a-z]+ [1-9][0-9]?, [0-9]{4}$")
 
 
 if __name__ == "__main__":

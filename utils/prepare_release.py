@@ -41,6 +41,7 @@ CATEGORY_LABELS = (
     ("New Features and enhanced behavior", {"enhancement"}),
 )
 
+SKIP_LABELS = {"no-release-notes"}
 INCLUDE_LABEL = "release-notes"
 SECTION_RE = re.compile(r"(?m)^Valkey \d+\.\d+\.\d+(?:[^\n]*)\n-+\n")
 PR_RE = re.compile(r"\(#(\d+)\)")
@@ -145,7 +146,10 @@ def should_include(pr):
     # auto-detected from CVE strings: they usually land via embargoed PRs the
     # generator never sees, and a CVE mentioned in passing should not pull an
     # unrelated PR in. The release author adds security entries by hand.
-    return INCLUDE_LABEL in labels_for(pr)
+    labels = labels_for(pr)
+    if labels & SKIP_LABELS:
+        return False
+    return INCLUDE_LABEL in labels
 
 
 def category_for(pr):

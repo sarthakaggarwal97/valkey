@@ -23,6 +23,9 @@ on:
       release_date:
         description: Release date shown in 00-RELEASENOTES
         required: false
+      reviewers:
+        description: Optional comma-separated GitHub users or teams to request for review
+        required: false
 
 permissions:
   contents: write
@@ -62,6 +65,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
           BASE_BRANCH: ${{ github.ref_name }}
+          REVIEWERS: ${{ inputs.reviewers }}
         run: |
           if git diff --quiet; then
             echo "No release-prep changes were generated."
@@ -87,9 +91,14 @@ jobs:
             exit 0
           fi
 
-          gh pr create \
-            --base "$BASE_BRANCH" \
-            --head "$branch" \
-            --title "Update version to ${VERSION} and add release notes" \
-            --body "Generated release notes from PR metadata and updated src/version.h for ${VERSION}." \
-            --draft
+          pr_args=(
+            --base "$BASE_BRANCH"
+            --head "$branch"
+            --title "Update version to ${VERSION} and add release notes"
+            --body "Generated release notes from PR metadata and updated src/version.h for ${VERSION}."
+          )
+          if [[ -n "$REVIEWERS" ]]; then
+            pr_args+=(--reviewer "$REVIEWERS")
+          fi
+
+          gh pr create "${pr_args[@]}"
