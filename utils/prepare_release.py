@@ -27,18 +27,20 @@ URGENCY_SUMMARY = {
     "SECURITY": "This release includes security fixes we recommend you apply as soon as possible.",
 }
 
+# Map a PR to a release-notes section by label. The first matching row wins, so
+# order is the category priority: a PR labeled both `breaking-change` and `bug`
+# is filed under Behavior Changes. Only labels that exist in valkey-io/valkey
+# today are mapped; sections like Security fixes, Module API, and Build and
+# Tooling are produced by hand at release time until matching labels are added
+# (see design-docs/release-notes-generation.md).
 CATEGORY_LABELS = (
-    ("Security fixes", {"security"}),
     ("Behavior Changes", {"breaking-change"}),
     ("Cluster and Replication", {"cluster"}),
     ("Performance and Efficiency improvements", {"performance"}),
-    ("Module API changes", {"module-api"}),
-    ("Build and Tooling", {"build", "ci", "tooling"}),
     ("Bug Fixes", {"bug"}),
     ("New Features and enhanced behavior", {"enhancement"}),
 )
 
-SKIP_LABELS = {"no-release-notes"}
 INCLUDE_LABEL = "release-notes"
 SECTION_RE = re.compile(r"(?m)^Valkey \d+\.\d+\.\d+(?:[^\n]*)\n-+\n")
 PR_RE = re.compile(r"\(#(\d+)\)")
@@ -47,6 +49,13 @@ VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
 
 def run_git(args):
     return subprocess.check_output(["git"] + args, text=True).strip()
+
+
+def default_date():
+    # Avoid strftime("%-d"): the no-pad day flag is glibc-only and raises on
+    # macOS/BSD. Format the day as a plain integer instead.
+    today = datetime.date.today()
+    return f"{today.strftime('%B')} {today.day}, {today.year}"
 
 
 def parse_version(version):
@@ -131,21 +140,15 @@ def labels_for(pr):
     return {label["name"].lower() for label in pr.get("labels", [])}
 
 
-def is_security_pr(pr):
-    text = f"{pr.get('title', '')}\n{pr.get('body', '')}"
-    return bool(re.search(r"\bCVE-\d{4}-\d+\b", text, flags=re.IGNORECASE))
-
-
 def should_include(pr):
-    labels = labels_for(pr)
-    if labels & SKIP_LABELS:
-        return False
-    return INCLUDE_LABEL in labels or is_security_pr(pr)
+    # Inclusion is label-driven only. Security fixes are intentionally not
+    # auto-detected from CVE strings: they usually land via embargoed PRs the
+    # generator never sees, and a CVE mentioned in passing should not pull an
+    # unrelated PR in. The release author adds security entries by hand.
+    return INCLUDE_LABEL in labels_for(pr)
 
 
 def category_for(pr):
-    if is_security_pr(pr):
-        return "Security fixes"
     labels = labels_for(pr)
     for category, category_labels in CATEGORY_LABELS:
         if labels & category_labels:
@@ -162,11 +165,9 @@ def normalize_note(note):
 
 
 def entry_text(pr):
+    # Match the existing 00-RELEASENOTES style: "* <note> (#PR)". Contributor
+    # credits live in the separate thank-you section, not inline per entry.
     note = normalize_note(release_note_override(pr.get("body")) or strip_trailing_pr_number(pr["title"]))
-    user = pr.get("user") or {}
-    author = user.get("login")
-    if author:
-        return f"{note} by @{author} (#{pr['number']})"
     return f"{note} (#{pr['number']})"
 
 
@@ -240,6 +241,18 @@ def render_full_notes(existing, version, date, urgency, groups):
     if SECTION_RE.search(existing):
         return SECTION_RE.sub(section + "\n\n\\g<0>", existing, count=1)
 
+    # No existing section found, so we are minting the file header. That is only
+    # valid when starting a fresh minor (patch == 0, i.e. replacing the unstable
+    # placeholder on a newly-cut branch). For a patch release the branch must
+    # already carry a release-notes section; not finding one means we are on the
+    # wrong branch or the file is unexpectedly empty.
+    _, _, patch, _ = parse_version(version)
+    if patch != 0:
+        raise RuntimeError(
+            f"no existing release-notes section found in {version!r} target; "
+            "refusing to create a new file header for a patch release"
+        )
+
     family = release_family(version)
     header = f"Valkey {family} release notes"
     return "\n".join([
@@ -283,7 +296,7 @@ def parse_args():
     parser.add_argument("--version", required=True, help="Release version, for example 9.2.0-rc1 or 9.0.5.")
     parser.add_argument("--previous-tag", help="Git tag to diff from. Defaults to the latest reachable release tag.")
     parser.add_argument("--urgency", choices=tuple(URGENCY_TEXT.keys()), default="LOW")
-    parser.add_argument("--date", default=datetime.date.today().strftime("%B %-d, %Y"))
+    parser.add_argument("--date", default=default_date())
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "valkey-io/valkey"))
     parser.add_argument("--notes-path", default="00-RELEASENOTES")
     parser.add_argument("--version-path", default="src/version.h")

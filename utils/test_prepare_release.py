@@ -17,7 +17,7 @@ class PrepareReleaseTest(unittest.TestCase):
         self.assertEqual(prepare_release.version_num("9.1.0"), "0x00090100")
         self.assertEqual(prepare_release.release_title("9.1.0"), "9.1.0 GA")
 
-    def test_grouped_entries_include_labeled_and_cve_prs(self):
+    def test_grouped_entries_include_labeled_prs(self):
         prs = [
             {
                 "number": 10,
@@ -35,31 +35,59 @@ class PrepareReleaseTest(unittest.TestCase):
             },
             {
                 "number": 12,
-                "title": "Fix memory issue (CVE-2026-12345)",
+                "title": "Fix a visible bug",
                 "body": "",
-                "labels": [],
+                "labels": [{"name": "release-notes"}, {"name": "bug"}],
                 "user": {"login": "carol"},
             },
         ]
 
         groups = prepare_release.grouped_entries(prs)
 
-        self.assertEqual(groups["Security fixes"], ["Fix memory issue (CVE-2026-12345) by @carol (#12)"])
-        self.assertEqual(groups["Cluster and Replication"], ["Add cluster bus metric by @alice (#10)"])
-        self.assertNotIn("Bug Fixes", groups)
+        # #10 is labeled and categorized; #11 is unlabeled (no release-notes) so
+        # it is excluded; #12 is labeled and lands under Bug Fixes.
+        self.assertEqual(groups["Cluster and Replication"], ["Add cluster bus metric (#10)"])
+        self.assertEqual(groups["Bug Fixes"], ["Fix a visible bug (#12)"])
 
-    def test_no_release_notes_label_skips_entry(self):
+    def test_cve_pr_not_auto_included(self):
+        # A CVE mentioned in the body must NOT pull an unlabeled PR in. Security
+        # entries are label-driven and otherwise added by hand at release time.
+        prs = [
+            {
+                "number": 13,
+                "title": "Fix memory issue",
+                "body": "Related to CVE-2026-12345 reported upstream.",
+                "labels": [],
+                "user": {"login": "carol"},
+            },
+        ]
+
+        self.assertEqual(prepare_release.grouped_entries(prs), {})
+
+    def test_unlabeled_pr_skipped(self):
         prs = [
             {
                 "number": 30,
                 "title": "Fix visible bug",
                 "body": "",
-                "labels": [{"name": "release-notes"}, {"name": "no-release-notes"}, {"name": "bug"}],
+                "labels": [{"name": "bug"}],
                 "user": {"login": "alice"},
             },
         ]
 
         self.assertEqual(prepare_release.grouped_entries(prs), {})
+
+    def test_category_priority_first_match_wins(self):
+        # A PR with both breaking-change and bug files under Behavior Changes,
+        # since that row precedes Bug Fixes in CATEGORY_LABELS.
+        pr = {
+            "number": 40,
+            "title": "Change default eviction policy",
+            "body": "",
+            "labels": [{"name": "release-notes"}, {"name": "bug"}, {"name": "breaking-change"}],
+            "user": {"login": "alice"},
+        }
+        self.assertEqual(prepare_release.category_for(pr), "Behavior Changes")
 
     def test_release_note_override(self):
         pr = {
@@ -72,7 +100,7 @@ class PrepareReleaseTest(unittest.TestCase):
 
         self.assertEqual(
             prepare_release.entry_text(pr),
-            "Improve client-visible latency during rehashing by @alice (#20)",
+            "Improve client-visible latency during rehashing (#20)",
         )
 
     def test_backport_subject_uses_original_pr_number(self):
@@ -87,12 +115,24 @@ class PrepareReleaseTest(unittest.TestCase):
             "9.2.0-rc1",
             "June 10, 2026",
             "LOW",
-            {"Bug Fixes": ["Fix a bug by @alice (#1)"]},
+            {"Bug Fixes": ["Fix a bug (#1)"]},
         )
 
         self.assertIn("Valkey 9.2 release notes\n========================", notes)
         self.assertIn("Valkey 9.2.0-rc1 - June 10, 2026", notes)
-        self.assertIn("* Fix a bug by @alice (#1)", notes)
+        self.assertIn("* Fix a bug (#1)", notes)
+
+    def test_patch_release_requires_existing_section(self):
+        # On a patch release the file must already contain a section to splice
+        # into. Minting a fresh header would be wrong, so it must raise.
+        with self.assertRaises(RuntimeError):
+            prepare_release.render_full_notes(
+                "Hello! This file is just a placeholder.\n",
+                "9.0.5",
+                "June 10, 2026",
+                "LOW",
+                {"Bug Fixes": ["Fix a bug (#1)"]},
+            )
 
 
 if __name__ == "__main__":
