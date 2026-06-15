@@ -1,4 +1,5 @@
-line1
-line2
-io_threads=ENABLED
-line4
+header
+revert_region=ORIGINAL
+middle
+reapply_region=ORIGINAL
+footer
