@@ -411,10 +411,12 @@ static void shutdownIOThread(int id) {
     }
     pthread_cancel(tid);
 
+    monotime t_join_start = getMonotonicUs();
     if ((err = pthread_join(tid, NULL)) != 0) {
         serverLog(LL_WARNING, "IO thread(tid:%lu) can not be joined: %s", (unsigned long)tid, strerror(err));
     } else {
-        serverLog(LL_NOTICE, "IO thread(tid:%lu) terminated", (unsigned long)tid);
+        serverLog(LL_NOTICE, "IO thread(tid:%lu) terminated after join=%lldus", (unsigned long)tid,
+                  (long long)(getMonotonicUs() - t_join_start));
     }
     pthread_mutex_destroy(&io_threads_mutex[id]);
     spscFree(&io_private_inbox[id]);
@@ -451,14 +453,20 @@ int updateIOThreads(const char **err) {
     }
 
     serverLog(LL_NOTICE, "Changing number of IO threads from %d to %d.", prev_threads_num, server.io_threads_num);
+
+    monotime t_drain_start = getMonotonicUs();
     drainIOThreadsQueue();
+    monotime t_drain_us = getMonotonicUs() - t_drain_start;
 
     /* Set active threads to 1, will be adjusted based on workload later. */
+    monotime t_park_start = getMonotonicUs();
     for (int i = 1; i < server.active_io_threads_num; i++) {
         pthread_mutex_lock(&io_threads_mutex[i]);
     }
     server.active_io_threads_num = 1;
+    monotime t_park_us = getMonotonicUs() - t_park_start;
 
+    monotime t_life_start = getMonotonicUs();
     if (server.io_threads_num > prev_threads_num) {
         initIOThreads(prev_threads_num);
     } else {
@@ -469,6 +477,9 @@ int updateIOThreads(const char **err) {
             io_threads[i] = 0;
         }
     }
+    monotime t_life_us = getMonotonicUs() - t_life_start;
+    serverLog(LL_NOTICE, "IOTHREAD-TIMING drain=%lldus park=%lldus lifecycle=%lldus",
+              (long long)t_drain_us, (long long)t_park_us, (long long)t_life_us);
     return 1;
 }
 
