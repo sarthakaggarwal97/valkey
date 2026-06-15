@@ -1,5 +1,5 @@
 header
 revert_region=REVERTED
 middle
-reapply_region=ORIGINAL
+reapply_region=REAPPLIED
 footer
