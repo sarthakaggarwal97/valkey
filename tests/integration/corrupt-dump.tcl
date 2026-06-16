@@ -780,6 +780,20 @@ test {corrupt payload: fuzzer findings - zset zslInsert with a NAN score} {
     }
 }
 
+test {corrupt payload: zset listpack with NAN score} {
+    # Backported from valkey-io#3921. The DUMP payload below was generated on
+    # the unstable branch and embeds RDB version 80 in its trailing footer.
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
+        r config set sanitize-dump-payload yes
+        r debug set-skip-checksum-validation 1
+        r config set propagation-error-behavior panic
+        catch {r restore _listpack_nan 0 "\x11\x14\x14\x00\x00\x00\x02\x00\x82\x5F\x31\x03\xF8\x00\x00\x00\x00\x00\x00\xF8\x7F\xFF\x50\x00\x00\x00\x00\x00\x09"} err
+        assert_match "*NAN score*" $err
+        verify_log_message 0 "*NAN score*" 0
+        r ping
+    }
+}
+
 test {corrupt payload: fuzzer findings - streamLastValidID panic} {
     start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
         r config set sanitize-dump-payload yes
