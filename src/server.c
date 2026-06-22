@@ -1370,6 +1370,8 @@ void databasesCron(void) {
 }
 
 static inline void updateCachedTimeWithUs(int update_daylight_info, const ustime_t ustime) {
+    time_t prev_unixtime = server.unixtime;
+
     server.ustime = ustime;
     server.mstime = server.ustime / 1000;
     server.unixtime = server.mstime / 1000;
@@ -1380,7 +1382,7 @@ static inline void updateCachedTimeWithUs(int update_daylight_info, const ustime
      * context is safe since we will never fork() while here, in the main
      * thread. The logging function will call a thread safe version of
      * localtime that has no locks. */
-    if (update_daylight_info) {
+    if (update_daylight_info && server.unixtime != prev_unixtime) {
         struct tm tm;
         time_t ut = server.unixtime;
         localtime_r(&ut, &tm);
