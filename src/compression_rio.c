@@ -93,7 +93,7 @@ static int compressRioFlush(rio *r) {
     return 1;
 }
 
-int rioInitWithCompression(compressRio *cr, rio *inner, streamWriterConfig *cfg) {
+static int rioInitWithCompressionConfig(compressRio *cr, rio *inner, streamWriterConfig *cfg) {
     memset(cr, 0, sizeof(*cr));
     rioInitBase(&cr->base, rioReadUnsupported, compressRioWrite, compressRioTell,
                 compressRioFlush,
@@ -120,7 +120,7 @@ int rioInitWithRdbCompression(compressRio *cr,
         .stream_kind = STREAM_KIND_RDB,
         .codec_checksum_enabled = codec_checksum_enabled,
     };
-    return rioInitWithCompression(cr, inner, &cfg);
+    return rioInitWithCompressionConfig(cr, inner, &cfg);
 }
 
 /* Idempotent: subsequent calls report cached error state. */
@@ -194,10 +194,10 @@ int decompressRioValidateEnd(decompressRio *dr) {
     return streamReaderValidateEnd(&dr->reader);
 }
 
-decompressRioInitResult rioInitWithDecompression(decompressRio *dr,
-                                                 rio *inner,
-                                                 streamReaderConfig *cfg,
-                                                 streamReaderInfo *info) {
+static decompressRioInitResult rioInitWithDecompressionConfig(decompressRio *dr,
+                                                              rio *inner,
+                                                              streamReaderConfig *cfg,
+                                                              streamReaderInfo *info) {
     streamReaderInfo local_info = {0};
 
     memset(dr, 0, sizeof(*dr));
@@ -230,7 +230,7 @@ decompressRioInitResult rioInitWithRdbDecompression(decompressRio *dr,
         .buffer_size = STREAM_READER_BUFFER_SIZE_DEFAULT,
     };
     streamReaderInfo info = {0};
-    decompressRioInitResult init_rc = rioInitWithDecompression(dr, inner, &cfg, &info);
+    decompressRioInitResult init_rc = rioInitWithDecompressionConfig(dr, inner, &cfg, &info);
 
     if (algo) *algo = ALGO_NONE;
     if (init_rc != DECOMPRESS_RIO_INIT_OK) return init_rc;
