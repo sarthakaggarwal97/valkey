@@ -37,6 +37,14 @@ typedef enum {
 /* Returns 0 on success. On failure the compressRio is left zeroed and the
  * caller must not call compressRioFree. */
 int rioInitWithCompression(compressRio *cr, rio *inner, streamWriterConfig *cfg);
+
+/* RDB convenience wrappers keep VCS stream-kind, probing, buffer-size and
+ * checksum-policy details out of RDB callers. The generic init functions above
+ * remain available for other stream kinds. */
+int rioInitWithRdbCompression(compressRio *cr,
+                              rio *inner,
+                              compressionAlgo algo,
+                              bool codec_checksum_enabled);
 int compressRioFinish(compressRio *cr);
 void compressRioFree(compressRio *cr);
 
@@ -46,6 +54,13 @@ decompressRioInitResult rioInitWithDecompression(decompressRio *dr,
                                                  rio *inner,
                                                  streamReaderConfig *cfg,
                                                  streamReaderInfo *info);
+
+/* Sets *algo to the compressed stream algorithm, or ALGO_NONE for plain input.
+ * Compressed RDB input sets RIO_FLAG_SKIP_RDB_CHECKSUM on dr->base because the
+ * VCS frame carries the checksum policy. */
+decompressRioInitResult rioInitWithRdbDecompression(decompressRio *dr,
+                                                    rio *inner,
+                                                    compressionAlgo *algo);
 streamReaderError decompressRioGetError(decompressRio *dr);
 int decompressRioValidateEnd(decompressRio *dr);
 void decompressRioFree(decompressRio *dr);

@@ -110,6 +110,19 @@ int rioInitWithCompression(compressRio *cr, rio *inner, streamWriterConfig *cfg)
     return 0;
 }
 
+int rioInitWithRdbCompression(compressRio *cr,
+                              rio *inner,
+                              compressionAlgo algo,
+                              bool codec_checksum_enabled) {
+    streamWriterConfig cfg = {
+        .algo = algo,
+        .level = 0,
+        .stream_kind = STREAM_KIND_RDB,
+        .codec_checksum_enabled = codec_checksum_enabled,
+    };
+    return rioInitWithCompression(cr, inner, &cfg);
+}
+
 /* Idempotent: subsequent calls report cached error state. */
 int compressRioFinish(compressRio *cr) {
     if (cr->finalized) {
@@ -205,6 +218,27 @@ decompressRioInitResult rioInitWithDecompression(decompressRio *dr,
 
     if (local_info.compressed) dr->base.flags |= RIO_FLAG_STREAMING_COMPRESSION;
     if (info) *info = local_info;
+    return DECOMPRESS_RIO_INIT_OK;
+}
+
+decompressRioInitResult rioInitWithRdbDecompression(decompressRio *dr,
+                                                    rio *inner,
+                                                    compressionAlgo *algo) {
+    streamReaderConfig cfg = {
+        .expected_stream_kind = STREAM_KIND_RDB,
+        .allow_passthrough = true,
+        .buffer_size = STREAM_READER_BUFFER_SIZE_DEFAULT,
+    };
+    streamReaderInfo info = {0};
+    decompressRioInitResult init_rc = rioInitWithDecompression(dr, inner, &cfg, &info);
+
+    if (algo) *algo = ALGO_NONE;
+    if (init_rc != DECOMPRESS_RIO_INIT_OK) return init_rc;
+
+    if (info.compressed) {
+        dr->base.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
+        if (algo) *algo = info.algo;
+    }
     return DECOMPRESS_RIO_INIT_OK;
 }
 
