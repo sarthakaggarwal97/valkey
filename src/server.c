@@ -5381,10 +5381,7 @@ void addReplyCommandSubCommands(client *c,
                                 void (*reply_function)(client *, struct serverCommand *),
                                 int use_map) {
     if (!cmd->subcommands_ht) {
-        if (use_map)
-            addReplyMapLen(c, 0);
-        else
-            addReplyArrayLen(c, 0);
+        addReplySetLen(c, 0);
         return;
     }
 
