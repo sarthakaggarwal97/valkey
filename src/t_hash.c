@@ -790,10 +790,7 @@ void hashTypeConvertListpack(robj *o, int enc) {
             if (!hashtableAdd(ht, entry)) {
                 entryFree(entry);
                 hashTypeResetIterator(&hi); /* Needed for gcc ASAN */
-                if (!server.hide_user_data_from_log) {
-                    serverLogHexDump(LL_WARNING, "listpack with dup elements dump", objectGetVal(o),
-                                     lpBytes(objectGetVal(o)));
-                }
+                serverLogHexDump(LL_WARNING, "listpack with dup elements dump", objectGetVal(o), lpBytes(objectGetVal(o)));
                 serverPanic("Listpack corruption detected");
             }
         }
