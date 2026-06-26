@@ -47,7 +47,7 @@ static keyStatus expireIfNeededWithDictIndex(serverDb *db, robj *key, robj *val,
 static keyStatus expireIfNeeded(serverDb *db, robj *key, robj *val, int flags);
 static int keyIsExpiredWithDictIndex(serverDb *db, robj *key, int dict_index);
 static int objectIsExpired(robj *val);
-static void dbSetValue(serverDb *db, robj *key, robj **valref, int overwrite, void **oldref);
+static void dbSetValue(serverDb *db, robj *key, robj **valref, int overwrite, void **oldref, int embed_raw);
 static robj *dbFindWithDictIndex(serverDb *db, sds key, int dict_index);
 
 
@@ -199,13 +199,13 @@ void dbUpdateObjectWithVolatileItemsTracking(serverDb *db, robj *o) {
  *
  * If the update_if_existing argument is false, the program is aborted
  * if the key already exists, otherwise, it can fall back to dbOverwrite. */
-static void dbAddInternal(serverDb *db, robj *key, robj **valref, int update_if_existing) {
+static void dbAddInternal(serverDb *db, robj *key, robj **valref, int update_if_existing, int embed_raw) {
     int dict_index = getKVStoreIndexForKey(objectGetVal(key));
     void **oldref = NULL;
     if (update_if_existing) {
         oldref = kvstoreHashtableFindRef(db->keys, dict_index, objectGetVal(key));
         if (oldref != NULL) {
-            dbSetValue(db, key, valref, 1, oldref);
+            dbSetValue(db, key, valref, 1, oldref, embed_raw);
             return;
         }
     } else {
@@ -214,7 +214,8 @@ static void dbAddInternal(serverDb *db, robj *key, robj **valref, int update_if_
 
     /* Not existing. Convert val to valkey object and insert. */
     robj *val = *valref;
-    val = objectSetKeyAndExpire(val, objectGetVal(key), -1);
+    val = embed_raw ? objectSetKeyAndExpireEmbeddingRaw(val, objectGetVal(key), -1)
+                    : objectSetKeyAndExpire(val, objectGetVal(key), -1);
     /* Track hash object if it has volatile fields (for active expiry).
      * For example, this is needed when a hash is moved to a new DB (e.g. MOVE). */
     dbTrackKeyWithVolatileItems(db, val);
@@ -226,7 +227,11 @@ static void dbAddInternal(serverDb *db, robj *key, robj **valref, int update_if_
 }
 
 void dbAdd(serverDb *db, robj *key, robj **valref) {
-    dbAddInternal(db, key, valref, 0);
+    dbAddInternal(db, key, valref, 0, 0);
+}
+
+void dbAddEmbeddingRaw(serverDb *db, robj *key, robj **valref) {
+    dbAddInternal(db, key, valref, 0, 1);
 }
 
 /* Returns which dict index should be used with kvstore for a given key. */
@@ -282,7 +287,7 @@ int dbAddRDBLoad(serverDb *db, sds key, robj **valref) {
         return 0;
     }
     robj *val = *valref;
-    val = objectSetKeyAndExpire(val, key, -1);
+    val = objectSetKeyAndExpireEmbeddingRaw(val, key, -1);
     kvstoreHashtableInsertAtPosition(db->keys, dict_index, val, &pos);
     initObjectLRUOrLFU(val);
 
@@ -316,7 +321,7 @@ int dbAddRDBLoad(serverDb *db, sds key, robj **valref) {
  * value should be stored.
  *
  * The program is aborted if the key was not already present. */
-static void dbSetValue(serverDb *db, robj *key, robj **valref, int overwrite, void **oldref) {
+static void dbSetValue(serverDb *db, robj *key, robj **valref, int overwrite, void **oldref, int embed_raw) {
     robj *val = *valref;
     if (oldref == NULL) {
         int dict_index = getKVStoreIndexForKey(objectGetVal(key));
@@ -341,7 +346,11 @@ static void dbSetValue(serverDb *db, robj *key, robj **valref, int overwrite, vo
         old = *oldref;
     }
 
-    if ((old->refcount == 1 && old->encoding != OBJ_ENCODING_EMBSTR) &&
+    long long expire = objectGetExpire(old);
+    int embed_raw_string = embed_raw && objectCanEmbedRawString(val, objectGetVal(key), expire);
+
+    if (!embed_raw_string &&
+        (old->refcount == 1 && old->encoding != OBJ_ENCODING_EMBSTR) &&
         (val->refcount == 1 && val->encoding != OBJ_ENCODING_EMBSTR)) {
         /* Keep old object in the database. Just swap it's ptr, type and
          * encoding with the content of val. */
@@ -360,8 +369,8 @@ static void dbSetValue(serverDb *db, robj *key, robj **valref, int overwrite, vo
     } else {
         /* Replace the old value at its location in the key space. */
         val->lru = old->lru;
-        long long expire = objectGetExpire(old);
-        new = objectSetKeyAndExpire(val, objectGetVal(key), expire);
+        new = embed_raw ? objectSetKeyAndExpireEmbeddingRaw(val, objectGetVal(key), expire)
+                        : objectSetKeyAndExpire(val, objectGetVal(key), expire);
         *oldref = new;
         /* Replace the old value at its location in the expire space. */
         if (expire >= 0) {
@@ -396,7 +405,7 @@ static void dbSetValue(serverDb *db, robj *key, robj **valref, int overwrite, vo
 /* Replace an existing key with a new value, we just replace value and don't
  * emit any events */
 void dbReplaceValue(serverDb *db, robj *key, robj **valref) {
-    dbSetValue(db, key, valref, 0, NULL);
+    dbSetValue(db, key, valref, 0, NULL, 0);
 }
 
 /* High level Set operation. This function can be used in order to set
@@ -425,11 +434,11 @@ void setKey(client *c, serverDb *db, robj *key, robj **valref, int flags) {
         keyfound = (lookupKeyWrite(db, key) != NULL);
 
     if (!keyfound) {
-        dbAdd(db, key, valref);
+        dbAddEmbeddingRaw(db, key, valref);
     } else if (keyfound < 0) {
-        dbAddInternal(db, key, valref, 1);
+        dbAddInternal(db, key, valref, 1, 1);
     } else {
-        dbSetValue(db, key, valref, 1, NULL);
+        dbSetValue(db, key, valref, 1, NULL, 1);
     }
     if (!(flags & SETKEY_KEEPTTL)) removeExpire(db, key);
     if (!(flags & SETKEY_NO_SIGNAL)) signalModifiedKey(c, db, key);

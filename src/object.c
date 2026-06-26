@@ -48,6 +48,8 @@
 /* For objects with large embedded keys, we reserve space for an expire field,
  * so if expire is set later, we don't need to reallocate the object. */
 #define KEY_SIZE_TO_INCLUDE_EXPIRE_THRESHOLD 128
+#define EMBSTR_SIZE_LIMIT 128
+#define KEYSPACE_EMBSTR_SIZE_LIMIT 256
 
 /* ===================== Creation and parsing of objects ==================== */
 
@@ -211,9 +213,11 @@ static robj *createEmbeddedStringObjectWithKeyAndExpire(const char *val_ptr,
     /* Copy embedded value (EMBSTR) always as SDS TYPE 8. Account for unused
      * memory in the SDS alloc field. */
     size_t remaining_size = bufsize - (data - (char *)(void *)o);
+    size_t max_sds8_size = sdsReqSize(sdsTypeMaxSize(SDS_TYPE_8), SDS_TYPE_8);
+    if (remaining_size > max_sds8_size) remaining_size = max_sds8_size;
 
     assert(val_len <= sdsTypeMaxSize(SDS_TYPE_8));
-    assert(remaining_size <= sdsTypeMaxSize(SDS_TYPE_8));
+    assert(remaining_size >= sdsReqSize(val_len, SDS_TYPE_8));
     sdswrite(data, remaining_size, SDS_TYPE_8, val_ptr, val_len);
 
     return o;
@@ -226,9 +230,9 @@ static robj *createEmbeddedStringObject(const char *ptr, size_t len) {
     return createEmbeddedStringObjectWithKeyAndExpire(ptr, len, NULL, EXPIRY_NONE);
 }
 
-static bool shouldEmbedStringObject(size_t val_len, const_sds key, long long expire) {
-    /* When to embed? Embed when the sum is up to 128 bytes. (2 cache lines on most systems) */
-    if (val_len > sdsTypeMaxSize(SDS_TYPE_8)) return false;
+static size_t embeddedStringObjectMinSize(size_t val_len, const_sds key, long long expire) {
+    size_t val_sds_size = sdsReqSize(val_len, SDS_TYPE_8);
+    if (val_sds_size < sizeof(void *)) val_sds_size = sizeof(void *);
 
     size_t size = sizeof(robj) - sizeof(void *); /* reusing 'ptr' memory when embedding */
     if (key) {
@@ -236,8 +240,43 @@ static bool shouldEmbedStringObject(size_t val_len, const_sds key, long long exp
         size += sdsReqSize(key_len, sdsReqType(key_len)) + 1; /* 1 byte for prefixed sds hdr size */
     }
     size += (expire != EXPIRY_NONE) * sizeof(long long);
-    size += sdsReqSize(val_len, SDS_TYPE_8);
-    return size <= 128;
+    size += val_sds_size;
+    return size;
+}
+
+#if defined(USE_JEMALLOC)
+static size_t unembeddedStringObjectMinSize(const_sds key, long long expire) {
+    int has_embkey = key != NULL;
+    int has_expire = (expire != EXPIRY_NONE ||
+                      (has_embkey && sdslen(key) >= KEY_SIZE_TO_INCLUDE_EXPIRE_THRESHOLD));
+    size_t size = sizeof(robj);
+    if (has_expire) size += sizeof(long long);
+    if (has_embkey) {
+        size_t key_len = sdslen(key);
+        size += sdsReqSize(key_len, sdsReqType(key_len)) + 1; /* 1 byte for prefixed sds hdr size */
+    }
+    return size;
+}
+#endif
+
+static bool shouldEmbedStringObject(size_t val_len, const_sds key, long long expire) {
+    /* Keep keyless EMBSTRs within the long-standing 128 byte limit. For keyspace
+     * values, allow a larger object only when jemalloc's size classes make the
+     * single allocation smaller than the raw object plus value SDS allocation. */
+    if (val_len > sdsTypeMaxSize(SDS_TYPE_8)) return false;
+
+    size_t size = embeddedStringObjectMinSize(val_len, key, expire);
+    if (size <= EMBSTR_SIZE_LIMIT) return true;
+
+#if defined(USE_JEMALLOC)
+    if (key && size <= KEYSPACE_EMBSTR_SIZE_LIMIT) {
+        size_t raw_obj_size = unembeddedStringObjectMinSize(key, expire);
+        size_t raw_val_size = sdsReqSize(val_len, sdsReqType(val_len));
+        return je_nallocx(size, 0) < je_nallocx(raw_obj_size, 0) + je_nallocx(raw_val_size, 0);
+    }
+#endif
+
+    return false;
 }
 
 /* Create a string object with EMBSTR encoding if it is small, otherwise RAW encoding */
@@ -352,9 +391,16 @@ void objectUnembedVal(robj *o) {
 /* This functions may reallocate the value. The new allocation is returned and
  * the old object's reference counter is decremented and possibly freed. Use the
  * returned object instead of 'o' after calling this function. */
-robj *objectSetKeyAndExpire(robj *o, const_sds key, long long expire) {
+static robj *objectSetKeyAndExpireInternal(robj *o, const_sds key, long long expire, int embed_raw) {
     if (o->type == OBJ_STRING && o->encoding == OBJ_ENCODING_EMBSTR) {
         robj *new = createStringObjectWithKeyAndExpire(objectGetVal(o), sdslen(objectGetVal(o)), key, expire);
+        new->lru = o->lru;
+        decrRefCount(o);
+        return new;
+    }
+    if (embed_raw && o->type == OBJ_STRING && o->encoding == OBJ_ENCODING_RAW &&
+        shouldEmbedStringObject(sdslen(objectGetVal(o)), key, expire)) {
+        robj *new = createEmbeddedStringObjectWithKeyAndExpire(objectGetVal(o), sdslen(objectGetVal(o)), key, expire);
         new->lru = o->lru;
         decrRefCount(o);
         return new;
@@ -383,6 +429,19 @@ robj *objectSetKeyAndExpire(robj *o, const_sds key, long long expire) {
     new->lru = o->lru;
     decrRefCount(o);
     return new;
+}
+
+robj *objectSetKeyAndExpire(robj *o, const_sds key, long long expire) {
+    return objectSetKeyAndExpireInternal(o, key, expire, 0);
+}
+
+int objectCanEmbedRawString(robj *o, const_sds key, long long expire) {
+    return o->type == OBJ_STRING && o->encoding == OBJ_ENCODING_RAW &&
+           shouldEmbedStringObject(sdslen(objectGetVal(o)), key, expire);
+}
+
+robj *objectSetKeyAndExpireEmbeddingRaw(robj *o, const_sds key, long long expire) {
+    return objectSetKeyAndExpireInternal(o, key, expire, 1);
 }
 
 /* Same as CreateRawStringObject, can return NULL if allocation fails */

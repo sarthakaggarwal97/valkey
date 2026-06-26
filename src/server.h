@@ -3182,6 +3182,8 @@ void trimStringObjectIfNeeded(robj *o, int trim_small_values);
 
 /* Objects with val and/or key embedded */
 robj *objectSetKeyAndExpire(robj *o, const_sds key, long long expire);
+int objectCanEmbedRawString(robj *o, const_sds key, long long expire);
+robj *objectSetKeyAndExpireEmbeddingRaw(robj *o, const_sds key, long long expire);
 robj *objectSetExpire(robj *o, long long expire);
 void objectSetVal(robj *o, void *val);
 void objectUnembedVal(robj *o);
@@ -3754,6 +3756,7 @@ int objectSetLRUOrLFU(robj *val, long long lfu_freq, long long lru_idle_secs);
     (LOOKUP_NONOTIFY | LOOKUP_NOSTATS | LOOKUP_NOTOUCH | LOOKUP_NOEXPIRE) /* Avoid any effects from fetching the key */
 
 void dbAdd(serverDb *db, robj *key, robj **valref);
+void dbAddEmbeddingRaw(serverDb *db, robj *key, robj **valref);
 int dbAddRDBLoad(serverDb *db, sds key, robj **valref);
 void dbReplaceValue(serverDb *db, robj *key, robj **valref);
 

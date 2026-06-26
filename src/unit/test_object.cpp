@@ -76,7 +76,8 @@ TEST_F(ObjectTest, embedded_string_with_key) {
     ASSERT_EQ(sdslen((sds)objectGetVal(embstr_obj)), 79u);
     ASSERT_EQ(strcmp((const char *)objectGetVal(embstr_obj), short_value), 0);
 
-    /* value of length 80 cannot be embedded with other contents within 128B */
+    /* value of length 80 is just above the base 128B embedding limit and does
+     * not save a jemalloc size class when embedded. */
     const char *longer_value = "12345678901234567890123456789012345678901234567890123456789012345678901234567890";
     ASSERT_EQ(strlen(longer_value), 80u);
     robj *longer_val_obj = createStringObject(longer_value, strlen(longer_value));
@@ -112,7 +113,8 @@ TEST_F(ObjectTest, embedded_string_with_key_and_expire) {
     ASSERT_EQ(sdslen((sds)objectGetVal(embstr_obj)), 71u);
     ASSERT_EQ(strcmp((const char *)objectGetVal(embstr_obj), short_value), 0);
 
-    /* value of length 72 cannot be embedded with other contents within 128B */
+    /* value of length 72 is just above the base 128B embedding limit and does
+     * not save a jemalloc size class when embedded. */
     const char *longer_value = "123456789012345678901234567890123456789012345678901234567890123456789012";
     ASSERT_EQ(strlen(longer_value), 72u);
     robj *longer_val_obj = createStringObject(longer_value, strlen(longer_value));
@@ -127,6 +129,30 @@ TEST_F(ObjectTest, embedded_string_with_key_and_expire) {
     decrRefCount(embstr_obj);
     decrRefCount(raw_obj);
 }
+
+#if defined(USE_JEMALLOC)
+TEST_F(ObjectTest, embedded_string_with_key_uses_jemalloc_size_classes) {
+    sds key = sdsnew("k:123456789012345678901234567890");
+    ASSERT_EQ(sdslen(key), 32u);
+
+    char value[129];
+    memset(value, 'v', sizeof(value) - 1);
+    value[sizeof(value) - 1] = '\0';
+
+    robj *val_obj = createStringObject(value, sizeof(value) - 1);
+    ASSERT_EQ(val_obj->encoding, (unsigned)OBJ_ENCODING_RAW);
+
+    robj *embstr_obj = objectSetKeyAndExpireEmbeddingRaw(val_obj, key, -1);
+    ASSERT_EQ(embstr_obj->encoding, (unsigned)OBJ_ENCODING_EMBSTR);
+    ASSERT_EQ(sdslen(objectGetKey(embstr_obj)), 32u);
+    ASSERT_EQ(sdscmp(objectGetKey(embstr_obj), key), 0);
+    ASSERT_EQ(sdslen((sds)objectGetVal(embstr_obj)), sizeof(value) - 1);
+    ASSERT_EQ(memcmp(objectGetVal(embstr_obj), value, sizeof(value) - 1), 0);
+
+    sdsfree(key);
+    decrRefCount(embstr_obj);
+}
+#endif
 
 TEST_F(ObjectTest, embedded_value) {
     /* with only value there is only 12B overhead, so we can embed up to 52B.
