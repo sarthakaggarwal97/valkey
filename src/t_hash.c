@@ -1096,6 +1096,94 @@ static void addHashFieldToReply(client *c, robj *o, sds field) {
     }
 }
 
+typedef enum {
+    HASH_FIELD_REPLY_DELETE,
+    HASH_FIELD_REPLY_SET_EXPIRY,
+    HASH_FIELD_REPLY_PERSIST,
+} hashFieldReplyAction;
+
+/* Add a hash field value to the reply and apply the requested expiry action
+ * using the same located field where possible. Returns true when the action
+ * changed the field. */
+static bool addHashFieldToReplyAndUpdateExpiry(client *c, robj *o, sds field, hashFieldReplyAction action, mstime_t expiry) {
+    if (o == NULL) {
+        addReplyNull(c);
+        return false;
+    }
+
+    if (o->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *zl = objectGetVal(o);
+        unsigned char *fptr = lpFirst(zl);
+        if (fptr != NULL) fptr = lpFind(zl, fptr, (unsigned char *)field, sdslen(field), 1);
+        if (fptr == NULL) {
+            addReplyNull(c);
+            return false;
+        }
+
+        unsigned char *vptr = lpNext(zl, fptr);
+        serverAssert(vptr != NULL);
+        unsigned int vlen;
+        long long vll;
+        unsigned char *vstr = lpGetValue(vptr, &vlen, &vll);
+        if (vstr)
+            addReplyBulkCBuffer(c, vstr, vlen);
+        else
+            addReplyBulkLongLong(c, vll);
+
+        if (action == HASH_FIELD_REPLY_DELETE) {
+            zl = lpDeleteRangeWithEntry(zl, &fptr, 2);
+            objectSetVal(o, zl);
+            return true;
+        } else if (action == HASH_FIELD_REPLY_SET_EXPIRY) {
+            return hashTypeSetExpire(o, field, expiry, 0) == EXPIRATION_MODIFICATION_SUCCESSFUL;
+        } else {
+            return false;
+        }
+    } else if (o->encoding == OBJ_ENCODING_HASHTABLE) {
+        if (action == HASH_FIELD_REPLY_DELETE) {
+            void *entry = NULL;
+            if (!hashtablePop(objectGetVal(o), field, &entry)) {
+                addReplyNull(c);
+                return false;
+            }
+
+            size_t len = 0;
+            char *value = entryGetValue(entry, &len);
+            serverAssert(value != NULL);
+            addReplyBulkCBuffer(c, value, len);
+            hashTypeUntrackEntry(o, entry);
+            entryFree(entry);
+            return true;
+        }
+
+        void **entry_ref = hashtableFindRef(objectGetVal(o), field);
+        if (entry_ref == NULL) {
+            addReplyNull(c);
+            return false;
+        }
+
+        entry *current_entry = *entry_ref;
+        size_t len = 0;
+        char *value = entryGetValue(current_entry, &len);
+        serverAssert(value != NULL);
+        addReplyBulkCBuffer(c, value, len);
+
+        mstime_t current_expiry = entryGetExpiry(current_entry);
+        if (action == HASH_FIELD_REPLY_SET_EXPIRY) {
+            *entry_ref = entrySetExpiry(current_entry, expiry);
+            hashTypeTrackUpdateEntry(o, current_entry, *entry_ref, current_expiry, expiry);
+            return true;
+        } else {
+            if (current_expiry == EXPIRY_NONE) return false;
+            hashTypeUntrackEntry(o, current_entry);
+            *entry_ref = entrySetExpiry(current_entry, EXPIRY_NONE);
+            return true;
+        }
+    } else {
+        serverPanic("Unknown hash encoding");
+    }
+}
+
 void hgetCommand(client *c) {
     robj *o;
 
@@ -1715,15 +1803,16 @@ void hgetexCommand(client *c) {
     }
     for (i = fields_index; i < c->argc; i++) {
         bool changed = false;
-        addHashFieldToReply(c, o, objectGetVal(c->argv[i]));
-        if (o && set_expired) {
-            changed = hashTypeDelete(o, objectGetVal(c->argv[i]));
+        if (set_expired) {
+            changed = addHashFieldToReplyAndUpdateExpiry(c, o, objectGetVal(c->argv[i]), HASH_FIELD_REPLY_DELETE, when);
             /* we treat this case exactly as active expiration. */
             if (changed) server.stat_expiredfields++;
         } else if (set_expiry) {
-            changed = hashTypeSetExpire(o, objectGetVal(c->argv[i]), when, 0) == EXPIRATION_MODIFICATION_SUCCESSFUL;
+            changed = addHashFieldToReplyAndUpdateExpiry(c, o, objectGetVal(c->argv[i]), HASH_FIELD_REPLY_SET_EXPIRY, when);
         } else if (persist) {
-            changed = hashTypePersist(o, objectGetVal(c->argv[i])) == EXPIRATION_MODIFICATION_SUCCESSFUL;
+            changed = addHashFieldToReplyAndUpdateExpiry(c, o, objectGetVal(c->argv[i]), HASH_FIELD_REPLY_PERSIST, when);
+        } else {
+            addHashFieldToReply(c, o, objectGetVal(c->argv[i]));
         }
         if (changed) {
             changes++;
