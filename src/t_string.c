@@ -95,7 +95,8 @@ void setGenericCommand(client *c,
         if (getGenericCommand(c) == C_ERR) goto cleanup;
     }
 
-    robj *existing_value = lookupKeyWrite(c->db, key);
+    void **existing_ref = NULL;
+    robj *existing_value = lookupKeyWriteWithRef(c->db, key, &existing_ref);
     found = existing_value != NULL;
 
     /* Handle the IFEQ conditional check */
@@ -143,7 +144,7 @@ void setGenericCommand(client *c,
          * object is not released when adding it to the database. */
         incrRefCount(val);
     }
-    setKey(c, c->db, key, &val, setkey_flags);
+    setKeyWithRef(c, c->db, key, &val, setkey_flags, existing_ref);
     if (expire) val = setExpire(c, c->db, key, milliseconds);
 
     /* By setting the reallocated value back into argv, we can avoid duplicating
@@ -567,15 +568,20 @@ void msetGenericCommand(client *c, int nx) {
     int setkey_flags = nx ? SETKEY_DOESNT_EXIST : 0;
     for (j = 1; j < c->argc; j += 2) {
         robj *val = c->argv[j + 1];
+        void **existing_ref = NULL;
+        if (!nx) {
+            robj *existing = lookupKeyWriteWithRef(c->db, c->argv[j], &existing_ref);
+            setkey_flags = existing ? SETKEY_ALREADY_EXIST : SETKEY_DOESNT_EXIST;
+        }
         if (c->flag.argv_borrowed) {
             /* If the client does not own the argv, we need to ensure that the value
              * object is not released when adding it to the database. */
             incrRefCount(val);
-            setKey(c, c->db, c->argv[j], &val, setkey_flags);
+            setKeyWithRef(c, c->db, c->argv[j], &val, setkey_flags, existing_ref);
             rewriteClientCommandArgument(c, j + 1, val);
         } else {
             val = tryObjectEncoding(val);
-            setKey(c, c->db, c->argv[j], &val, setkey_flags);
+            setKeyWithRef(c, c->db, c->argv[j], &val, setkey_flags, existing_ref);
             incrRefCount(val);
             c->argv[j + 1] = val;
         }
