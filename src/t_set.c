@@ -669,6 +669,36 @@ void smoveCommand(client *c) {
         return;
     }
 
+    if (srcset->encoding == OBJ_ENCODING_HASHTABLE && dstset && dstset->encoding == OBJ_ENCODING_HASHTABLE) {
+        sds member = objectGetVal(ele);
+        void *popped = NULL;
+        if (!hashtablePop(objectGetVal(srcset), member, &popped)) {
+            addReply(c, shared.czero);
+            return;
+        }
+        notifyKeyspaceEvent(NOTIFY_SET, "srem", c->argv[1], c->db->id);
+
+        if (setTypeSize(srcset) == 0) {
+            dbDelete(c->db, c->argv[1]);
+            notifyKeyspaceEvent(NOTIFY_GENERIC, "del", c->argv[1], c->db->id);
+        }
+
+        signalModifiedKey(c, c->db, c->argv[1]);
+        server.dirty++;
+
+        hashtablePosition position;
+        if (hashtableFindPositionForInsert(objectGetVal(dstset), popped, &position, NULL)) {
+            hashtableInsertAtPosition(objectGetVal(dstset), popped, &position);
+            server.dirty++;
+            signalModifiedKey(c, c->db, c->argv[2]);
+            notifyKeyspaceEvent(NOTIFY_SET, "sadd", c->argv[2], c->db->id);
+        } else {
+            sdsfree(popped);
+        }
+        addReply(c, shared.cone);
+        return;
+    }
+
     /* If the element cannot be removed from the src set, return 0. */
     if (!setTypeRemove(srcset, objectGetVal(ele))) {
         addReply(c, shared.czero);
