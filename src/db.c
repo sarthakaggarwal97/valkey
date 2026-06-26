@@ -1013,6 +1013,64 @@ static void addScanDataItem(vector *result, const char *buf, size_t len) {
     item->len = len;
 }
 
+static void scanReplySetCompactEncoding(client *c, robj *o, const scanOptions *opts) {
+    addReplyArrayLen(c, 2);
+    addReplyBulkLongLong(c, 0);
+    void *replylen = addReplyDeferredLen(c);
+    unsigned long returned = 0;
+
+    char buf[LONG_STR_SIZE];
+    char *str;
+    size_t len;
+    int64_t llele;
+    setTypeIterator *si = setTypeInitIterator(o);
+    while (setTypeNext(si, &str, &len, &llele) != -1) {
+        if (str == NULL) {
+            len = ll2string(buf, sizeof(buf), llele);
+            str = buf;
+        }
+        if (opts->use_pattern && !stringmatchlen(opts->pat, opts->patlen, str, len, 0)) continue;
+        addReplyBulkCBuffer(c, str, len);
+        returned++;
+    }
+    setTypeReleaseIterator(si);
+
+    setDeferredArrayLen(c, replylen, returned);
+}
+
+static void scanReplyListpack(client *c, robj *o, const scanOptions *opts) {
+    addReplyArrayLen(c, 2);
+    addReplyBulkLongLong(c, 0);
+    void *replylen = addReplyDeferredLen(c);
+    unsigned long returned = 0;
+
+    unsigned char *lp = objectGetVal(o);
+    unsigned char *p = lpFirst(lp);
+    unsigned char *str;
+    int64_t len;
+    unsigned char intbuf[LP_INTBUF_SIZE];
+
+    while (p) {
+        str = lpGet(p, &len, intbuf);
+        p = lpNext(lp, p); /* Point to the value/score. */
+        if (opts->use_pattern && !stringmatchlen(opts->pat, opts->patlen, (char *)str, len, 0)) {
+            p = lpNext(lp, p);
+            continue;
+        }
+
+        addReplyBulkCBuffer(c, str, len);
+        returned++;
+        if (!opts->only_keys) {
+            str = lpGet(p, &len, intbuf);
+            addReplyBulkCBuffer(c, str, len);
+            returned++;
+        }
+        p = lpNext(lp, p);
+    }
+
+    setDeferredArrayLen(c, replylen, returned);
+}
+
 /* Hashtable scan callback used by scanCallback when scanning the keyspace. */
 void keysScanCallback(void *privdata, void *entry, int didx) {
     scanData *data = (scanData *)privdata;
@@ -1260,6 +1318,20 @@ void scanGenericCommandWithOptions(client *c, robj *o, unsigned long long cursor
         /* scanning ZSET allocates temporary strings even though it's a dict */
         free_callback = sdsfree;
     }
+
+    /* Compact encodings are scanned in one cursor-0 response. Reply directly
+     * instead of materializing every element as a temporary SDS in result. */
+    if (o && !ht) {
+        if (o->type == OBJ_SET) {
+            scanReplySetCompactEncoding(c, o, opts);
+        } else if ((o->type == OBJ_HASH || o->type == OBJ_ZSET) && o->encoding == OBJ_ENCODING_LISTPACK) {
+            scanReplyListpack(c, o, opts);
+        } else {
+            serverPanic("Not handled encoding in SCAN.");
+        }
+        return;
+    }
+
     vectorInit(&result, SCAN_VECTOR_INITIAL_ALLOC, sizeof(stringRef));
 
     /* For main hash table scan or scannable data structure. */
@@ -1312,54 +1384,6 @@ void scanGenericCommandWithOptions(client *c, robj *o, unsigned long long cursor
                 cursor = hashtableScan(ht, cursor, hashtableScanCallback, &data);
             }
         } while (cursor && maxiterations-- && data.sampled < opts->count);
-    } else if (o->type == OBJ_SET) {
-        char *str;
-        char buf[LONG_STR_SIZE];
-        size_t len;
-        int64_t llele;
-        setTypeIterator *si = setTypeInitIterator(o);
-        while (setTypeNext(si, &str, &len, &llele) != -1) {
-            if (str == NULL) {
-                len = ll2string(buf, sizeof(buf), llele);
-            }
-            char *key = str ? str : buf;
-            if (opts->use_pattern && !stringmatchlen(opts->pat, opts->patlen, key, len, 0)) {
-                continue;
-            }
-            sds item = sdsnewlen(key, len);
-            addScanDataItem(&result, (const char *)item, sdslen(item));
-        }
-        setTypeReleaseIterator(si);
-        cursor = 0;
-    } else if ((o->type == OBJ_HASH || o->type == OBJ_ZSET) && o->encoding == OBJ_ENCODING_LISTPACK) {
-        unsigned char *p = lpFirst(objectGetVal(o));
-        unsigned char *str;
-        int64_t len;
-        unsigned char intbuf[LP_INTBUF_SIZE];
-
-        while (p) {
-            str = lpGet(p, &len, intbuf);
-            /* point to the value */
-            p = lpNext(objectGetVal(o), p);
-            if (opts->use_pattern && !stringmatchlen(opts->pat, opts->patlen, (char *)str, len, 0)) {
-                /* jump to the next key/val pair */
-                p = lpNext(objectGetVal(o), p);
-                continue;
-            }
-            /* add key object */
-            sds item = sdsnewlen(str, len);
-            addScanDataItem(&result, (const char *)item, sdslen(item));
-            /* add value object */
-            if (!opts->only_keys) {
-                str = lpGet(p, &len, intbuf);
-                item = sdsnewlen(str, len);
-                addScanDataItem(&result, (const char *)item, sdslen(item));
-            }
-            p = lpNext(objectGetVal(o), p);
-        }
-        cursor = 0;
-    } else {
-        serverPanic("Not handled encoding in SCAN.");
     }
 
     /* Reply to the client. */
