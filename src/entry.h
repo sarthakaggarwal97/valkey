@@ -48,8 +48,11 @@ bool entryIsExpired(entry *entry);
 /* Frees the memory used by the entry (including field/value). */
 void entryFree(entry *entry);
 
-/* Creates a new entry with the given field, value, and optional expiry. */
+/* Creates a new entry with the given field, value, and optional expiry.
+ * entryCreate() takes ownership of value. entryCreateRawValue() copies the
+ * provided value span. */
 entry *entryCreate(const_sds field, sds value, mstime_t expiry);
+entry *entryCreateRawValue(const_sds field, const char *value, size_t value_len, mstime_t expiry);
 /* Sets the entry's value to a string reference object.
  * The reference points to the provided `buf` but does not assume ownership.
  * An external mechanism must handle the eventual memory deallocation of `buf`. */
@@ -57,8 +60,11 @@ entry *entryUpdateAsStringRef(entry *entry, const char *buf, size_t len, mstime_
 
 /* Updates the value and/or expiry of an existing entry.
  * In case value is NULL, will use the existing entry value.
- * In case expiry is EXPIRE_NONE, will use the existing entry expiration time. */
+ * In case expiry is EXPIRE_NONE, will use the existing entry expiration time.
+ * entryUpdate() takes ownership of value. entryUpdateRawValue() copies the
+ * provided value span and value_len must not be SIZE_MAX. */
 entry *entryUpdate(entry *entry, sds value, mstime_t expiry);
+entry *entryUpdateRawValue(entry *entry, const char *value, size_t value_len, mstime_t expiry);
 
 /* Returns the total memory used by the entry (in bytes). */
 size_t entryMemUsage(entry *entry);

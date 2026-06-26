@@ -918,16 +918,89 @@ static int hashTypeRandomElement(robj *hashobj, unsigned long hashsize, listpack
  * Hash type commands
  *----------------------------------------------------------------------------*/
 
+static void addReplyLongLongFromStr(client *c, const char *s, int len) {
+    char buf[LONG_STR_SIZE + 3];
+    buf[0] = ':';
+    memcpy(buf + 1, s, len);
+    buf[len + 1] = '\r';
+    buf[len + 2] = '\n';
+    addReplyProto(c, buf, len + 3);
+}
+
+static int hincrbyFormatNewValueOrReply(client *c,
+                                        long long oldvalue,
+                                        long long incr,
+                                        long long *value,
+                                        char *buf,
+                                        int *len) {
+    if ((incr < 0 && oldvalue < 0 && incr < (LLONG_MIN - oldvalue)) ||
+        (incr > 0 && oldvalue > 0 && incr > (LLONG_MAX - oldvalue))) {
+        addReplyError(c, "increment or decrement would overflow");
+        return C_ERR;
+    }
+    *value = oldvalue + incr;
+    *len = ll2string(buf, LONG_STR_SIZE, *value);
+    return C_OK;
+}
+
+static void hincrbyFinalize(client *c, const char *buf, int len, int expired_overwritten) {
+    signalModifiedKey(c, c->db, c->argv[1]);
+    /* When overwriting an expired field, act as if it was just expired. */
+    if (expired_overwritten) {
+        server.stat_expiredfields++;
+        notifyKeyspaceEvent(NOTIFY_HASH, "hexpired", c->argv[1], c->db->id);
+    }
+    notifyKeyspaceEvent(NOTIFY_HASH, "hincrby", c->argv[1], c->db->id);
+    server.dirty++;
+    addReplyLongLongFromStr(c, buf, len);
+}
+
 void hincrbyCommand(client *c) {
     long long value, incr, oldvalue;
     robj *o;
-    sds new;
     unsigned char *vstr;
     unsigned int vlen;
     mstime_t expiry = EXPIRY_NONE;
+    char buf[LONG_STR_SIZE];
+    int buflen;
 
     if (getLongLongFromObjectOrReply(c, c->argv[3], &incr, NULL) != C_OK) return;
     if ((o = hashTypeLookupWriteOrCreate(c, c->argv[1])) == NULL) return;
+
+    if (o->encoding == OBJ_ENCODING_HASHTABLE && !hashTypeHasVolatileFields(o)) {
+        sds field = objectGetVal(c->argv[2]);
+        hashtable *ht = objectGetVal(o);
+        hashtablePosition position;
+        void *existing = NULL;
+        if (hashtableFindPositionForInsert(ht, field, &position, &existing)) {
+            value = 0;
+        } else {
+            size_t len = 0;
+            char *old = entryGetValue(existing, &len);
+            serverAssert(old != NULL);
+            if (string2ll(old, len, &value) == 0) {
+                addReplyError(c, "hash value is not an integer");
+                return;
+            }
+        }
+
+        oldvalue = value;
+        if (hincrbyFormatNewValueOrReply(c, oldvalue, incr, &value, buf, &buflen) != C_OK) return;
+        if (existing) {
+            entry *new_entry = entryUpdateRawValue(existing, buf, buflen, EXPIRY_NONE);
+            if (new_entry != existing) {
+                bool replaced = hashtableReplaceReallocatedEntry(ht, existing, new_entry);
+                serverAssert(replaced);
+            }
+        } else {
+            entry *entry = entryCreateRawValue(field, buf, buflen, EXPIRY_NONE);
+            hashtableInsertAtPosition(ht, entry, &position);
+        }
+
+        hincrbyFinalize(c, buf, buflen, 0);
+        return;
+    }
+
     if (hashTypeGetValue(o, objectGetVal(c->argv[2]), &vstr, &vlen, &value, &expiry) == C_OK) {
         if (vstr) {
             if (string2ll((char *)vstr, vlen, &value) == 0) {
@@ -940,36 +1013,21 @@ void hincrbyCommand(client *c) {
     }
 
     oldvalue = value;
-    if ((incr < 0 && oldvalue < 0 && incr < (LLONG_MIN - oldvalue)) ||
-        (incr > 0 && oldvalue > 0 && incr > (LLONG_MAX - oldvalue))) {
-        addReplyError(c, "increment or decrement would overflow");
-        return;
-    }
-    value += incr;
-    new = sdsfromlonglong(value);
+    if (hincrbyFormatNewValueOrReply(c, oldvalue, incr, &value, buf, &buflen) != C_OK) return;
+    sds new = sdsnewlen(buf, buflen);
     bool has_volatile_fields = hashTypeHasVolatileFields(o);
     bool expired_overwritten = false;
     hashTypeSet(o, objectGetVal(c->argv[2]), new, expiry, HASH_SET_TAKE_VALUE, &expired_overwritten);
     if (has_volatile_fields != hashTypeHasVolatileFields(o)) {
         dbUpdateObjectWithVolatileItemsTracking(c->db, o);
     }
-    signalModifiedKey(c, c->db, c->argv[1]);
-    /* In case we overitten an expired field, we need to act as if it was just expired */
-    if (expired_overwritten) {
-        server.stat_expiredfields++;
-        notifyKeyspaceEvent(NOTIFY_HASH, "hexpired", c->argv[1], c->db->id);
-    }
-    notifyKeyspaceEvent(NOTIFY_HASH, "hincrby", c->argv[1], c->db->id);
-    server.dirty++;
-    addReplyLongLong(c, value);
+    hincrbyFinalize(c, buf, buflen, expired_overwritten);
 
     /* Always replicate HINCRBY as an HSET or HSETEX command with the final value
      * when hash has volatile item, since we do not know what will the field state be when the command reach the replica.
      * HSET is used to override the resulting value and HSETEX is used in order to maintain the expiration time on the target. */
     if (has_volatile_fields) {
-        char buf[MAX_LONG_DOUBLE_CHARS];
-        int len = ld2string(buf, sizeof(buf), value, LD_STR_HUMAN);
-        robj *newobj = createRawStringObject(buf, len);
+        robj *newobj = createRawStringObject(buf, buflen);
         if (expiry == EXPIRY_NONE) {
             rewriteClientCommandArgument(c, 0, shared.hset);
             rewriteClientCommandArgument(c, 3, newobj);

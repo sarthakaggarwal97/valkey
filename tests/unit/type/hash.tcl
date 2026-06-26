@@ -643,6 +643,34 @@ start_server {tags {"hash"}} {
         set e
     } {*overflow*}
 
+    test {HINCRBY promotes listpack when increment exceeds hash-max-listpack-value} {
+        set original_max_value [config_get_set hash-max-listpack-value 8]
+
+        r del hincrby-max-value
+        r hset hincrby-max-value field 99999999
+        assert_equal 100000000 [r hincrby hincrby-max-value field 1]
+        assert_encoding hashtable hincrby-max-value
+
+        r del hincrby-max-field
+        assert_equal 1 [r hincrby hincrby-max-field abcdefghi 1]
+        assert_encoding hashtable hincrby-max-field
+
+        r config set hash-max-listpack-value $original_max_value
+    }
+
+    test {HINCRBY promotes listpack when hash-max-listpack-entries is lowered} {
+        set original_max_entries [config_get_set hash-max-listpack-entries 4]
+
+        r del hincrby-max-entries
+        r hset hincrby-max-entries f1 1 f2 2 f3 3
+        assert_encoding listpack hincrby-max-entries
+        r config set hash-max-listpack-entries 2
+        assert_equal 2 [r hincrby hincrby-max-entries f1 1]
+        assert_encoding hashtable hincrby-max-entries
+
+        r config set hash-max-listpack-entries $original_max_entries
+    }
+
     test {HINCRBYFLOAT against non existing database key} {
         r del htest
         list [r hincrbyfloat htest foo 2.5]

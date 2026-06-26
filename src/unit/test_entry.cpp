@@ -96,6 +96,29 @@ TEST_F(EntryTest, entryCreate) {
     sdsfree(value_copy4);
 }
 
+TEST_F(EntryTest, entryCreateRawValue) {
+    char value1[] = SHORT_VALUE;
+    sds field1 = sdsnew(SHORT_FIELD);
+    sds value_copy1 = sdsnew(SHORT_VALUE);
+    entry *e1 = entryCreateRawValue(field1, value1, strlen(value1), EXPIRY_NONE);
+    value1[0] = 'x';
+    verify_entry_properties(e1, field1, value_copy1, EXPIRY_NONE, false, false);
+
+    char value2[] = LONG_VALUE;
+    sds field2 = sdsnew(LONG_FIELD);
+    sds value_copy2 = sdsnew(LONG_VALUE);
+    entry *e2 = entryCreateRawValue(field2, value2, strlen(value2), 100);
+    value2[0] = 'x';
+    verify_entry_properties(e2, field2, value_copy2, 100, true, true);
+
+    entryFree(e1);
+    entryFree(e2);
+    sdsfree(field1);
+    sdsfree(field2);
+    sdsfree(value_copy1);
+    sdsfree(value_copy2);
+}
+
 /**
  * Test entryUpdate with various combinations of value and expiry changes (Test will only run when jemalloc is used):
  * 1. Update only the value (keeping embedded)
@@ -218,6 +241,42 @@ TEST_F(EntryTest, entryUpdate) {
     sdsfree(value_copy10);
     sdsfree(value_copy11);
     sdsfree(value_copy12);
+}
+
+TEST_F(EntryTest, entryUpdateRawValue) {
+    sds field = sdsnew(SHORT_FIELD);
+    sds value = sdsnew("1");
+    entry *e1 = entryCreate(field, value, EXPIRY_NONE);
+
+    char raw1[] = "22";
+    sds value_copy1 = sdsnew(raw1);
+    entry *e2 = entryUpdateRawValue(e1, raw1, strlen(raw1), EXPIRY_NONE);
+    raw1[0] = 'x';
+    verify_entry_properties(e2, field, value_copy1, EXPIRY_NONE, false, false);
+
+    char raw2[] = LONG_VALUE;
+    sds value_copy2 = sdsnew(raw2);
+    entry *e3 = entryUpdateRawValue(e2, raw2, strlen(raw2), 100);
+    raw2[0] = 'x';
+    verify_entry_properties(e3, field, value_copy2, 100, true, true);
+    ASSERT_FALSE(entryHasStringRef(e3));
+
+    const char *ref = SHORT_VALUE;
+    entry *e4 = entryUpdateAsStringRef(e3, ref, strlen(ref), 100);
+    ASSERT_TRUE(entryHasStringRef(e4));
+
+    char raw3[] = "333";
+    sds value_copy3 = sdsnew(raw3);
+    entry *e5 = entryUpdateRawValue(e4, raw3, strlen(raw3), EXPIRY_NONE);
+    raw3[0] = 'x';
+    verify_entry_properties(e5, field, value_copy3, EXPIRY_NONE, false, false);
+    ASSERT_FALSE(entryHasStringRef(e5));
+
+    entryFree(e5);
+    sdsfree(field);
+    sdsfree(value_copy1);
+    sdsfree(value_copy2);
+    sdsfree(value_copy3);
 }
 
 /**
