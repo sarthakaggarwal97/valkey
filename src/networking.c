@@ -154,7 +154,8 @@ static int parseMultibulk(client *c,
                           robj ***argv,
                           int *argv_len,
                           size_t *argv_len_sum,
-                          unsigned long long *net_input_bytes_curr_cmd);
+                          unsigned long long *net_input_bytes_curr_cmd,
+                          robj **cmd_name_cache);
 
 int ProcessingEventsWhileBlocked = 0; /* See processEventsWhileBlocked(). */
 _Thread_local sds thread_shared_qb = NULL;
@@ -3569,8 +3570,10 @@ static void setProtocolError(const char *errstr, client *c) {
  * command is in RESP format, so the first byte in the command is found
  * to be '*'. Otherwise for inline commands parseInlineBuffer() is called. */
 void parseMultibulkBuffer(client *c) {
+    robj *cmd_name_cache = NULL;
     int flag = parseMultibulk(c, &c->argc, &c->argv, &c->argv_len,
-                              &c->argv_len_sum, &c->net_input_bytes_curr_cmd);
+                              &c->argv_len_sum, &c->net_input_bytes_curr_cmd,
+                              &cmd_name_cache);
     c->read_flags |= flag;
 
     /* Record qb_pos for commandProcessed(). Written unconditionally because a
@@ -3605,10 +3608,25 @@ void parseMultibulkBuffer(client *c) {
         parsedCommand *p = &queue->cmds[queue->len++];
         memset(p, 0, sizeof(*p));
         flag = parseMultibulk(c, &p->argc, &p->argv, &p->argv_len,
-                              &p->argv_len_sum, &p->input_bytes);
+                              &p->argv_len_sum, &p->input_bytes,
+                              &cmd_name_cache);
         p->read_flags = flag;
         p->slot = -1;
     }
+}
+
+/* Reuse argv[0] while parsing one pipelined query buffer. cmd_name_cache is a
+ * borrowed pointer to the last command-name object returned by this helper;
+ * ownership stays with the argv entry that receives the returned object. */
+static robj *createCachedCommandNameObject(robj **cmd_name_cache, const char *ptr, size_t len) {
+    if (*cmd_name_cache && sdslen(objectGetVal(*cmd_name_cache)) == len &&
+        memcmp(objectGetVal(*cmd_name_cache), ptr, len) == 0) {
+        incrRefCount(*cmd_name_cache);
+        return *cmd_name_cache;
+    }
+
+    *cmd_name_cache = createStringObject(ptr, len);
+    return *cmd_name_cache;
 }
 
 /* Incremental parsing of a command in the client's query buffer.
@@ -3630,7 +3648,8 @@ static int parseMultibulk(client *c,
                           robj ***argv,
                           int *argv_len,
                           size_t *argv_len_sum,
-                          unsigned long long *net_input_bytes_curr_cmd) {
+                          unsigned long long *net_input_bytes_curr_cmd,
+                          robj **cmd_name_cache) {
     char *newline = NULL;
     int ok;
     long long ll;
@@ -3817,7 +3836,13 @@ static int parseMultibulk(client *c,
                 c->querybuf = sdsnewlen(SDS_NOINIT, c->bulklen + 2);
                 sdsclear(c->querybuf);
             } else {
-                (*argv)[(*argc)++] = createStringObject(c->querybuf + c->qb_pos, c->bulklen);
+                robj *arg;
+                if (*argc == 0) {
+                    arg = createCachedCommandNameObject(cmd_name_cache, c->querybuf + c->qb_pos, c->bulklen);
+                } else {
+                    arg = createStringObject(c->querybuf + c->qb_pos, c->bulklen);
+                }
+                (*argv)[(*argc)++] = arg;
                 *argv_len_sum += c->bulklen;
                 c->qb_pos += c->bulklen + 2;
             }
