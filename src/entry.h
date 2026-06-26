@@ -21,8 +21,10 @@
 typedef struct _entry entry;
 
 /* The maximum allocation size we want to use for entries with embedded
- * values. */
-#define EMBED_VALUE_MAX_ALLOC_SIZE 128
+ * values. Embedded entry values use SDS_TYPE_8, so keep the requested
+ * allocation below allocator size classes that can round past SDS8's
+ * maximum usable size. */
+#define EMBED_VALUE_MAX_ALLOC_SIZE 248
 
 /* Returns the field string (sds) from the entry. */
 sds entryGetField(const entry *entry);

@@ -27,6 +27,12 @@ extern "C" {
 
 class EntryTest : public ::testing::Test {
   protected:
+    sds new_sds_of_len(size_t len, char ch) {
+        sds s = sdsnewlen(SDS_NOINIT, len);
+        memset(s, ch, len);
+        return s;
+    }
+
     /* Verify entry properties */
     void verify_entry_properties(entry *e, sds field, sds value_copy, long long expiry, bool has_expiry, bool has_valueptr) {
         ASSERT_EQ(sdscmp(entryGetField(e), field), 0);
@@ -38,6 +44,29 @@ class EntryTest : public ::testing::Test {
         ASSERT_EQ(entryHasEmbeddedValue(e), !has_valueptr);
     }
 };
+
+TEST_F(EntryTest, entryCreateEmbeddingBoundary) {
+    const size_t sds8_overhead = sdsHdrSize(SDS_TYPE_8) + 1;
+
+    sds field = sdsnew("");
+    size_t field_size = sdsReqSize(sdslen(field), SDS_TYPE_5);
+    size_t embedded_value_len = EMBED_VALUE_MAX_ALLOC_SIZE - field_size - sds8_overhead;
+    sds embedded_value = new_sds_of_len(embedded_value_len, 'v');
+    sds embedded_value_copy = sdsdup(embedded_value);
+    entry *embedded = entryCreate(field, embedded_value, EXPIRY_NONE);
+    verify_entry_properties(embedded, field, embedded_value_copy, EXPIRY_NONE, false, false);
+
+    sds external_value = new_sds_of_len(embedded_value_len + 1, 'w');
+    sds external_value_copy = sdsdup(external_value);
+    entry *external = entryCreate(field, external_value, EXPIRY_NONE);
+    verify_entry_properties(external, field, external_value_copy, EXPIRY_NONE, false, true);
+
+    entryFree(embedded);
+    entryFree(external);
+    sdsfree(field);
+    sdsfree(embedded_value_copy);
+    sdsfree(external_value_copy);
+}
 
 /**
  * Test entryCreate functionality:
