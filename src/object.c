@@ -48,8 +48,17 @@
 /* For objects with large embedded keys, we reserve space for an expire field,
  * so if expire is set later, we don't need to reallocate the object. */
 #define KEY_SIZE_TO_INCLUDE_EXPIRE_THRESHOLD 128
+
+/* Keep standalone EMBSTR objects within the long-standing 128-byte allocation
+ * bound. Keyspace strings may use a larger embedded allocation, but only after
+ * the jemalloc size-class check below proves it is smaller than separate object
+ * and SDS allocations. The 512-byte guard caps that allocator-dependent path to
+ * the range that showed memory wins in benchmarks and stays far below SDS16's
+ * alloc-field limit. */
 #define EMBSTR_SIZE_LIMIT 128
 #define KEYSPACE_EMBSTR_SIZE_LIMIT 512
+static_assert(KEYSPACE_EMBSTR_SIZE_LIMIT <= ((1U << 16) - 1),
+              "SDS16 embedded strings must fit in the SDS16 alloc field");
 
 /* ===================== Creation and parsing of objects ==================== */
 
@@ -304,6 +313,7 @@ static robj *createStringObjectWithKeyAndExpire(const char *ptr, size_t len, con
 
 void *objectGetVal(const robj *o) {
     if (o->hasembval) {
+        serverAssert(isEmbeddedStringEncoding(o->encoding));
         char val_sds_type = o->encoding == OBJ_ENCODING_EMBSTR16 ? SDS_TYPE_16 : SDS_TYPE_8;
         unsigned char *data = objectEmbeddedData(o);
         if (o->hasexpire) {

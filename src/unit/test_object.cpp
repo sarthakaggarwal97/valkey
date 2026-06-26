@@ -180,6 +180,28 @@ TEST_F(ObjectTest, embedded_string_with_key_uses_sds16_for_larger_values) {
     sdsfree(key);
     decrRefCount(embstr_obj);
 }
+
+TEST_F(ObjectTest, embedded_string_with_key_respects_keyspace_limit) {
+    sds key = sdsnew("k:123456789012345678901234567890");
+    ASSERT_EQ(sdslen(key), 32u);
+
+    char value[601];
+    memset(value, 'v', sizeof(value) - 1);
+    value[sizeof(value) - 1] = '\0';
+
+    robj *val_obj = createStringObject(value, sizeof(value) - 1);
+    ASSERT_EQ(val_obj->encoding, (unsigned)OBJ_ENCODING_RAW);
+
+    robj *raw_obj = objectSetKeyAndExpireEmbeddingRaw(val_obj, key, -1);
+    ASSERT_EQ(raw_obj->encoding, (unsigned)OBJ_ENCODING_RAW);
+    ASSERT_EQ(sdslen(objectGetKey(raw_obj)), 32u);
+    ASSERT_EQ(sdscmp(objectGetKey(raw_obj), key), 0);
+    ASSERT_EQ(sdslen((sds)objectGetVal(raw_obj)), sizeof(value) - 1);
+    ASSERT_EQ(memcmp(objectGetVal(raw_obj), value, sizeof(value) - 1), 0);
+
+    sdsfree(key);
+    decrRefCount(raw_obj);
+}
 #endif
 
 TEST_F(ObjectTest, embedded_value) {

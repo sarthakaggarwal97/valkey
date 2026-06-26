@@ -766,11 +766,11 @@ typedef struct ValkeyModuleType moduleType;
 #define OBJ_ENCODING_ZIPLIST 5    /* No longer used: old list/hash/zset encoding. */
 #define OBJ_ENCODING_INTSET 6     /* Encoded as intset */
 #define OBJ_ENCODING_SKIPLIST 7   /* Encoded as skiplist */
-#define OBJ_ENCODING_EMBSTR 8     /* Embedded sds string encoding */
+#define OBJ_ENCODING_EMBSTR 8     /* Embedded SDS8 string encoding */
 #define OBJ_ENCODING_QUICKLIST 9  /* Encoded as linked list of listpacks */
 #define OBJ_ENCODING_STREAM 10    /* Encoded as a radix tree of listpacks */
 #define OBJ_ENCODING_LISTPACK 11  /* Encoded as a listpack */
-#define OBJ_ENCODING_EMBSTR16 12  /* Embedded SDS16 string encoding */
+#define OBJ_ENCODING_EMBSTR16 12  /* Keyspace-only embedded SDS16 string encoding */
 
 #define OBJ_REFCOUNT_BITS 29
 #define OBJ_SHARED_REFCOUNT ((1 << OBJ_REFCOUNT_BITS) - 1) /* Global object never destroyed. */
