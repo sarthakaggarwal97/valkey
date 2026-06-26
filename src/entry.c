@@ -1,6 +1,7 @@
 #include "server.h"
 #include "serverassert.h"
 #include "entry.h"
+#include <limits.h>
 
 /*-----------------------------------------------------------------------------
  * Entry Implementation
@@ -24,7 +25,7 @@
  *     Identified by: field sds type is SDS_TYPE_5
  *
  *
- * Type 2: Field sds type is an SDS_TYPE_8 type
+ * Type 2: Field sds type is an SDS_TYPE_8 type or larger
  *     With this type, both the field and value are embedded.  Extra bits in the sdshdr8 (on field)
  *     are used to encode aux flags which may indicate the presence of an optional expiration.
  *     Extra padding is included in the value to the size of the physical block.
@@ -33,10 +34,10 @@
  *                              |
  *     +--------------+---------V------------+----------------------------+
  *     | Expire (opt) |       Field          |      Value                 |
- *     |  mstime_t    | sdshdr8 | "foo" \0   | sdshdr8/16 "bar" (padding) |
+ *     |  mstime_t    | sdshdr8+ | "foo" \0  | sdshdr8/16 "bar" (padding) |
  *     +--------------+---------+------------+----------------------------+
  *
- *     Identified by: field sds type is SDS_TYPE_8  AND  has embedded value
+ *     Identified by: field sds type is not SDS_TYPE_5  AND  has embedded value
  *
  *
  * Type 3: Value is an sds, referenced by pointer
@@ -101,7 +102,10 @@ enum {
     FIELD_SDS_AUX_BIT_ENTRY_EMBEDDED_VALUE_SDS16 = 3,
     FIELD_SDS_AUX_BIT_MAX
 };
-static_assert(FIELD_SDS_AUX_BIT_MAX < sizeof(char) - SDS_TYPE_BITS, "too many sds bits are used for entry metadata");
+static_assert(FIELD_SDS_AUX_BIT_MAX <= CHAR_BIT - SDS_TYPE_BITS, "too many sds bits are used for entry metadata");
+static_assert(EMBED_VALUE_MAX_ALLOC_SIZE <= ((1U << 16) - 1), "embedded entries must fit in an SDS16 value header");
+static_assert(EMBED_VALUE_MAX_SDS8_ALLOC_SIZE <= ((1U << 8) - 1), "SDS8 embedded entries must fit in an SDS8 value header");
+static_assert(EMBED_VALUE_MAX_SDS8_ALLOC_SIZE < EMBED_VALUE_MAX_ALLOC_SIZE, "SDS16 embedding must extend the SDS8 range");
 
 /* The entry pointer is the field sds, but that's an implementation detail. */
 sds entryGetField(const entry *entry) {
@@ -270,6 +274,10 @@ static inline size_t entryReqSize(size_t field_len,
     bool embed_value = false;
     if (value_len != SIZE_MAX) {
         if (alloc_size + embedded_value_alloc_size > EMBED_VALUE_MAX_SDS8_ALLOC_SIZE) {
+            /* SDS8 can only encode an alloc field up to 255 bytes. Embedded
+             * values receive the allocator's usable tail space, so switch to
+             * SDS16 before zmalloc_usable() size-class rounding can outgrow
+             * the SDS8 header. */
             value_sds_type = SDS_TYPE_16;
             embedded_value_alloc_size = sdsReqSize(value_len, value_sds_type);
             if (embedded_field_sds_type == SDS_TYPE_5) {
@@ -370,6 +378,7 @@ static entry *entryConstruct(size_t alloc_size,
     /* Check that the new entry was built correctly */
     debugServerAssert(sdsGetAuxBit(entryGetField(new_entry), FIELD_SDS_AUX_BIT_ENTRY_HAS_VALUE_PTR) == (embed_value ? 0 : 1));
     debugServerAssert(sdsGetAuxBit(entryGetField(new_entry), FIELD_SDS_AUX_BIT_ENTRY_HAS_EXPIRY) == (expiry_size > 0 ? 1 : 0));
+    debugServerAssert(!embed_value || embedded_value_sds_type != SDS_TYPE_16 || sdsType(entryGetField(new_entry)) != SDS_TYPE_5);
     debugServerAssert(!embed_value || sdsType((sds)entryGetValue(new_entry, NULL)) == embedded_value_sds_type);
     return new_entry;
 }
@@ -472,14 +481,14 @@ entry *entryUpdate(entry *e, sds value, mstime_t expiry) {
     int embedded_field_sds_type, embedded_value_sds_type;
     size_t expiry_size, embedded_value_size, embedded_field_size;
     size_t required_entry_size = entryReqSize(sdslen(field),
-                                             value_len,
-                                             expiry,
-                                             &embed_value,
-                                             &embedded_field_sds_type,
-                                             &embedded_field_size,
-                                             &expiry_size,
-                                             &embedded_value_size,
-                                             &embedded_value_sds_type);
+                                              value_len,
+                                              expiry,
+                                              &embed_value,
+                                              &embedded_field_sds_type,
+                                              &embedded_field_size,
+                                              &expiry_size,
+                                              &embedded_value_size,
+                                              &embedded_value_sds_type);
     size_t current_embedded_allocation_size = entryHasEmbeddedValue(e) ? entryMemUsage(e) : 0;
 
     bool expiry_add_remove = update_expiry && (curr_expiration_time == EXPIRY_NONE || expiry == EXPIRY_NONE); // In case we are toggling expiration

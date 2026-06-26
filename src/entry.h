@@ -20,11 +20,15 @@
 
 typedef struct _entry entry;
 
-/* The maximum allocation size we want to use for entries with embedded
- * values. Embedded values up to EMBED_VALUE_MAX_SDS8_ALLOC_SIZE use an SDS8
- * header. Larger embedded values use an SDS16 header, since allocator size
- * class rounding can make the embedded value allocation exceed SDS8's 255-byte
- * alloc field. */
+/* The maximum requested allocation size we use for entries with embedded
+ * values. Benchmarks show the useful range for this layout ends before the
+ * 512-byte value case, where the entry falls back to a value pointer and is
+ * neutral.
+ *
+ * Embedded values at or below EMBED_VALUE_MAX_SDS8_ALLOC_SIZE use an SDS8
+ * header. Larger embedded values use SDS16 because the embedded value inherits
+ * usable space from zmalloc_usable(), and allocator size-class rounding can
+ * otherwise make the value allocation exceed SDS8's 255-byte alloc field. */
 #define EMBED_VALUE_MAX_ALLOC_SIZE 512
 #define EMBED_VALUE_MAX_SDS8_ALLOC_SIZE 248
 

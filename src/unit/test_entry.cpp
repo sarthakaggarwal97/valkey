@@ -98,35 +98,79 @@ TEST_F(EntryTest, entryCreate) {
 }
 
 TEST_F(EntryTest, entryCreateEmbeddedSds16Boundary) {
+    auto filled_value = [](size_t len, char ch) {
+        sds value = sdsnewlen(nullptr, len);
+        memset(value, ch, len);
+        return value;
+    };
+
     sds field = sdsnew("field:000000000001");
-    sds value1 = sdsnewlen(nullptr, 256);
-    memset(value1, 'a', sdslen(value1));
+    size_t field_size = sdsReqSize(sdslen(field), sdsReqType(sdslen(field)));
+    size_t sds8_value_len = EMBED_VALUE_MAX_SDS8_ALLOC_SIZE - field_size - sdsHdrSize(SDS_TYPE_8) - 1;
+
+    sds value1 = filled_value(sds8_value_len, 'a');
     sds value_copy1 = sdsdup(value1);
 
     entry *e1 = entryCreate(field, value1, EXPIRY_NONE);
     verify_entry_properties(e1, field, value_copy1, EXPIRY_NONE, false, false);
-    ASSERT_EQ(sdsType((sds)entryGetValue(e1, nullptr)), SDS_TYPE_16);
+    ASSERT_EQ(sdsType((sds)entryGetValue(e1, nullptr)), SDS_TYPE_8);
     ASSERT_LE(entryMemUsage(e1), (size_t)EMBED_VALUE_MAX_ALLOC_SIZE);
 
-    sds value2 = sdsnewlen(nullptr, 480);
-    memset(value2, 'b', sdslen(value2));
+    sds value2 = filled_value(sds8_value_len + 1, 'b');
     sds value_copy2 = sdsdup(value2);
-    entry *e2 = entryUpdate(e1, value2, EXPIRY_NONE);
+    entry *e2 = entryCreate(field, value2, EXPIRY_NONE);
     verify_entry_properties(e2, field, value_copy2, EXPIRY_NONE, false, false);
     ASSERT_EQ(sdsType((sds)entryGetValue(e2, nullptr)), SDS_TYPE_16);
     ASSERT_LE(entryMemUsage(e2), (size_t)EMBED_VALUE_MAX_ALLOC_SIZE);
 
-    sds value3 = sdsnewlen(nullptr, 600);
-    memset(value3, 'c', sdslen(value3));
+    size_t field_size_with_expiry = sdsReqSize(sdslen(field), SDS_TYPE_8);
+    size_t expiry_sds8_value_len = EMBED_VALUE_MAX_SDS8_ALLOC_SIZE - sizeof(mstime_t) - field_size_with_expiry - sdsHdrSize(SDS_TYPE_8) - 1;
+    sds value3 = filled_value(expiry_sds8_value_len + 1, 'c');
     sds value_copy3 = sdsdup(value3);
-    entry *e3 = entryUpdate(e2, value3, EXPIRY_NONE);
-    verify_entry_properties(e3, field, value_copy3, EXPIRY_NONE, false, true);
+    entry *e3 = entryCreate(field, value3, 123);
+    verify_entry_properties(e3, field, value_copy3, 123, true, false);
+    ASSERT_EQ(sdsType((sds)entryGetValue(e3, nullptr)), SDS_TYPE_16);
+    ASSERT_LE(entryMemUsage(e3), (size_t)EMBED_VALUE_MAX_ALLOC_SIZE);
 
+    sds value4 = filled_value(480, 'd');
+    sds value_copy4 = sdsdup(value4);
+    entry *e4 = entryUpdate(e2, value4, EXPIRY_NONE);
+    verify_entry_properties(e4, field, value_copy4, EXPIRY_NONE, false, false);
+    ASSERT_EQ(sdsType((sds)entryGetValue(e4, nullptr)), SDS_TYPE_16);
+    ASSERT_LE(entryMemUsage(e4), (size_t)EMBED_VALUE_MAX_ALLOC_SIZE);
+
+    sds value5 = filled_value(600, 'e');
+    sds value_copy5 = sdsdup(value5);
+    entry *e5 = entryUpdate(e4, value5, EXPIRY_NONE);
+    verify_entry_properties(e5, field, value_copy5, EXPIRY_NONE, false, true);
+
+    sds value6 = filled_value(480, 'f');
+    sds value_copy6 = sdsdup(value6);
+    entry *e6 = entryUpdate(e5, value6, EXPIRY_NONE);
+    verify_entry_properties(e6, field, value_copy6, EXPIRY_NONE, false, false);
+    ASSERT_EQ(sdsType((sds)entryGetValue(e6, nullptr)), SDS_TYPE_16);
+
+    sds long_field = filled_value(260, 'g');
+    sds value7 = filled_value(16, 'h');
+    sds value_copy7 = sdsdup(value7);
+    entry *e7 = entryCreate(long_field, value7, EXPIRY_NONE);
+    verify_entry_properties(e7, long_field, value_copy7, EXPIRY_NONE, false, false);
+    ASSERT_EQ(sdsType(entryGetField(e7)), SDS_TYPE_16);
+    ASSERT_EQ(sdsType((sds)entryGetValue(e7, nullptr)), SDS_TYPE_16);
+
+    entryFree(e1);
     entryFree(e3);
+    entryFree(e6);
+    entryFree(e7);
     sdsfree(field);
+    sdsfree(long_field);
     sdsfree(value_copy1);
     sdsfree(value_copy2);
     sdsfree(value_copy3);
+    sdsfree(value_copy4);
+    sdsfree(value_copy5);
+    sdsfree(value_copy6);
+    sdsfree(value_copy7);
 }
 
 /**
@@ -433,7 +477,9 @@ TEST_F(EntryTest, entryMemUsage_entrySetExpiry_entryUpdate) {
     // Tests with non-embedded entry
     // Non-embedded entry without expiry
     sds field6 = sdsnew(LONG_FIELD);
-    field6 = sdscat(field6, LONG_FIELD); // Double the length to ensure non-embedded entry
+    while (sdslen(field6) < EMBED_VALUE_MAX_ALLOC_SIZE) {
+        field6 = sdscat(field6, LONG_FIELD);
+    }
     sds value6 = sdsnew(LONG_VALUE);
     sds value_copy6 = sdsdup(value6);
     long long expiry6 = EXPIRY_NONE;
