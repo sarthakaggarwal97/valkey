@@ -23,7 +23,8 @@ extern "C" {
 #define SHORT_FIELD "foo"
 #define SHORT_VALUE "bar"
 #define LONG_FIELD "k:123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890"
-#define LONG_VALUE "v:12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890"
+#define LONG_VALUE_CHUNK "v:1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890"
+#define LONG_VALUE LONG_VALUE_CHUNK LONG_VALUE_CHUNK LONG_VALUE_CHUNK LONG_VALUE_CHUNK LONG_VALUE_CHUNK
 
 class EntryTest : public ::testing::Test {
   protected:
@@ -94,6 +95,38 @@ TEST_F(EntryTest, entryCreate) {
     sdsfree(value_copy2);
     sdsfree(value_copy3);
     sdsfree(value_copy4);
+}
+
+TEST_F(EntryTest, entryCreateEmbeddedSds16Boundary) {
+    sds field = sdsnew("field:000000000001");
+    sds value1 = sdsnewlen(nullptr, 256);
+    memset(value1, 'a', sdslen(value1));
+    sds value_copy1 = sdsdup(value1);
+
+    entry *e1 = entryCreate(field, value1, EXPIRY_NONE);
+    verify_entry_properties(e1, field, value_copy1, EXPIRY_NONE, false, false);
+    ASSERT_EQ(sdsType((sds)entryGetValue(e1, nullptr)), SDS_TYPE_16);
+    ASSERT_LE(entryMemUsage(e1), (size_t)EMBED_VALUE_MAX_ALLOC_SIZE);
+
+    sds value2 = sdsnewlen(nullptr, 480);
+    memset(value2, 'b', sdslen(value2));
+    sds value_copy2 = sdsdup(value2);
+    entry *e2 = entryUpdate(e1, value2, EXPIRY_NONE);
+    verify_entry_properties(e2, field, value_copy2, EXPIRY_NONE, false, false);
+    ASSERT_EQ(sdsType((sds)entryGetValue(e2, nullptr)), SDS_TYPE_16);
+    ASSERT_LE(entryMemUsage(e2), (size_t)EMBED_VALUE_MAX_ALLOC_SIZE);
+
+    sds value3 = sdsnewlen(nullptr, 600);
+    memset(value3, 'c', sdslen(value3));
+    sds value_copy3 = sdsdup(value3);
+    entry *e3 = entryUpdate(e2, value3, EXPIRY_NONE);
+    verify_entry_properties(e3, field, value_copy3, EXPIRY_NONE, false, true);
+
+    entryFree(e3);
+    sdsfree(field);
+    sdsfree(value_copy1);
+    sdsfree(value_copy2);
+    sdsfree(value_copy3);
 }
 
 /**
@@ -427,7 +460,7 @@ TEST_F(EntryTest, entryMemUsage_entrySetExpiry_entryUpdate) {
     ASSERT_EQ(e8_entryMemUsage, e7_entryMemUsage);
 
     // Update to smaller value (keeping non-embedded)
-    // Memory usage should increase by at least the difference between LONG_VALUE and "x" (143)
+    // Memory usage should reflect replacing LONG_VALUE with "x".
     sds value9 = sdsnew("x");
     sds value_copy9 = sdsdup(value9);
     entry *e9 = entryUpdate(e8, value9, entryGetExpiry(e8));
