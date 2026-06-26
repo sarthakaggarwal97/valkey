@@ -336,6 +336,18 @@ static void zslDeleteNode(zskiplist *zsl, zskiplistNode *x, zskiplistNode **upda
     zsl->header.length--;
 }
 
+/* Delete the first node from the skiplist. */
+static void zslDeleteFirst(zskiplist *zsl, zskiplistNode *node) {
+    zskiplistNode *update[ZSKIPLIST_MAXLEVEL];
+    zskiplistNode *zheader = zslGetHeader(zsl);
+
+    serverAssert(zheader->level[0].forward == node);
+    for (int i = 0; i < zslGetHeight(zsl); i++) update[i] = zheader;
+
+    zslDeleteNode(zsl, node, update);
+    zslFreeNode(node);
+}
+
 /* Delete specified node from the skiplist. */
 static void zslDelete(zskiplist *zsl, zskiplistNode *node) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL];
@@ -3904,7 +3916,6 @@ void genericZpopCommand(client *c,
     int idx;
     robj *key = NULL;
     robj *zobj = NULL;
-    sds ele;
     double score;
 
     if (deleted) *deleted = 0;
@@ -3942,9 +3953,16 @@ void genericZpopCommand(client *c,
 
     long llen = zsetLength(zobj);
     long rangelen = (count > llen) ? llen : count;
+    char *events[2] = {"zpopmin", "zpopmax"};
 
     /* Remove the element. */
+    /* Replies are emitted before unlinking elements below, so defer output if
+     * keyspace notification modules may block the client. */
+    initDeferredReplyBuffer(c);
     do {
+        int first = (result_count == 0);
+        if (first) addZpopInitialReply(c, emitkey, use_nested_array, rangelen, key);
+
         if (zobj->encoding == OBJ_ENCODING_LISTPACK) {
             unsigned char *zl = objectGetVal(zobj);
             unsigned char *eptr, *sptr;
@@ -3956,15 +3974,22 @@ void genericZpopCommand(client *c,
             eptr = lpSeek(zl, where == ZSET_MAX ? -2 : 0);
             serverAssertWithInfo(c, zobj, eptr != NULL);
             vstr = lpGetValue(eptr, &vlen, &vlong);
-            if (vstr == NULL)
-                ele = sdsfromlonglong(vlong);
-            else
-                ele = sdsnewlen(vstr, vlen);
 
             /* Get the score. */
             sptr = lpNext(zl, eptr);
             serverAssertWithInfo(c, zobj, sptr != NULL);
             score = zzlGetScore(sptr);
+
+            if (use_nested_array) {
+                addReplyArrayLen(c, 2);
+            }
+            if (vstr)
+                addReplyBulkCBuffer(c, vstr, vlen);
+            else
+                addReplyBulkLongLong(c, vlong);
+            addReplyDouble(c, score);
+
+            objectSetVal(zobj, zzlDelete(zl, eptr));
         } else if (zobj->encoding == OBJ_ENCODING_SKIPLIST) {
             zset *zs = objectGetVal(zobj);
             zskiplist *zsl = zs->zsl;
@@ -3976,27 +4001,28 @@ void genericZpopCommand(client *c,
 
             /* There must be an element in the sorted set. */
             serverAssertWithInfo(c, zobj, zln != NULL);
-            ele = sdsdup(zslGetNodeElement(zln));
+            sds ele = zslGetNodeElement(zln);
             score = zln->score;
+
+            if (use_nested_array) {
+                addReplyArrayLen(c, 2);
+            }
+            addReplyBulkCBuffer(c, ele, sdslen(ele));
+            addReplyDouble(c, score);
+
+            void *entry;
+            serverAssertWithInfo(c, zobj, hashtablePop(zs->ht, ele, &entry));
+            serverAssertWithInfo(c, zobj, entry == zln);
+            if (where == ZSET_MIN)
+                zslDeleteFirst(zsl, zln);
+            else
+                zslDelete(zsl, zln);
         } else {
             serverPanic("Unknown sorted set encoding");
         }
 
-        serverAssertWithInfo(c, zobj, zsetDel(zobj, ele));
         server.dirty++;
-
-        if (result_count == 0) { /* Do this only for the first iteration. */
-            char *events[2] = {"zpopmin", "zpopmax"};
-            notifyKeyspaceEvent(NOTIFY_ZSET, events[where], key, c->db->id);
-            addZpopInitialReply(c, emitkey, use_nested_array, rangelen, key);
-        }
-
-        if (use_nested_array) {
-            addReplyArrayLen(c, 2);
-        }
-        addReplyBulkCBuffer(c, ele, sdslen(ele));
-        addReplyDouble(c, score);
-        sdsfree(ele);
+        if (first) notifyKeyspaceEvent(NOTIFY_ZSET, events[where], key, c->db->id);
         ++result_count;
     } while (--rangelen);
 
@@ -4008,6 +4034,7 @@ void genericZpopCommand(client *c,
         notifyKeyspaceEvent(NOTIFY_GENERIC, "del", key, c->db->id);
     }
     signalModifiedKey(c, c->db, key);
+    commitDeferredReplyBuffer(c, 1);
 
     if (c->cmd->proc == zmpopCommand) {
         /* Always replicate it as ZPOP[MIN|MAX] with COUNT option instead of ZMPOP. */
