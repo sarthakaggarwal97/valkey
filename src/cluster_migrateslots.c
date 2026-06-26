@@ -389,21 +389,30 @@ int clusterRDBSaveSlotImports(rio *rdb, int rdbver) {
 }
 
 /* Load a single slot import from the RDB. */
-int clusterRDBLoadSlotImport(rio *rdb) {
-    robj *job_name;
+static bool isValidSlotImportRange(uint64_t start_slot, uint64_t end_slot) {
+    return start_slot <= end_slot && end_slot < CLUSTER_SLOTS;
+}
+
+int clusterRDBLoadSlotImport(rio *rdb, int *is_corrupt) {
+    robj *job_name = NULL;
     list *slot_ranges = createSlotRangeList();
     uint64_t num_slot_ranges;
+    if (is_corrupt) *is_corrupt = 0;
+    if (!server.cluster_enabled || !server.cluster) goto invalid;
     if ((job_name = rdbLoadStringObject(rdb)) == NULL) goto err;
+    if (sdslen(objectGetVal(job_name)) != CLUSTER_NAMELEN) goto invalid;
     if ((num_slot_ranges = rdbLoadLen(rdb, NULL)) == RDB_LENERR) goto err;
+    if (num_slot_ranges == 0 || num_slot_ranges > CLUSTER_SLOTS) goto invalid;
     for (uint64_t i = 0; i < num_slot_ranges; i++) {
         uint64_t start_slot;
         uint64_t end_slot;
         if ((start_slot = rdbLoadLen(rdb, NULL)) == RDB_LENERR) goto err;
         if ((end_slot = rdbLoadLen(rdb, NULL)) == RDB_LENERR) goto err;
+        if (!isValidSlotImportRange(start_slot, end_slot)) goto invalid;
 
         slotRange *slot_range = zmalloc(sizeof(slotRange));
-        slot_range->start_slot = start_slot;
-        slot_range->end_slot = end_slot;
+        slot_range->start_slot = (int)start_slot;
+        slot_range->end_slot = (int)end_slot;
         listAddNodeTail(slot_ranges, slot_range);
     }
     slotMigrationJob *new_import = createSlotImportJob(NULL, NULL, objectGetVal(job_name), slot_ranges);
@@ -411,6 +420,8 @@ int clusterRDBLoadSlotImport(rio *rdb) {
     decrRefCount(job_name);
     return C_OK;
 
+invalid:
+    if (is_corrupt) *is_corrupt = 1;
 err:
     if (job_name) decrRefCount(job_name);
     if (slot_ranges) listRelease(slot_ranges);

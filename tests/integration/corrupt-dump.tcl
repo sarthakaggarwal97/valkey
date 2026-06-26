@@ -16,6 +16,14 @@ set run_oom_tests [expr {$arch_name == "x86_64" || $arch_name == "aarch64"}]
 
 set corrupt_payload_7445 "\x0E\x01\x1D\x1D\x00\x00\x00\x16\x00\x00\x00\x03\x00\x00\x04\x43\x43\x43\x43\x06\x04\x42\x42\x42\x42\x06\x3F\x41\x41\x41\x41\xFF\x09\x00\x88\xA5\xCA\xA8\xC5\x41\xF4\x35"
 
+proc write_invalid_slot_import_rdb {path} {
+    set fp [open $path w]
+    fconfigure $fp -translation binary -encoding binary
+    set name [string repeat "61" 40]
+    puts -nonewline $fp [binary format H* "56414c4b4559303830f328${name}018000004e208000004e20ff0000000000000000"]
+    close $fp
+}
+
 test {corrupt payload: #7445 - with sanitize} {
     start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
         catch {
@@ -181,6 +189,28 @@ test {corrupt payload: load corrupted rdb with empty keys} {
         verify_log_message 0 "*skipping empty key: zset_listpack*" 0
         verify_log_message 0 "*empty keys skipped: 9*" 0
     }
+}
+
+test {corrupt payload: invalid slot import metadata is rejected} {
+    set server_path [tmpdir "server.invalid-slot-import-rdb-test"]
+    set dump_rdb [file join $server_path "invalid-slot-import.rdb"]
+    write_invalid_slot_import_rdb $dump_rdb
+
+    catch {exec $::VALKEY_CHECK_RDB_BIN $dump_rdb} check_err
+    assert_match "*Invalid slot import range*" $check_err
+
+    set srv [start_server [list overrides [list "dir" $server_path "dbfilename" "invalid-slot-import.rdb" cluster-enabled yes cluster-config-file nodes.conf loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no]]]
+
+    wait_for_condition 100 50 {
+        ! [is_alive [dict get $srv pid]]
+    } else {
+        fail "rdb loading didn't fail"
+    }
+
+    set stdout [dict get $srv stdout]
+    assert_equal [count_message_lines $stdout "Invalid slot import metadata"] 1
+    assert_equal [count_message_lines $stdout "ASSERTION FAILED"] 0
+    kill_server $srv
 }
 
 test {corrupt payload: listpack invalid size header} {
@@ -806,4 +836,3 @@ test {corrupt payload: stream with duplicate consumer PEL entry} {
 }
 
 } ;# tags
-
