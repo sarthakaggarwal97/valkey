@@ -186,8 +186,10 @@ start_server {config "minimal.conf" tags {"external:skip"} overrides {enable-deb
                 set rd$i [valkey_deferring_client]
             }
 
-            # set a key that will be later be prefetch
-            r set a 0
+            # Set keys that will later be prefetched.
+            for {set i 1} {$i < 16} {incr i} {
+                r set prefetch-key-$i 0
+            }
 
             # Get the client ID of rd4
             $rd4 client id
@@ -200,9 +202,9 @@ start_server {config "minimal.conf" tags {"external:skip"} overrides {enable-deb
             # The first client will kill the fourth client
             $rd0 client kill id $rd4_id
 
-            # Send set commands for all clients except the first
+            # Send set commands for all clients except the first.
             for {set i 1} {$i < 16} {incr i} {
-                [set rd$i] set a $i
+                [set rd$i] set prefetch-key-$i $i
                 [set rd$i] flush
             }
 
@@ -222,7 +224,7 @@ start_server {config "minimal.conf" tags {"external:skip"} overrides {enable-deb
             assert_range $prefetch_batches 1 7; # With slower machines, the number of batches can be higher
 
             # Verify the final state
-            $rd15 get a
+            $rd15 get prefetch-key-15
             assert_equal {OK} [$rd15 read]
             assert_equal {15} [$rd15 read]
         }
