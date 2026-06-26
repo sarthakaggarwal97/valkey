@@ -41,6 +41,34 @@ start_cluster 1 1 {tags {external:skip cluster}} {
     }
 }
 
+tags {external:skip cluster} {
+    test "Cluster config rejects oversized node address" {
+        set server_path [tmpdir "server.cluster-long-node-address"]
+        set conf_path [file join $server_path "valkey.conf"]
+        set nodes_path [file join $server_path "nodes.conf"]
+        set node_id "0123456789abcdef0123456789abcdef01234567"
+        set long_ip [string repeat "a" 200]
+
+        set fd [open $nodes_path w]
+        puts $fd "$node_id ${long_ip}:7000@17000 myself,master - 0 0 0 connected 0-16383"
+        close $fd
+
+        set fd [open $conf_path w]
+        puts $fd "port 0"
+        puts $fd "cluster-enabled yes"
+        puts $fd "cluster-config-file nodes.conf"
+        puts $fd "dir $server_path"
+        puts $fd "logfile \"\""
+        puts $fd "use-exit-on-panic yes"
+        puts $fd "crash-memcheck-enabled no"
+        close $fd
+
+        assert_error {*Unrecoverable error: corrupted cluster config file*} {
+            exec $::VALKEY_SERVER_BIN $conf_path
+        }
+    }
+}
+
 # Create a folder called "nodes.conf" to trigger temp nodes.conf rename
 # failure and it will cause cluster config file save to fail at the rename.
 proc create_nodes_conf_folder {srv_idx} {
