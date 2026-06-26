@@ -297,11 +297,14 @@ static inline size_t entryReqSize(size_t field_len,
     return alloc_size;
 }
 
-/* Serialize the content of the entry into an allocated buffer buf.
- * Note that this function will take ownership of the value so user should not assume it is valid after this call. */
+/* Serialize the content of the entry into an allocated buffer.
+ * If owned_value is provided, this function consumes it. Otherwise the raw
+ * value span is copied. */
 static entry *entryConstruct(size_t alloc_size,
                              const_sds field,
-                             sds sds_value,
+                             const char *value,
+                             size_t value_len,
+                             sds owned_value,
                              stringRef *stringref_value,
                              mstime_t expiry,
                              bool embed_value,
@@ -309,7 +312,9 @@ static entry *entryConstruct(size_t alloc_size,
                              size_t expiry_size,
                              size_t embedded_value_sds_size,
                              size_t embedded_field_sds_size) {
-    serverAssert((sds_value == NULL && stringref_value == NULL && embed_value) || (sds_value != NULL && stringref_value == NULL) || (sds_value == NULL && stringref_value != NULL && !embed_value));
+    serverAssert((value != NULL && value_len != SIZE_MAX && stringref_value == NULL) ||
+                 (value_len == SIZE_MAX && owned_value == NULL && stringref_value != NULL && !embed_value));
+    serverAssert(owned_value == NULL || owned_value == value);
     size_t buf_size;
     /* allocate the buffer */
     char *buf = zmalloc_usable(alloc_size, &buf_size);
@@ -323,13 +328,19 @@ static entry *entryConstruct(size_t alloc_size,
     /* Set the value if exists */
     if (!embed_value) {
         /* The value is not embedded, the value pointer is written before the field data. */
-        *(void **)buf = sds_value ? (void *)sds_value : (void *)stringref_value;
+        if (stringref_value) {
+            *(void **)buf = stringref_value;
+        } else if (owned_value) {
+            *(void **)buf = owned_value;
+        } else {
+            *(void **)buf = sdsnewlen(value, value_len);
+        }
         buf += sizeof(void *);
         buf_size -= sizeof(void *);
-    } else if (sds_value) {
+    } else {
         /* The value is embedded, the value data is written after the field data. */
-        sdswrite(buf + embedded_field_sds_size, buf_size - embedded_field_sds_size, SDS_TYPE_8, sds_value, sdslen(sds_value));
-        sdsfree(sds_value);
+        sdswrite(buf + embedded_field_sds_size, buf_size - embedded_field_sds_size, SDS_TYPE_8, value, value_len);
+        if (owned_value) sdsfree(owned_value);
         buf_size -= embedded_value_sds_size;
     }
     /* Set the field data.  When we write the field into the buffer, the entry pointer is the returned
@@ -353,7 +364,18 @@ entry *entryCreate(const_sds field, sds value, mstime_t expiry) {
     size_t expiry_size, embedded_value_sds_size, embedded_field_sds_size;
     size_t value_len = value ? sdslen(value) : SIZE_MAX;
     size_t alloc_size = entryReqSize(sdslen(field), value_len, expiry, &embed_value, &embedded_field_sds_type, &embedded_field_sds_size, &expiry_size, &embedded_value_sds_size);
-    return entryConstruct(alloc_size, field, value, NULL, expiry, embed_value, embedded_field_sds_type, expiry_size, embedded_value_sds_size, embedded_field_sds_size);
+    return entryConstruct(alloc_size, field, value, value_len, value, NULL, expiry, embed_value,
+                          embedded_field_sds_type, expiry_size, embedded_value_sds_size, embedded_field_sds_size);
+}
+
+entry *entryCreateRawValue(const_sds field, const char *value, size_t value_len, mstime_t expiry) {
+    bool embed_value = false;
+    int embedded_field_sds_type;
+    size_t expiry_size, embedded_value_sds_size, embedded_field_sds_size;
+    size_t alloc_size = entryReqSize(sdslen(field), value_len, expiry, &embed_value, &embedded_field_sds_type,
+                                     &embedded_field_sds_size, &expiry_size, &embedded_value_sds_size);
+    return entryConstruct(alloc_size, field, value, value_len, NULL, NULL, expiry, embed_value,
+                          embedded_field_sds_type, expiry_size, embedded_value_sds_size, embedded_field_sds_size);
 }
 
 /* Sets the entry's value to a string reference object.
@@ -391,37 +413,35 @@ entry *entryUpdateAsStringRef(entry *e, const char *buf, size_t len, mstime_t ex
 
     size_t expiry_size = 0;
     if (expiry != EXPIRY_NONE) expiry_size = sizeof(expiry);
-    entry *new_entry = entryConstruct(alloc_size, field, NULL, value, expiry, false, SDS_TYPE_8, expiry_size, sizeof(value), field_size);
+    entry *new_entry =
+        entryConstruct(alloc_size, field, NULL, SIZE_MAX, NULL, value, expiry, false, SDS_TYPE_8, expiry_size, sizeof(value), field_size);
     entryFree(e);
 
     sdsSetAuxBit(entryGetField(new_entry), FIELD_SDS_AUX_BIT_ENTRY_HAS_STRING_REF, 1);
     return new_entry;
 }
 
-/* Modify the entry's value and/or expiration time.
- * In case the provided value is NULL, will use the existing value.
- * Note that the value ownership is moved to this function and the caller should assume the
- * value is no longer usable after calling this function. */
-entry *entryUpdate(entry *e, sds value, mstime_t expiry) {
+/* Shared update implementation for either an owned SDS or a borrowed raw value
+ * span. When owned_value is non-NULL it is consumed by this function. */
+static entry *entryUpdateRaw(entry *e,
+                             const char *value,
+                             size_t value_len,
+                             sds owned_value,
+                             mstime_t expiry,
+                             bool update_value) {
     sds field = entryGetField(e);
     entry *new_entry = NULL;
 
-    /* Update just the expiry field, no value change, of a string ref entry */
-    if (entryHasStringRef(e) && !value) {
+    /* Update just the expiry field, no value change, of a string ref entry. */
+    if (entryHasStringRef(e) && !update_value) {
         stringRef *value = entryGetStringRefRef(e);
         return entryUpdateAsStringRef(e, value->buf, value->len, expiry);
     }
-    bool update_value = value ? true : false;
     mstime_t curr_expiration_time = entryGetExpiry(e);
     bool update_expiry = (expiry != curr_expiration_time) ? true : false;
     /* Just a sanity check. If nothing changes, lets just return */
     if (!update_value && !update_expiry) return e;
-    size_t value_len = SIZE_MAX;
-    if (value) {
-        value_len = sdslen(value);
-    } else {
-        value = entryGetValue(e, &value_len);
-    }
+    if (!update_value) value = entryGetValue(e, &value_len);
     bool embed_value = false;
     int embedded_field_sds_type;
     size_t expiry_size, embedded_value_size, embedded_field_size;
@@ -459,28 +479,33 @@ entry *entryUpdate(entry *e, sds value, mstime_t expiry) {
                  * Since we can potentially write here a smaller value, which requires less allocation space, we would like to
                  * inherit the old value memory allocation size. */
                 size_t value_size = sdsHdrSize(SDS_TYPE_8) + sdsalloc(old_value) + 1;
-                sdswrite(sdsAllocPtr(old_value), value_size, SDS_TYPE_8, value, sdslen(value));
-                sdsfree(value);
+                sdswrite(sdsAllocPtr(old_value), value_size, SDS_TYPE_8, value, value_len);
+                if (owned_value) sdsfree(owned_value);
             } else {
-                entrySetValueSds(e, value);
+                entrySetValueSds(e, owned_value ? owned_value : sdsnewlen(value, value_len));
             }
         }
         new_entry = e;
 
     } else {
+        sds construct_value = owned_value;
         if (!update_value) {
             /* Check if the value can be reused. In case the original entry value is
              * embedded WE WILL HAVE TO DUPLICATE IT if not we have to duplicate it,
              * remove it from the original entry since we are going to delete it. */
             if (entryHasEmbeddedValue(e)) {
-                value = sdsdup(value);
+                construct_value = sdsdup(value);
+                value = construct_value;
             } else {
                 void **value_ref = entryGetValueRef(e);
+                construct_value = *value_ref;
+                value = construct_value;
                 *value_ref = NULL;
             }
         }
         /* allocate the buffer for a new entry */
-        new_entry = entryConstruct(required_entry_size, field, value, NULL, expiry, embed_value, embedded_field_sds_type, expiry_size, embedded_value_size, embedded_field_size);
+        new_entry = entryConstruct(required_entry_size, field, value, value_len, construct_value, NULL, expiry, embed_value,
+                                   embedded_field_sds_type, expiry_size, embedded_value_size, embedded_field_size);
         entryFree(e);
     }
     /* Check that the new entry was built correctly */
@@ -488,6 +513,19 @@ entry *entryUpdate(entry *e, sds value, mstime_t expiry) {
     debugServerAssert(sdsGetAuxBit(entryGetField(new_entry), FIELD_SDS_AUX_BIT_ENTRY_HAS_EXPIRY) == (expiry_size > 0 ? 1 : 0));
     serverAssert(new_entry);
     return new_entry;
+}
+
+/* Modify the entry's value and/or expiration time.
+ * In case the provided value is NULL, will use the existing value.
+ * Note that the value ownership is moved to this function and the caller should assume the
+ * value is no longer usable after calling this function. */
+entry *entryUpdate(entry *e, sds value, mstime_t expiry) {
+    return entryUpdateRaw(e, value, value ? sdslen(value) : SIZE_MAX, value, expiry, value != NULL);
+}
+
+entry *entryUpdateRawValue(entry *e, const char *value, size_t value_len, mstime_t expiry) {
+    serverAssert(value_len != SIZE_MAX);
+    return entryUpdateRaw(e, value, value_len, NULL, expiry, true);
 }
 
 /* Returns memory usage of a entry, including all allocations owned by
