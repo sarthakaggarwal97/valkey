@@ -38,6 +38,6 @@ void clusterCleanSlotImportsOnPromotion(void);
 void clusterCleanSlotImportsBeforeLoad(void);
 void clusterCleanSlotImportsAfterLoad(void);
 int clusterRDBSaveSlotImports(rio *rdb, int rdbver);
-int clusterRDBLoadSlotImport(rio *rdb);
+int clusterRDBLoadSlotImport(rio *rdb, int *is_corrupt);
 
 #endif /* __CLUSTER_MIGRATESLOTS_H */

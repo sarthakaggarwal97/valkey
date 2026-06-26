@@ -3279,7 +3279,14 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             }
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_SLOT_IMPORT) {
-            if (clusterRDBLoadSlotImport(rdb) == C_ERR) goto eoferr;
+            int is_corrupt = 0;
+            if (clusterRDBLoadSlotImport(rdb, &is_corrupt) == C_ERR) {
+                if (is_corrupt) {
+                    rdbReportCorruptRDB("Invalid slot import metadata");
+                    return RDB_FAILED;
+                }
+                goto eoferr;
+            }
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_AUX) {
             /* AUX: generic string-string fields. Use to add state to RDB

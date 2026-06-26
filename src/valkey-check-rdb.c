@@ -29,6 +29,7 @@
 
 #include "mt19937-64.h"
 #include "server.h"
+#include "cluster.h"
 #include "rdb.h"
 #include "module.h"
 #include "hdr_histogram.h"
@@ -704,12 +705,27 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
         } else if (type == RDB_OPCODE_SLOT_IMPORT) {
             robj *job_name;
             if ((job_name = rdbLoadStringObject(&rdb)) == NULL) goto eoferr;
+            if (sdslen(objectGetVal(job_name)) != CLUSTER_NAMELEN) {
+                decrRefCount(job_name);
+                rdbCheckError("Invalid slot import job name");
+                goto err;
+            }
             decrRefCount(job_name);
             uint64_t num_slot_ranges;
             if ((num_slot_ranges = rdbLoadLen(&rdb, NULL)) == RDB_LENERR) goto eoferr;
+            if (num_slot_ranges == 0 || num_slot_ranges > CLUSTER_SLOTS) {
+                rdbCheckError("Invalid slot import range count");
+                goto err;
+            }
             for (uint64_t i = 0; i < num_slot_ranges; i++) {
-                if (rdbLoadLen(&rdb, NULL) == RDB_LENERR) goto eoferr;
-                if (rdbLoadLen(&rdb, NULL) == RDB_LENERR) goto eoferr;
+                uint64_t start_slot;
+                uint64_t end_slot;
+                if ((start_slot = rdbLoadLen(&rdb, NULL)) == RDB_LENERR) goto eoferr;
+                if ((end_slot = rdbLoadLen(&rdb, NULL)) == RDB_LENERR) goto eoferr;
+                if (start_slot > end_slot || end_slot >= CLUSTER_SLOTS) {
+                    rdbCheckError("Invalid slot import range");
+                    goto err;
+                }
             }
             continue; /* Read type again. */
         } else if (type == RDB_OPCODE_AUX) {
