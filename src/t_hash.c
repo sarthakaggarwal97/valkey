@@ -1096,6 +1096,55 @@ static void addHashFieldToReply(client *c, robj *o, sds field) {
     }
 }
 
+/* Add a hash field value to the reply and delete the field using the same
+ * located entry. Returns true when a field was deleted. */
+static bool addHashFieldToReplyAndDelete(client *c, robj *o, sds field) {
+    if (o == NULL) {
+        addReplyNull(c);
+        return false;
+    }
+
+    if (o->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *zl = objectGetVal(o);
+        unsigned char *fptr = lpFirst(zl);
+        if (fptr != NULL) fptr = lpFind(zl, fptr, (unsigned char *)field, sdslen(field), 1);
+        if (fptr == NULL) {
+            addReplyNull(c);
+            return false;
+        }
+
+        unsigned char *vptr = lpNext(zl, fptr);
+        serverAssert(vptr != NULL);
+        unsigned int vlen;
+        long long vll;
+        unsigned char *vstr = lpGetValue(vptr, &vlen, &vll);
+        if (vstr)
+            addReplyBulkCBuffer(c, vstr, vlen);
+        else
+            addReplyBulkLongLong(c, vll);
+
+        zl = lpDeleteRangeWithEntry(zl, &fptr, 2);
+        objectSetVal(o, zl);
+        return true;
+    } else if (o->encoding == OBJ_ENCODING_HASHTABLE) {
+        void *entry = NULL;
+        if (!hashtablePop(objectGetVal(o), field, &entry)) {
+            addReplyNull(c);
+            return false;
+        }
+
+        size_t len = 0;
+        char *value = entryGetValue(entry, &len);
+        serverAssert(value != NULL);
+        addReplyBulkCBuffer(c, value, len);
+        hashTypeUntrackEntry(o, entry);
+        entryFree(entry);
+        return true;
+    } else {
+        serverPanic("Unknown hash encoding");
+    }
+}
+
 void hgetCommand(client *c) {
     robj *o;
 
@@ -1188,11 +1237,7 @@ void hgetdelCommand(client *c) {
     /* Reply with array of values and delete at the same time */
     addReplyArrayLen(c, num_fields);
     for (i = fields_index; i < c->argc; i++) {
-        addHashFieldToReply(c, o, objectGetVal(c->argv[i]));
-
-        /* If hash doesn't exist, continue as already replied with NULL */
-        if (o == NULL) continue;
-        if (hashTypeDelete(o, objectGetVal(c->argv[i]))) {
+        if (addHashFieldToReplyAndDelete(c, o, objectGetVal(c->argv[i]))) {
             deleted++;
             if (hashTypeLength(o) == 0) {
                 if (hash_volatile_items) dbUntrackKeyWithVolatileItems(c->db, o);

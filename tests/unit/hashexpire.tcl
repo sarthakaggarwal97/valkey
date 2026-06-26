@@ -1942,6 +1942,17 @@ start_server {tags {"hashexpire"}} {
         assert_equal -1 [r HTTL myhash FIELDS 1 f1]
     }
 
+    test {HGETDEL on field with TTL, then re-add and check TTL is gone} {
+        r FLUSHALL
+        r HSET myhash f1 v1 f2 v2
+        r HEXPIRE myhash 10000 FIELDS 1 f1
+        assert_morethan [r HTTL myhash FIELDS 1 f1] 0
+        assert_equal {v1 v2 {}} [r HGETDEL myhash FIELDS 3 f1 f2 missing]
+        assert_equal 0 [r EXISTS myhash]
+        r HSET myhash f1 v3
+        assert_equal -1 [r HTTL myhash FIELDS 1 f1]
+    }
+
     ## expired_fields Tests ####
     test {expired_fields metric increments by one when single hash field expires} {
         r FLUSHALL
