@@ -1513,6 +1513,21 @@ struct client *createAOFClient(void) {
     return c;
 }
 
+static int parseAofRespLong(char *buf, char prefix, long *target) {
+    char *eptr;
+
+    if (buf[0] != prefix || buf[1] == '\0') return C_ERR;
+
+    errno = 0;
+    long value = strtol(buf + 1, &eptr, 10);
+    if (eptr == buf + 1 || errno != 0 || eptr[0] != '\r' || eptr[1] != '\n' || eptr[2] != '\0') {
+        return C_ERR;
+    }
+
+    *target = value;
+    return C_OK;
+}
+
 /* Replay an append log file. On success AOF_OK or AOF_TRUNCATED is returned,
  * otherwise, one of the following is returned:
  * AOF_OPEN_ERR: Failed to open the AOF file.
@@ -1597,7 +1612,7 @@ int loadSingleAppendOnlyFile(char *filename) {
     /* Read the actual AOF file, in REPL format, command by command. */
     while (1) {
         int argc, j;
-        unsigned long len;
+        long len;
         robj **argv;
         char buf[AOF_ANNOTATION_LINE_MAX_LEN];
         sds argsds;
@@ -1619,11 +1634,10 @@ int loadSingleAppendOnlyFile(char *filename) {
             }
         }
         if (buf[0] == '#') continue; /* Skip annotations */
-        if (buf[0] != '*') goto fmterr;
-        if (buf[1] == '\0') goto readerr;
-        argc = atoi(buf + 1);
-        if (argc < 1) goto fmterr;
-        if ((size_t)argc > SIZE_MAX / sizeof(robj *)) goto fmterr;
+        long argc_long;
+        if (parseAofRespLong(buf, '*', &argc_long) == C_ERR) goto fmterr;
+        if (argc_long < 1 || argc_long > INT_MAX) goto fmterr;
+        argc = argc_long;
 
         /* Load the next command in the AOF as our fake client
          * argv. */
@@ -1643,7 +1657,11 @@ int loadSingleAppendOnlyFile(char *filename) {
                 else
                     goto fmterr;
             }
-            len = strtol(buf + 1, NULL, 10);
+            if (parseAofRespLong(buf, '$', &len) == C_ERR || len < 0) {
+                fakeClient->argc = j; /* Free up to j-1. */
+                freeClientArgv(fakeClient);
+                goto fmterr;
+            }
 
             /* Read it into a string object. */
             argsds = sdsnewlen(SDS_NOINIT, len);

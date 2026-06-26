@@ -81,6 +81,17 @@ tags {"aof external:skip logreqres:skip"} {
         }
     }
 
+    ## Test that the server exits cleanly when the AOF contains a negative bulk length
+    create_aof $aof_dirpath $aof_file {
+        append_to_aof "*1\r\n\$-1\r\n\r\n"
+    }
+
+    start_server_aof_ex [list dir $server_path aof-load-truncated yes] [list wait_ready false] {
+        test "Negative bulk length: Server should have logged an error" {
+            wait_for_log_messages 0 {"*Bad file format reading the append only file*"} 0 10 1000
+        }
+    }
+
     ## Test the server doesn't start when the AOF contains an unfinished MULTI
     create_aof $aof_dirpath $aof_file {
         append_to_aof [formatCommand set foo hello]
