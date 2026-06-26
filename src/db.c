@@ -350,8 +350,8 @@ static void dbSetValue(serverDb *db, robj *key, robj **valref, int overwrite, vo
     int embed_raw_string = embed_raw && objectCanEmbedRawString(val, objectGetVal(key), expire);
 
     if (!embed_raw_string &&
-        (old->refcount == 1 && old->encoding != OBJ_ENCODING_EMBSTR) &&
-        (val->refcount == 1 && val->encoding != OBJ_ENCODING_EMBSTR)) {
+        (old->refcount == 1 && !isEmbeddedStringEncoding(old->encoding)) &&
+        (val->refcount == 1 && !isEmbeddedStringEncoding(val->encoding))) {
         /* Keep old object in the database. Just swap it's ptr, type and
          * encoding with the content of val. */
         int tmp_type = old->type;

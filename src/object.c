@@ -49,7 +49,7 @@
  * so if expire is set later, we don't need to reallocate the object. */
 #define KEY_SIZE_TO_INCLUDE_EXPIRE_THRESHOLD 128
 #define EMBSTR_SIZE_LIMIT 128
-#define KEYSPACE_EMBSTR_SIZE_LIMIT 256
+#define KEYSPACE_EMBSTR_SIZE_LIMIT 512
 
 /* ===================== Creation and parsing of objects ==================== */
 
@@ -160,7 +160,8 @@ static robj *createEmbeddedStringObjectWithKeyAndExpire(const char *val_ptr,
     size_t key_sds_len = has_embkey ? sdslen(key) : 0;
     char key_sds_type = has_embkey ? sdsReqType(key_sds_len) : 0;
     size_t key_sds_size = has_embkey ? sdsReqSize(key_sds_len, key_sds_type) : 0;
-    size_t val_sds_size = sdsReqSize(val_len, SDS_TYPE_8);
+    char val_sds_type = has_embkey && val_len > sdsTypeMaxSize(SDS_TYPE_8) ? SDS_TYPE_16 : SDS_TYPE_8;
+    size_t val_sds_size = sdsReqSize(val_len, val_sds_type);
     if (val_sds_size < sizeof(void *)) {
         val_sds_size = sizeof(void *); /* Ensure it's possible to "unembed" value later */
     }
@@ -180,7 +181,7 @@ static robj *createEmbeddedStringObjectWithKeyAndExpire(const char *val_ptr,
     size_t bufsize = 0;
     robj *o = zmalloc_usable(min_size, &bufsize);
     o->type = OBJ_STRING;
-    o->encoding = OBJ_ENCODING_EMBSTR;
+    o->encoding = val_sds_type == SDS_TYPE_16 ? OBJ_ENCODING_EMBSTR16 : OBJ_ENCODING_EMBSTR;
     o->refcount = 1;
     o->lru = 0;
     o->hasexpire = (expire != EXPIRY_NONE);
@@ -210,15 +211,14 @@ static robj *createEmbeddedStringObjectWithKeyAndExpire(const char *val_ptr,
         data += key_sds_size;
     }
 
-    /* Copy embedded value (EMBSTR) always as SDS TYPE 8. Account for unused
-     * memory in the SDS alloc field. */
+    /* Copy embedded value. Account for unused memory in the SDS alloc field. */
     size_t remaining_size = bufsize - (data - (char *)(void *)o);
-    size_t max_sds8_size = sdsReqSize(sdsTypeMaxSize(SDS_TYPE_8), SDS_TYPE_8);
-    if (remaining_size > max_sds8_size) remaining_size = max_sds8_size;
+    size_t max_sds_size = sdsReqSize(sdsTypeMaxSize(val_sds_type), val_sds_type);
+    if (remaining_size > max_sds_size) remaining_size = max_sds_size;
 
-    assert(val_len <= sdsTypeMaxSize(SDS_TYPE_8));
-    assert(remaining_size >= sdsReqSize(val_len, SDS_TYPE_8));
-    sdswrite(data, remaining_size, SDS_TYPE_8, val_ptr, val_len);
+    assert(val_len <= sdsTypeMaxSize(val_sds_type));
+    assert(remaining_size >= sdsReqSize(val_len, val_sds_type));
+    sdswrite(data, remaining_size, val_sds_type, val_ptr, val_len);
 
     return o;
 }
@@ -231,7 +231,8 @@ static robj *createEmbeddedStringObject(const char *ptr, size_t len) {
 }
 
 static size_t embeddedStringObjectMinSize(size_t val_len, const_sds key, long long expire) {
-    size_t val_sds_size = sdsReqSize(val_len, SDS_TYPE_8);
+    char val_sds_type = key && val_len > sdsTypeMaxSize(SDS_TYPE_8) ? SDS_TYPE_16 : SDS_TYPE_8;
+    size_t val_sds_size = sdsReqSize(val_len, val_sds_type);
     if (val_sds_size < sizeof(void *)) val_sds_size = sizeof(void *);
 
     size_t size = sizeof(robj) - sizeof(void *); /* reusing 'ptr' memory when embedding */
@@ -263,7 +264,8 @@ static bool shouldEmbedStringObject(size_t val_len, const_sds key, long long exp
     /* Keep keyless EMBSTRs within the long-standing 128 byte limit. For keyspace
      * values, allow a larger object only when jemalloc's size classes make the
      * single allocation smaller than the raw object plus value SDS allocation. */
-    if (val_len > sdsTypeMaxSize(SDS_TYPE_8)) return false;
+    if (!key && val_len > sdsTypeMaxSize(SDS_TYPE_8)) return false;
+    if (key && val_len > sdsTypeMaxSize(SDS_TYPE_16)) return false;
 
     size_t size = embeddedStringObjectMinSize(val_len, key, expire);
     if (size <= EMBSTR_SIZE_LIMIT) return true;
@@ -302,6 +304,7 @@ static robj *createStringObjectWithKeyAndExpire(const char *ptr, size_t len, con
 
 void *objectGetVal(const robj *o) {
     if (o->hasembval) {
+        char val_sds_type = o->encoding == OBJ_ENCODING_EMBSTR16 ? SDS_TYPE_16 : SDS_TYPE_8;
         unsigned char *data = objectEmbeddedData(o);
         if (o->hasexpire) {
             /* Skip expire field */
@@ -313,7 +316,7 @@ void *objectGetVal(const robj *o) {
             data += 1 + hdr_size;                /* +1 for header size byte */
             data += sdslen((const_sds)data) + 1; /* +1 for null terminator */
         }
-        return data + sdsHdrSize(SDS_TYPE_8);
+        return data + sdsHdrSize(val_sds_type);
     } else {
         return o->val_ptr;
     }
@@ -371,7 +374,7 @@ void objectSetVal(robj *o, void *val) {
  * object. Consider using dbUnshareStringValue() or similar if at all possible */
 void objectUnembedVal(robj *o) {
     assert(o->hasembval);
-    assert(o->encoding == OBJ_ENCODING_EMBSTR);
+    assert(isEmbeddedStringEncoding(o->encoding));
 
     const_sds embedded_sds = objectGetVal(o);
     assert(sdsAllocSize(embedded_sds) >= sizeof(void *));
@@ -380,7 +383,7 @@ void objectUnembedVal(robj *o) {
 
     /* shift remaining embedded data out of val_ptr location */
     ptrdiff_t embedded_data_size = (unsigned char *)embedded_sds - objectEmbeddedData(o);
-    embedded_data_size -= sdsHdrSize(SDS_TYPE_8);
+    embedded_data_size -= sdsHdrSize(sdsType(embedded_sds));
     memmove(objectEmbeddedData(o) + sizeof(void *), objectEmbeddedData(o), embedded_data_size);
 
     o->hasembval = 0;
@@ -392,7 +395,7 @@ void objectUnembedVal(robj *o) {
  * the old object's reference counter is decremented and possibly freed. Use the
  * returned object instead of 'o' after calling this function. */
 static robj *objectSetKeyAndExpireInternal(robj *o, const_sds key, long long expire, int embed_raw) {
-    if (o->type == OBJ_STRING && o->encoding == OBJ_ENCODING_EMBSTR) {
+    if (o->type == OBJ_STRING && isEmbeddedStringEncoding(o->encoding)) {
         robj *new = createStringObjectWithKeyAndExpire(objectGetVal(o), sdslen(objectGetVal(o)), key, expire);
         new->lru = o->lru;
         decrRefCount(o);
@@ -513,7 +516,8 @@ robj *createStringObjectFromLongDouble(long double value, int humanfriendly) {
 }
 
 /* Duplicate a string object, with the guarantee that the returned object
- * has the same encoding as the original one.
+ * has the same encoding as the original one when the encoding is valid outside
+ * the keyspace.
  *
  * This function also guarantees that duplicating a small integer object
  * (or a string object that contains a representation of a small integer)
@@ -528,6 +532,7 @@ robj *dupStringObject(const robj *o) {
     switch (o->encoding) {
     case OBJ_ENCODING_RAW: return createRawStringObject(objectGetVal(o), sdslen(objectGetVal(o)));
     case OBJ_ENCODING_EMBSTR: return createEmbeddedStringObject(objectGetVal(o), sdslen(objectGetVal(o)));
+    case OBJ_ENCODING_EMBSTR16: return createRawStringObject(objectGetVal(o), sdslen(objectGetVal(o)));
     case OBJ_ENCODING_INT:
         d = createObject(OBJ_STRING, NULL);
         d->encoding = OBJ_ENCODING_INT;
@@ -953,7 +958,7 @@ robj *tryObjectEncodingEx(robj *o, int try_trim) {
             o->encoding = OBJ_ENCODING_INT;
             o->val_ptr = (void *)value;
             return o;
-        } else if (o->encoding == OBJ_ENCODING_EMBSTR) {
+        } else if (isEmbeddedStringEncoding(o->encoding)) {
             decrRefCount(o);
             return createStringObjectFromLongLongForValue(value);
         }
@@ -964,7 +969,7 @@ robj *tryObjectEncodingEx(robj *o, int try_trim) {
      * In this representation the object and the SDS string are allocated
      * in the same chunk of memory to save space and cache misses. */
     if (shouldEmbedStringObject(len, NULL, EXPIRY_NONE)) {
-        if (o->encoding == OBJ_ENCODING_EMBSTR) return o;
+        if (isEmbeddedStringEncoding(o->encoding)) return o;
         robj *emb = createEmbeddedStringObject(s, sdslen(s));
         decrRefCount(o);
         return emb;
@@ -1236,7 +1241,8 @@ char *strEncoding(int encoding) {
     case OBJ_ENCODING_LISTPACK: return "listpack";
     case OBJ_ENCODING_INTSET: return "intset";
     case OBJ_ENCODING_SKIPLIST: return "skiplist";
-    case OBJ_ENCODING_EMBSTR: return "embstr";
+    case OBJ_ENCODING_EMBSTR:
+    case OBJ_ENCODING_EMBSTR16: return "embstr";
     case OBJ_ENCODING_STREAM: return "stream";
     default: return "unknown";
     }
@@ -1257,7 +1263,7 @@ size_t objectComputeSize(robj *key, robj *o, size_t sample_size, int dbid) {
     if (o->type == OBJ_STRING) {
         if (o->encoding == OBJ_ENCODING_RAW) {
             asize += sdsAllocSize(objectGetVal(o));
-        } else if (o->encoding != OBJ_ENCODING_INT && o->encoding != OBJ_ENCODING_EMBSTR) {
+        } else if (o->encoding != OBJ_ENCODING_INT && !isEmbeddedStringEncoding(o->encoding)) {
             serverPanic("Unknown string encoding");
         }
     } else if (o->type == OBJ_LIST) {

@@ -152,6 +152,34 @@ TEST_F(ObjectTest, embedded_string_with_key_uses_jemalloc_size_classes) {
     sdsfree(key);
     decrRefCount(embstr_obj);
 }
+
+TEST_F(ObjectTest, embedded_string_with_key_uses_sds16_for_larger_values) {
+    sds key = sdsnew("k:123456789012345678901234567890");
+    ASSERT_EQ(sdslen(key), 32u);
+
+    char value[321];
+    memset(value, 'v', sizeof(value) - 1);
+    value[sizeof(value) - 1] = '\0';
+
+    robj *val_obj = createStringObject(value, sizeof(value) - 1);
+    ASSERT_EQ(val_obj->encoding, (unsigned)OBJ_ENCODING_RAW);
+
+    robj *embstr_obj = objectSetKeyAndExpireEmbeddingRaw(val_obj, key, -1);
+    ASSERT_EQ(embstr_obj->encoding, (unsigned)OBJ_ENCODING_EMBSTR16);
+    ASSERT_EQ(sdsType((sds)objectGetVal(embstr_obj)), SDS_TYPE_16);
+    ASSERT_EQ(sdslen(objectGetKey(embstr_obj)), 32u);
+    ASSERT_EQ(sdscmp(objectGetKey(embstr_obj), key), 0);
+    ASSERT_EQ(sdslen((sds)objectGetVal(embstr_obj)), sizeof(value) - 1);
+    ASSERT_EQ(memcmp(objectGetVal(embstr_obj), value, sizeof(value) - 1), 0);
+
+    objectUnembedVal(embstr_obj);
+    ASSERT_EQ(embstr_obj->encoding, (unsigned)OBJ_ENCODING_RAW);
+    ASSERT_EQ(sdslen((sds)objectGetVal(embstr_obj)), sizeof(value) - 1);
+    ASSERT_EQ(memcmp(objectGetVal(embstr_obj), value, sizeof(value) - 1), 0);
+
+    sdsfree(key);
+    decrRefCount(embstr_obj);
+}
 #endif
 
 TEST_F(ObjectTest, embedded_value) {

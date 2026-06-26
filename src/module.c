@@ -3087,7 +3087,7 @@ static ValkeyModuleString *moduleAssertUnsharedString(ValkeyModuleString *str) {
                               "for API usage correctness.");
         return NULL;
     }
-    if (str->encoding == OBJ_ENCODING_EMBSTR) {
+    if (isEmbeddedStringEncoding(str->encoding)) {
         /* Note: here we "leak" the additional allocation that was
          * used in order to store the embedded string in the object. */
         objectUnembedVal(str);

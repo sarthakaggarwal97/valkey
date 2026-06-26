@@ -184,6 +184,7 @@ size_t getStringObjectLen(robj *o) {
     switch (o->encoding) {
     case OBJ_ENCODING_RAW: return sdslen(objectGetVal(o));
     case OBJ_ENCODING_EMBSTR: return sdslen(objectGetVal(o));
+    case OBJ_ENCODING_EMBSTR16: return sdslen(objectGetVal(o));
     default: return 0; /* Just integer encoding for now. */
     }
 }
@@ -4156,7 +4157,7 @@ static void prefetchCommandQueueKeys(client *c) {
         void *entry;
         if (hashtableIncrementalFindGetResult(&key_incr_states[i], &entry)) {
             robj *val = entry;
-            /* TODO? Prefetch all types and encodings except OBJ_ENCODING_EMBSTR
+            /* TODO? Prefetch all types and encodings except embedded strings
              * and OBJ_ENCODING_INT. */
             if (val->encoding == OBJ_ENCODING_RAW && val->type == OBJ_STRING) {
                 valkey_prefetch(objectGetVal(val));

@@ -648,7 +648,7 @@ const void *hashtableObjectGetKey(const void *entry) {
 /* Prefetch the value if it's not embedded. */
 void hashtableObjectPrefetchValue(const void *entry) {
     const robj *obj = entry;
-    if (obj->encoding != OBJ_ENCODING_EMBSTR &&
+    if (!isEmbeddedStringEncoding(obj->encoding) &&
         obj->encoding != OBJ_ENCODING_INT) {
         valkey_prefetch(objectGetVal(obj));
     }
