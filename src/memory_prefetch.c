@@ -33,6 +33,7 @@ typedef struct PrefetchCommandsBatch {
     size_t executed_commands;       /* Number of commands executed in the current batch */
     int *slots;                     /* Array of slots for each key */
     void **keys;                    /* Array of keys to prefetch in the current batch */
+    robj *last_key;                 /* Last key added; used to skip consecutive duplicates. */
     client **clients;               /* Array of clients in the current batch */
     hashtable **keys_tables;        /* Main table for each key */
     KeyPrefetchInfo *prefetch_info; /* Prefetch info for each key */
@@ -173,6 +174,7 @@ static void resetCommandsBatch(void) {
     batch->key_count = 0;
     batch->client_count = 0;
     batch->executed_commands = 0;
+    batch->last_key = NULL;
 }
 
 /* Prefetch command-related data:
@@ -248,9 +250,12 @@ static void addCommandToBatch(struct serverCommand *cmd, robj **argv, int argc, 
     initGetKeysResult(&result);
     int num_keys = getKeysFromCommand(cmd, argv, argc, &result);
     for (int i = 0; i < num_keys && batch->key_count < batch->max_prefetch_size; i++) {
-        batch->keys[batch->key_count] = argv[result.keys[i].pos];
+        robj *key = argv[result.keys[i].pos];
+        if (batch->last_key && equalStringObjects(batch->last_key, key)) continue;
+        batch->keys[batch->key_count] = key;
         batch->slots[batch->key_count] = slot >= 0 ? slot : 0;
         batch->keys_tables[batch->key_count] = kvstoreGetHashtable(db->keys, batch->slots[batch->key_count]);
+        batch->last_key = key;
         batch->key_count++;
     }
     getKeysFreeResult(&result);
