@@ -47,6 +47,7 @@ static keyStatus expireIfNeededWithDictIndex(serverDb *db, robj *key, robj *val,
 static keyStatus expireIfNeeded(serverDb *db, robj *key, robj *val, int flags);
 static int keyIsExpiredWithDictIndex(serverDb *db, robj *key, int dict_index);
 static int objectIsExpired(robj *val);
+static robj *lookupKeyWithRef(serverDb *db, robj *key, int flags, void ***ref);
 static void dbSetValue(serverDb *db, robj *key, robj **valref, int overwrite, void **oldref);
 static robj *dbFindWithDictIndex(serverDb *db, sds key, int dict_index);
 
@@ -78,9 +79,18 @@ static robj *dbFindWithDictIndex(serverDb *db, sds key, int dict_index);
  * Even if the key expiry is primary-driven, we can correctly report a key is
  * expired on replicas even if the primary is lagging expiring our key via DELs
  * in the replication link. */
-robj *lookupKey(serverDb *db, robj *key, int flags) {
+static robj *lookupKeyWithRef(serverDb *db, robj *key, int flags, void ***ref) {
     int dict_index = getKVStoreIndexForKey(objectGetVal(key));
-    robj *val = dbFindWithDictIndex(db, objectGetVal(key), dict_index);
+    void **valref = NULL;
+    robj *val;
+
+    if (ref) {
+        valref = kvstoreHashtableFindRef(db->keys, dict_index, objectGetVal(key));
+        val = valref ? *valref : NULL;
+    } else {
+        val = dbFindWithDictIndex(db, objectGetVal(key), dict_index);
+    }
+
     if (val) {
         /* Forcing deletion of expired keys on a replica makes the replica
          * inconsistent with the primary. We forbid it on readonly replicas, but
@@ -97,6 +107,7 @@ robj *lookupKey(serverDb *db, robj *key, int flags) {
         if (expireIfNeededWithDictIndex(db, key, val, expire_flags, dict_index) != KEY_VALID) {
             /* The key is no longer valid. */
             val = NULL;
+            valref = NULL;
         }
     }
 
@@ -122,7 +133,12 @@ robj *lookupKey(serverDb *db, robj *key, int flags) {
         /* TODO: Use separate misses stats and notify event for WRITE */
     }
 
+    if (ref) *ref = valref;
     return val;
+}
+
+robj *lookupKey(serverDb *db, robj *key, int flags) {
+    return lookupKeyWithRef(db, key, flags, NULL);
 }
 
 /* Lookup a key for read operations, or return NULL if the key is not found
@@ -157,6 +173,10 @@ robj *lookupKeyWriteWithFlags(serverDb *db, robj *key, int flags) {
 
 robj *lookupKeyWrite(serverDb *db, robj *key) {
     return lookupKeyWriteWithFlags(db, key, LOOKUP_NONE);
+}
+
+robj *lookupKeyWriteWithRef(serverDb *db, robj *key, void ***ref) {
+    return lookupKeyWithRef(db, key, LOOKUP_WRITE, ref);
 }
 
 robj *lookupKeyReadOrReply(client *c, robj *key, robj *reply) {
@@ -414,7 +434,7 @@ void dbReplaceValue(serverDb *db, robj *key, robj **valref) {
  * All the new keys in the database should be created via this interface.
  * The client 'c' argument may be set to NULL if the operation is performed
  * in a context where there is no clear client performing the operation. */
-void setKey(client *c, serverDb *db, robj *key, robj **valref, int flags) {
+void setKeyWithRef(client *c, serverDb *db, robj *key, robj **valref, int flags, void **oldref) {
     int keyfound = 0;
 
     if (flags & SETKEY_ALREADY_EXIST)
@@ -429,10 +449,14 @@ void setKey(client *c, serverDb *db, robj *key, robj **valref, int flags) {
     } else if (keyfound < 0) {
         dbAddInternal(db, key, valref, 1);
     } else {
-        dbSetValue(db, key, valref, 1, NULL);
+        dbSetValue(db, key, valref, 1, oldref);
     }
     if (!(flags & SETKEY_KEEPTTL)) removeExpire(db, key);
     if (!(flags & SETKEY_NO_SIGNAL)) signalModifiedKey(c, db, key);
+}
+
+void setKey(client *c, serverDb *db, robj *key, robj **valref, int flags) {
+    setKeyWithRef(c, db, key, valref, flags, NULL);
 }
 
 /* Return a random key, in form of an Object.
@@ -1890,6 +1914,7 @@ void swapdbCommand(client *c) {
  *----------------------------------------------------------------------------*/
 
 int removeExpire(serverDb *db, robj *key) {
+    if (kvstoreSize(db->expires) == 0) return 0;
     int dict_index = getKVStoreIndexForKey(objectGetVal(key));
     void *popped;
     if (kvstoreHashtablePop(db->expires, dict_index, objectGetVal(key), &popped)) {
