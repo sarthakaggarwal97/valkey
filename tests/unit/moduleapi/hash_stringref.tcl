@@ -12,6 +12,7 @@ start_server {tags {"modules"}} {
         r hash.set_stringref k f hello1
         assert_equal "hello1" [r hget k f]
         assert_equal "1" [r hash.has_stringref k f]
+        assert_equal "0" [r hash.has_stringref k missing]
     }
 
     test "Unload the module - hash" {
