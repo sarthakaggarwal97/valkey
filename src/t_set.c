@@ -40,6 +40,12 @@
  * Set Commands
  *----------------------------------------------------------------------------*/
 
+/* Direct known-length replies avoid deferred reply bookkeeping for one-key
+ * SMEMBERS/SINTER. For compact encodings, keep this to small replies where the
+ * setup cost dominates; larger compact sets stay on the generic intersection
+ * path. */
+#define SET_DIRECT_REPLY_MAX_COMPACT_ENTRIES 32
+
 void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum, robj *dstkey, int op);
 
 /* Factory method to return a set that *can* hold "value". When the object has
@@ -1241,6 +1247,27 @@ int qsortCompareSetsByRevCardinality(const void *s1, const void *s2) {
     return 0;
 }
 
+static void setTypeReplyAll(client *c, robj *set) {
+    setTypeIterator *si;
+    char *str;
+    size_t len;
+    int64_t intobj;
+
+    addReplySetLen(c, setTypeSize(set));
+    si = setTypeInitIterator(set);
+    while (setTypeNext(si, &str, &len, &intobj) != -1) {
+        if (str != NULL)
+            addReplyBulkCBuffer(c, str, len);
+        else
+            addReplyBulkLongLong(c, intobj);
+    }
+    setTypeReleaseIterator(si);
+}
+
+static int setTypeCanReplyAllDirect(robj *set) {
+    return set->encoding == OBJ_ENCODING_HASHTABLE || setTypeSize(set) <= SET_DIRECT_REPLY_MAX_COMPACT_ENTRIES;
+}
+
 /* SINTER / SMEMBERS / SINTERSTORE / SINTERCARD
  *
  * 'cardinality_only' work for SINTERCARD, only return the cardinality
@@ -1296,6 +1323,12 @@ void sinterGenericCommand(client *c,
         } else {
             addReply(c, shared.emptyset[c->resp]);
         }
+        return;
+    }
+
+    if (setnum == 1 && !dstkey && !cardinality_only && setTypeCanReplyAllDirect(sets[0])) {
+        setTypeReplyAll(c, sets[0]);
+        zfree(sets);
         return;
     }
 
