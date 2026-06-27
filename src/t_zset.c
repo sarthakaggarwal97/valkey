@@ -2783,16 +2783,24 @@ static void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIn
         }
     }
 
-    if (setnum == 1) {
-        unsigned long length = zuiLength(&src[0]);
-
-        if (cardinality_only) {
+    if (cardinality_only) {
+        int all_same = 1;
+        for (i = 1; i < setnum; i++) {
+            if (src[i].subject != src[0].subject) {
+                all_same = 0;
+                break;
+            }
+        }
+        if (all_same) {
+            unsigned long length = zuiLength(&src[0]);
             if (limit && length > (unsigned long)limit) length = limit;
             addReplyLongLong(c, length);
             zfree(src);
             return;
         }
+    }
 
+    if (setnum == 1) {
         if (src[0].subject == NULL) {
             if (dstkey) {
                 zsetStoreSingle(c, dstkey, NULL, zsetOpStoreEvent(op));

@@ -979,6 +979,8 @@ start_server {tags {"zset"}} {
             assert_equal {b 1 c 2 a 3} [r zdiff 1 zsetone{t} withscores]
             assert_equal 3 [r zintercard 1 zsetone{t}]
             assert_equal 2 [r zintercard 1 zsetone{t} limit 2]
+            assert_equal 3 [r zintercard 3 zsetone{t} zsetone{t} zsetone{t}]
+            assert_equal 2 [r zintercard 3 zsetone{t} zsetone{t} zsetone{t} limit 2]
         }
 
         test "ZUNION/ZINTER one input key with weights - $encoding" {
@@ -2713,6 +2715,9 @@ start_server {tags {"zset"}} {
                 assert_encoding hashtable set_small{t}
                 assert_encoding hashtable set_big{t}
             }
+
+            assert_equal 5 [r zintercard 3 set_big{t} set_big{t} set_big{t}]
+            assert_equal 2 [r zintercard 3 set_big{t} set_big{t} set_big{t} limit 2]
 
             foreach zset_type {listpack skiplist} {
                 r del zset_small{t} zset_big{t}
