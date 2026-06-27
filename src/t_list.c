@@ -209,6 +209,46 @@ robj *listTypePop(robj *subject, int where) {
     return value;
 }
 
+static int listTypePopAndReply(client *c, robj *subject, int where) {
+    if (subject->encoding == OBJ_ENCODING_QUICKLIST) {
+        int direction = (where == LIST_HEAD) ? AL_START_HEAD : AL_START_TAIL;
+        long index = (where == LIST_HEAD) ? 0 : -1;
+        quicklistIter *iter = quicklistGetIteratorAtIdx(objectGetVal(subject), direction, index);
+        if (!iter) return 0;
+        quicklistEntry entry;
+        if (!quicklistNext(iter, &entry)) {
+            quicklistReleaseIterator(iter);
+            return 0;
+        }
+
+        if (entry.value) {
+            addReplyBulkCBuffer(c, entry.value, entry.sz);
+        } else {
+            addReplyBulkLongLong(c, entry.longval);
+        }
+        quicklistDelEntry(iter, &entry);
+        quicklistReleaseIterator(iter);
+    } else if (subject->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *lp = objectGetVal(subject);
+        unsigned char *p = (where == LIST_HEAD) ? lpFirst(lp) : lpLast(lp);
+        if (!p) return 0;
+
+        unsigned char *vstr;
+        unsigned int vlen;
+        long long lval;
+        vstr = lpGetValue(p, &vlen, &lval);
+        if (vstr) {
+            addReplyBulkCBuffer(c, vstr, vlen);
+        } else {
+            addReplyBulkLongLong(c, lval);
+        }
+        objectSetVal(subject, lpDelete(lp, p, NULL));
+    } else {
+        serverPanic("Unknown list encoding");
+    }
+    return 1;
+}
+
 unsigned long listTypeLength(const robj *subject) {
     if (subject->encoding == OBJ_ENCODING_QUICKLIST) {
         return quicklistCount(objectGetVal(subject));
@@ -757,8 +797,6 @@ void listElementsRemoved(client *c, robj *key, int where, robj *o, long count, i
 void popGenericCommand(client *c, int where) {
     int hascount = (c->argc == 3);
     long count = 0;
-    robj *value;
-
     if (c->argc > 3) {
         addReplyErrorArity(c);
         return;
@@ -779,11 +817,9 @@ void popGenericCommand(client *c, int where) {
     if (!count) {
         /* Pop a single element. This is POP's original behavior that replies
          * with a bulk string. */
-        value = listTypePop(o, where);
+        int popped = listTypePopAndReply(c, o, where);
+        serverAssert(popped);
         listElementsRemoved(c, c->argv[1], where, o, 1, NULL);
-        serverAssert(value != NULL);
-        addReplyBulk(c, value);
-        decrRefCount(value);
     } else {
         /* Pop a range of elements. An addition to the original POP command,
          *  which replies with a multi-bulk. */
@@ -1199,14 +1235,11 @@ void blockingPopGenericCommand(client *c, robj **keys, int numkeys, int where, i
         }
 
         /* Non empty list, this is like a normal [LR]POP. */
-        robj *value = listTypePop(o, where);
-        serverAssert(value != NULL);
-
-        listElementsRemoved(c, key, where, o, 1, NULL);
         addReplyArrayLen(c, 2);
         addReplyBulk(c, key);
-        addReplyBulk(c, value);
-        decrRefCount(value);
+        int popped = listTypePopAndReply(c, o, where);
+        serverAssert(popped);
+        listElementsRemoved(c, key, where, o, 1, NULL);
         /* Replicate it as an [LR]POP instead of B[LR]POP. */
         rewriteClientCommandVector(c, 2, (where == LIST_HEAD) ? shared.lpop : shared.rpop, key);
         return;
