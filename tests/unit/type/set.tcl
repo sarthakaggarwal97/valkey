@@ -688,6 +688,55 @@ foreach type {single multiple single_multiple} {
         assert_equal 0 [r exists setres{t}]
     }
 
+    foreach cmd {sinterstore sunionstore sdiffstore} {
+        foreach {type contents} [list listpack {a b c} intset {1 2 3} hashtable $initelems(hashtable)] {
+            test "[string toupper $cmd] with one source key duplicates source - $type" {
+                r del src{t} dst{t}
+                create_set src{t} $contents
+                assert_encoding $type src{t}
+                assert_equal [llength $contents] [r $cmd dst{t} src{t}]
+                assert_encoding $type dst{t}
+                assert_equal [lsort $contents] [lsort [r smembers dst{t}]]
+
+                r srem src{t} [lindex $contents 0]
+                assert_equal [lsort $contents] [lsort [r smembers dst{t}]]
+            }
+        }
+
+        test "[string toupper $cmd] with one missing source key deletes destination" {
+            r del src{t} dst{t}
+            r sadd dst{t} stale
+            assert_equal 0 [r $cmd dst{t} src{t}]
+            assert_equal 0 [r exists dst{t}]
+        }
+
+        test "[string toupper $cmd] with identical source and destination keeps result" {
+            r del src{t}
+            r sadd src{t} a b c
+            assert_equal 3 [r $cmd src{t} src{t}]
+            assert_equal {a b c} [lsort [r smembers src{t}]]
+        }
+
+        test "[string toupper $cmd] with one small hashtable source keeps destination compact" {
+            r del src{t} dst{t}
+            create_set src{t} $initelems(hashtable)
+            r srem src{t} {*}[lrange $initelems(hashtable) 0 end-8]
+            set expected [lrange $initelems(hashtable) end-7 end]
+            assert_encoding hashtable src{t}
+            assert_equal 8 [r $cmd dst{t} src{t}]
+            assert_encoding listpack dst{t}
+            assert_equal [lsort $expected] [lsort [r smembers dst{t}]]
+        }
+
+        test "[string toupper $cmd] with one non-set source keeps destination" {
+            r del src{t} dst{t}
+            r set src{t} value
+            r sadd dst{t} stale
+            assert_error "WRONGTYPE*" {r $cmd dst{t} src{t}}
+            assert_equal {stale} [lsort [r smembers dst{t}]]
+        }
+    }
+
     foreach {type contents} {listpack {a b c} intset {1 2 3}} {
         test "SPOP basics - $type" {
             create_set myset $contents

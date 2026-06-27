@@ -1241,6 +1241,58 @@ int qsortCompareSetsByRevCardinality(const void *s1, const void *s2) {
     return 0;
 }
 
+/* Duplicate compact sources directly. A hashtable is duplicated only when its
+ * cardinality and one member prove that neither intset nor listpack could be
+ * selected under the current limits. */
+static robj *setTypeDupForStore(robj *setobj) {
+    if (objectGetEncoding(setobj) != OBJ_ENCODING_HASHTABLE) return setTypeDup(setobj);
+
+    hashtable *ht = objectGetVal(setobj);
+    unsigned long size = setTypeSize(setobj);
+    hashtableIterator iter;
+    hashtableInitIterator(&iter, ht, 0);
+    void *entry;
+    serverAssert(hashtableNext(&iter, &entry));
+
+    size_t len = sdslen(entry);
+    long long value;
+    int intset_impossible = !string2ll(entry, len, &value) || size > intsetMaxEntries();
+    int listpack_impossible =
+        size > server.set_max_listpack_entries || len > server.set_max_listpack_value;
+    if (!intset_impossible || !listpack_impossible) {
+        hashtableCleanupIterator(&iter);
+        return NULL;
+    }
+
+    robj *dstset = createSetObject();
+    hashtableExpand(objectGetVal(dstset), size);
+    do {
+        setTypeAdd(dstset, (sds)entry);
+    } while (hashtableNext(&iter, &entry));
+    hashtableCleanupIterator(&iter);
+    return dstset;
+}
+
+/* Return 0 when rebuilding may choose a more compact destination. */
+static int setTypeStoreSingle(client *c, robj *dstkey, robj *setobj, char *event) {
+    if (setobj != NULL) {
+        robj *dstset = setTypeDupForStore(setobj);
+        if (dstset == NULL) return 0;
+        setKey(c, c->db, dstkey, &dstset, 0);
+        notifyKeyspaceEvent(NOTIFY_SET, event, dstkey, c->db->id);
+        server.dirty++;
+        addReplyLongLong(c, setTypeSize(dstset));
+    } else {
+        if (dbDelete(c->db, dstkey)) {
+            signalModifiedKey(c, c->db, dstkey);
+            notifyKeyspaceEvent(NOTIFY_GENERIC, "del", dstkey, c->db->id);
+            server.dirty++;
+        }
+        addReply(c, shared.czero);
+    }
+    return 1;
+}
+
 /* SINTER / SMEMBERS / SINTERSTORE / SINTERCARD
  *
  * 'cardinality_only' work for SINTERCARD, only return the cardinality
@@ -1278,6 +1330,13 @@ void sinterGenericCommand(client *c,
             return;
         }
         sets[j] = setobj;
+    }
+
+    if (setnum == 1 && dstkey && !cardinality_only) {
+        if (setTypeStoreSingle(c, dstkey, sets[0], "sinterstore")) {
+            zfree(sets);
+            return;
+        }
     }
 
     /* Set intersection with an empty set always results in an empty set.
@@ -1489,6 +1548,13 @@ void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum, robj *dstke
         sets[j] = setobj;
         if (j > 0 && sets[0] == sets[j]) {
             sameset = 1;
+        }
+    }
+
+    if (setnum == 1 && dstkey) {
+        if (setTypeStoreSingle(c, dstkey, sets[0], op == SET_OP_UNION ? "sunionstore" : "sdiffstore")) {
+            zfree(sets);
+            return;
         }
     }
 
