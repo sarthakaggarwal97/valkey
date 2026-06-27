@@ -390,19 +390,35 @@ foreach type {single multiple single_multiple} {
             assert_equal $expected [lsort [r sinter set1{t} set1{t} set1{t}]]
             assert_equal $expected [lsort [r sunion set1{t} set1{t} set1{t}]]
             assert_equal {} [lsort [r sdiff set1{t} set1{t} set1{t}]]
+            assert_equal {} [lsort [r sunion nokey{t} nokey{t} nokey{t}]]
+            assert_equal {} [lsort [r sdiff nokey{t} nokey{t} nokey{t}]]
         }
 
         test "SINTERSTORE/SUNIONSTORE/SDIFFSTORE with three same sets - $type" {
             set expected [lsort "[r smembers set1{t}]"]
+            set expected_encoding [r object encoding set1{t}]
+            set expected_cardinality [r scard set1{t}]
 
-            assert_equal [r scard set1{t}] [r sinterstore setres{t} set1{t} set1{t} set1{t}]
+            assert_equal $expected_cardinality [r sinterstore setres{t} set1{t} set1{t} set1{t}]
             assert_equal $expected [lsort [r smembers setres{t}]]
 
-            assert_equal [r scard set1{t}] [r sunionstore setres{t} set1{t} set1{t} set1{t}]
+            assert_equal $expected_cardinality [r sunionstore setres{t} set1{t} set1{t} set1{t}]
             assert_equal $expected [lsort [r smembers setres{t}]]
+
+            assert_equal $expected_cardinality [r sinterstore set1{t} set1{t} set1{t} set1{t}]
+            assert_equal $expected [lsort [r smembers set1{t}]]
+            assert_encoding $expected_encoding set1{t}
+
+            assert_equal $expected_cardinality [r sunionstore set1{t} set1{t} set1{t} set1{t}]
+            assert_equal $expected [lsort [r smembers set1{t}]]
+            assert_encoding $expected_encoding set1{t}
 
             r sadd setres{t} old
             assert_equal 0 [r sdiffstore setres{t} set1{t} set1{t} set1{t}]
+            assert_equal 0 [r exists setres{t}]
+
+            r sadd setres{t} old
+            assert_equal 0 [r sdiffstore setres{t} nokey{t} nokey{t} nokey{t}]
             assert_equal 0 [r exists setres{t}]
         }
     }
