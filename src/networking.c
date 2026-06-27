@@ -1323,13 +1323,12 @@ void addReplyBigNum(client *c, const char *num, size_t len) {
  * of the double instead of exposing the crude behavior of doubles to the
  * dear user. */
 void addReplyHumanLongDouble(client *c, long double d) {
+    char buf[MAX_LONG_DOUBLE_CHARS];
+    int len = ld2string(buf, sizeof(buf), d, LD_STR_HUMAN);
+
     if (c->resp == 2) {
-        robj *o = createStringObjectFromLongDouble(d, 1);
-        addReplyBulk(c, o);
-        decrRefCount(o);
+        addReplyBulkCBuffer(c, buf, len);
     } else {
-        char buf[MAX_LONG_DOUBLE_CHARS];
-        int len = ld2string(buf, sizeof(buf), d, LD_STR_HUMAN);
         addReplyProto(c, ",", 1);
         addReplyProto(c, buf, len);
         addReplyProto(c, "\r\n", 2);
