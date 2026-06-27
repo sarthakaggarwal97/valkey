@@ -311,11 +311,15 @@ size_t hashTypeGetValueLength(robj *o, sds field) {
 /* Test if the specified field exists in the given hash. Returns 1 if the field
  * exists, and 0 when it doesn't. */
 int hashTypeExists(robj *o, sds field) {
-    unsigned char *vstr = NULL;
-    unsigned int vlen = UINT_MAX;
-    long long vll = LLONG_MAX;
-
-    return hashTypeGetValue(o, field, &vstr, &vlen, &vll, NULL) == C_OK;
+    if (o->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *lp = objectGetVal(o);
+        unsigned char *p = lpFirst(lp);
+        return p && lpFind(lp, p, (unsigned char *)field, sdslen(field), 1);
+    } else if (o->encoding == OBJ_ENCODING_HASHTABLE) {
+        return hashtableFind(objectGetVal(o), field, NULL);
+    } else {
+        serverPanic("Unknown hash encoding");
+    }
 }
 
 bool hashTypeHasStringRef(robj *o, sds field) {
