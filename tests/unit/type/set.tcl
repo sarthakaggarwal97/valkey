@@ -391,6 +391,20 @@ foreach type {single multiple single_multiple} {
             assert_equal $expected [lsort [r sunion set1{t} set1{t} set1{t}]]
             assert_equal {} [lsort [r sdiff set1{t} set1{t} set1{t}]]
         }
+
+        test "SINTERSTORE/SUNIONSTORE/SDIFFSTORE with three same sets - $type" {
+            set expected [lsort "[r smembers set1{t}]"]
+
+            assert_equal [r scard set1{t}] [r sinterstore setres{t} set1{t} set1{t} set1{t}]
+            assert_equal $expected [lsort [r smembers setres{t}]]
+
+            assert_equal [r scard set1{t}] [r sunionstore setres{t} set1{t} set1{t} set1{t}]
+            assert_equal $expected [lsort [r smembers setres{t}]]
+
+            r sadd setres{t} old
+            assert_equal 0 [r sdiffstore setres{t} set1{t} set1{t} set1{t}]
+            assert_equal 0 [r exists setres{t}]
+        }
     }
 
     test "SINTERSTORE with two listpack sets where result is intset" {

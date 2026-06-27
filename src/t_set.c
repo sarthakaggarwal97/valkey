@@ -1241,6 +1241,51 @@ int qsortCompareSetsByRevCardinality(const void *s1, const void *s2) {
     return 0;
 }
 
+static int setTypeAllInputsSame(robj **sets, int setnum) {
+    for (int j = 1; j < setnum; j++) {
+        if (sets[j] != sets[0]) return 0;
+    }
+    return 1;
+}
+
+static void setTypeReplyAll(client *c, robj *set) {
+    setTypeIterator *si;
+    char *str;
+    size_t len;
+    int64_t intobj;
+
+    addReplySetLen(c, setTypeSize(set));
+    si = setTypeInitIterator(set);
+    while (setTypeNext(si, &str, &len, &intobj) != -1) {
+        if (str != NULL)
+            addReplyBulkCBuffer(c, str, len);
+        else
+            addReplyBulkLongLong(c, intobj);
+    }
+    setTypeReleaseIterator(si);
+}
+
+static void setTypeStoreEmpty(client *c, robj *dstkey) {
+    if (dbDelete(c->db, dstkey)) {
+        signalModifiedKey(c, c->db, dstkey);
+        notifyKeyspaceEvent(NOTIFY_GENERIC, "del", dstkey, c->db->id);
+        server.dirty++;
+    }
+    addReply(c, shared.czero);
+}
+
+static void setTypeStoreSingle(client *c, robj *dstkey, robj *setobj, char *event) {
+    if (setobj != NULL) {
+        robj *dstset = setTypeDup(setobj);
+        setKey(c, c->db, dstkey, &dstset, 0);
+        notifyKeyspaceEvent(NOTIFY_SET, event, dstkey, c->db->id);
+        server.dirty++;
+        addReplyLongLong(c, setTypeSize(dstset));
+    } else {
+        setTypeStoreEmpty(c, dstkey);
+    }
+}
+
 /* SINTER / SMEMBERS / SINTERSTORE / SINTERCARD
  *
  * 'cardinality_only' work for SINTERCARD, only return the cardinality
@@ -1296,6 +1341,15 @@ void sinterGenericCommand(client *c,
         } else {
             addReply(c, shared.emptyset[c->resp]);
         }
+        return;
+    }
+
+    if (!cardinality_only && setnum > 1 && setTypeAllInputsSame(sets, setnum)) {
+        if (dstkey)
+            setTypeStoreSingle(c, dstkey, sets[0], "sinterstore");
+        else
+            setTypeReplyAll(c, sets[0]);
+        zfree(sets);
         return;
     }
 
@@ -1490,6 +1544,22 @@ void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum, robj *dstke
         if (j > 0 && sets[0] == sets[j]) {
             sameset = 1;
         }
+    }
+
+    if (setnum > 1 && setTypeAllInputsSame(sets, setnum)) {
+        if (op == SET_OP_UNION && sets[0] != NULL) {
+            if (dstkey)
+                setTypeStoreSingle(c, dstkey, sets[0], "sunionstore");
+            else
+                setTypeReplyAll(c, sets[0]);
+        } else {
+            if (dstkey)
+                setTypeStoreEmpty(c, dstkey);
+            else
+                addReply(c, shared.emptyset[c->resp]);
+        }
+        zfree(sets);
+        return;
     }
 
     /* Select what DIFF algorithm to use.
