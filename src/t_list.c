@@ -209,6 +209,58 @@ robj *listTypePop(robj *subject, int where) {
     return value;
 }
 
+/* Push an edge value into an existing quicklist destination and reply with it,
+ * preserving lmoveHandlePush() side effects without creating a temporary robj. */
+static void listTypePushQuicklistAndReply(client *c, quicklist *dstql, robj *dstkey, int where, void *value, size_t len) {
+    int dstpos = (where == LIST_HEAD) ? QUICKLIST_HEAD : QUICKLIST_TAIL;
+    quicklistPush(dstql, value, len, dstpos);
+    signalModifiedKey(c, c->db, dstkey);
+    notifyKeyspaceEvent(NOTIFY_LIST, where == LIST_HEAD ? "lpush" : "rpush", dstkey, c->db->id);
+    addReplyBulkCBuffer(c, value, len);
+}
+
+static int listTypePopPushQuicklistAndReply(client *c, robj *src, robj *dst, robj *dstkey, int wherefrom, int whereto) {
+    serverAssert(dst->encoding == OBJ_ENCODING_QUICKLIST);
+
+    quicklist *dstql = objectGetVal(dst);
+
+    if (src->encoding == OBJ_ENCODING_QUICKLIST) {
+        int direction = (wherefrom == LIST_HEAD) ? AL_START_HEAD : AL_START_TAIL;
+        long index = (wherefrom == LIST_HEAD) ? 0 : -1;
+        quicklistIter *iter = quicklistGetIteratorAtIdx(objectGetVal(src), direction, index);
+        if (!iter) return 0;
+
+        quicklistEntry entry;
+        if (!quicklistNext(iter, &entry)) {
+            quicklistReleaseIterator(iter);
+            return 0;
+        }
+
+        if (entry.value) {
+            listTypePushQuicklistAndReply(c, dstql, dstkey, whereto, entry.value, entry.sz);
+        } else {
+            char buf[LONG_STR_SIZE];
+            int len = ll2string(buf, sizeof(buf), entry.longval);
+            listTypePushQuicklistAndReply(c, dstql, dstkey, whereto, buf, len);
+        }
+        quicklistDelEntry(iter, &entry);
+        quicklistReleaseIterator(iter);
+    } else if (src->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *lp = objectGetVal(src);
+        unsigned char *p = (wherefrom == LIST_HEAD) ? lpFirst(lp) : lpLast(lp);
+        if (!p) return 0;
+
+        int64_t len;
+        unsigned char intbuf[LP_INTBUF_SIZE];
+        unsigned char *str = lpGet(p, &len, intbuf);
+        listTypePushQuicklistAndReply(c, dstql, dstkey, whereto, str, len);
+        objectSetVal(src, lpDelete(lp, p, NULL));
+    } else {
+        serverPanic("Unknown list encoding");
+    }
+    return 1;
+}
+
 unsigned long listTypeLength(const robj *subject) {
     if (subject->encoding == OBJ_ENCODING_QUICKLIST) {
         return quicklistCount(objectGetVal(subject));
@@ -1113,6 +1165,18 @@ void lmoveGenericCommand(client *c, int wherefrom, int whereto) {
     robj *touchedkey = c->argv[1];
 
     if (checkType(c, dobj, OBJ_LIST)) return;
+    if (dobj && sobj != dobj && dobj->encoding == OBJ_ENCODING_QUICKLIST) {
+        int moved = listTypePopPushQuicklistAndReply(c, sobj, dobj, c->argv[2], wherefrom, whereto);
+        serverAssert(moved);
+        listElementsRemoved(c, touchedkey, wherefrom, sobj, 1, NULL);
+        if (c->cmd->proc == blmoveCommand) {
+            rewriteClientCommandVector(c, 5, shared.lmove, c->argv[1], c->argv[2], c->argv[3], c->argv[4]);
+        } else if (c->cmd->proc == brpoplpushCommand) {
+            rewriteClientCommandVector(c, 3, shared.rpoplpush, c->argv[1], c->argv[2]);
+        }
+        return;
+    }
+
     value = listTypePop(sobj, wherefrom);
     serverAssert(value); /* assertion for valgrind (avoid NPD) */
     lmoveHandlePush(c, c->argv[2], dobj, value, whereto);
