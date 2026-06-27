@@ -1989,6 +1989,7 @@ void zremrangeGenericCommand(client *c, zrange_type rangetype) {
     zrangespec range;
     zlexrangespec lexrange;
     long start, end, llen;
+    int delete_full_range = 0;
     char *notify_type = NULL;
 
     /* Step 1: Parse the range. */
@@ -2030,10 +2031,15 @@ void zremrangeGenericCommand(client *c, zrange_type rangetype) {
             goto cleanup;
         }
         if (end >= llen) end = llen - 1;
+        if (start == 0 && end == llen - 1) delete_full_range = 1;
     }
 
     /* Step 3: Perform the range deletion operation. */
-    if (zobj->encoding == OBJ_ENCODING_LISTPACK) {
+    if (delete_full_range && zobj->encoding == OBJ_ENCODING_SKIPLIST) {
+        deleted = llen;
+        dbDelete(c->db, key);
+        keyremoved = 1;
+    } else if (zobj->encoding == OBJ_ENCODING_LISTPACK) {
         switch (rangetype) {
         case ZRANGE_AUTO:
         case ZRANGE_RANK: objectSetVal(zobj, zzlDeleteRangeByRank(objectGetVal(zobj), start + 1, end + 1, &deleted)); break;
