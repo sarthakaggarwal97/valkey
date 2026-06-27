@@ -311,6 +311,12 @@ foreach type {single multiple single_multiple} {
             }
         }
 
+        test "SINTER with one set - $type" {
+            set expected [lsort "[r smembers set1{t}]"]
+            assert_equal $expected [lsort [r sinter set1{t}]]
+            assert_equal {} [r sinter nokey{t}]
+        }
+
         test "SINTER with two sets - $type" {
             assert_equal [list 195 196 197 198 199 $large] [lsort [r sinter set1{t} set2{t}]]
         }
