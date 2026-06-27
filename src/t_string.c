@@ -409,16 +409,19 @@ void getdelCommand(client *c) {
 void getsetCommand(client *c) {
     initDeferredReplyBuffer(c);
     if (getGenericCommand(c) == C_ERR) return;
+    void **existing_ref = NULL;
+    robj *existing = lookupKeyWriteWithRef(c->db, c->argv[1], &existing_ref);
+    int setkey_flags = existing ? SETKEY_ALREADY_EXIST : SETKEY_DOESNT_EXIST;
     robj *val = c->argv[2];
     if (c->flag.argv_borrowed) {
         /* If the client does not own the argv, we need to ensure that the value
          * object is not released when adding it to the database. */
         incrRefCount(val);
-        setKey(c, c->db, c->argv[1], &val, 0);
+        setKeyWithRef(c, c->db, c->argv[1], &val, setkey_flags, existing_ref);
         rewriteClientCommandArgument(c, 2, val);
     } else {
         val = tryObjectEncoding(val);
-        setKey(c, c->db, c->argv[1], &val, 0);
+        setKeyWithRef(c, c->db, c->argv[1], &val, setkey_flags, existing_ref);
         incrRefCount(val);
         c->argv[2] = val;
     }
