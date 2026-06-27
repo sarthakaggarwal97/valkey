@@ -2640,6 +2640,48 @@ static void zsetReplyAll(client *c, robj *zobj, int withscores) {
     }
 }
 
+static int zsetElementsFitListpackValueLimit(robj *zobj) {
+    if (zobj->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *zl = objectGetVal(zobj);
+        unsigned char *eptr = lpSeek(zl, 0);
+        unsigned int vlen;
+        long long vlong;
+
+        while (eptr != NULL) {
+            unsigned char *vstr = lpGetValue(eptr, &vlen, &vlong);
+            if (vstr) {
+                if (vlen > server.zset_max_listpack_value) return 0;
+            } else if ((unsigned long)sdigits10(vlong) > server.zset_max_listpack_value) {
+                return 0;
+            }
+            eptr = lpNext(zl, eptr); /* score */
+            eptr = lpNext(zl, eptr); /* next member */
+        }
+        return 1;
+    } else if (zobj->encoding == OBJ_ENCODING_SKIPLIST) {
+        zset *zs = objectGetVal(zobj);
+        zskiplistNode *ln = zslGetHeader(zs->zsl)->level[0].forward;
+
+        while (ln != NULL) {
+            if (sdslen(zslGetNodeElement(ln)) > server.zset_max_listpack_value) return 0;
+            ln = ln->level[0].forward;
+        }
+        return 1;
+    } else {
+        serverPanic("Unknown sorted set encoding");
+    }
+}
+
+static int zsetCanDuplicateForStore(robj *zobj) {
+    unsigned long length = zsetLength(zobj);
+    int generic_encoding = OBJ_ENCODING_LISTPACK;
+
+    if (length > server.zset_max_listpack_entries || !zsetElementsFitListpackValueLimit(zobj))
+        generic_encoding = OBJ_ENCODING_SKIPLIST;
+
+    return zobj->encoding == generic_encoding;
+}
+
 static void zsetStoreSingle(client *c, robj *dstkey, robj *zobj, char *event) {
     if (zobj != NULL) {
         robj *dstobj = zsetDup(zobj);
@@ -2803,7 +2845,7 @@ static void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIn
             return;
         }
 
-        if (src[0].type == OBJ_ZSET && src[0].weight == 1.0) {
+        if (src[0].type == OBJ_ZSET && src[0].weight == 1.0 && (!dstkey || zsetCanDuplicateForStore(src[0].subject))) {
             if (dstkey)
                 zsetStoreSingle(c, dstkey, src[0].subject, zsetOpStoreEvent(op));
             else

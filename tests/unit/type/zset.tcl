@@ -1010,6 +1010,9 @@ start_server {tags {"zset"}} {
                 r zrem zsetcopy{t} b
                 assert_equal {b 1 c 2 a 3} [r zrange zsetone{t} 0 -1 withscores]
             }
+
+            assert_equal 3 [r zunionstore zsetone{t} 1 zsetone{t}]
+            assert_equal {b 1 c 2 a 3} [r zrange zsetone{t} 0 -1 withscores]
         }
 
         test "ZUNIONSTORE/ZINTERSTORE/ZDIFFSTORE one missing input deletes destination - $encoding" {
@@ -1020,6 +1023,33 @@ start_server {tags {"zset"}} {
                 assert_equal 0 [r $cmd zsetcopy{t} 1 zsetone{t}]
                 assert_equal 0 [r exists zsetcopy{t}]
             }
+        }
+
+        test "ZUNIONSTORE one input key respects current zset encoding threshold - $encoding" {
+            set original_max [lindex [r config get zset-max-listpack-entries] 1]
+            set original_value [lindex [r config get zset-max-listpack-value] 1]
+
+            r config set zset-max-listpack-entries 128
+            r config set zset-max-listpack-value 64
+            r del zsetone{t} zsetcopy{t}
+            r zadd zsetone{t} 1 a 2 b
+            assert_encoding listpack zsetone{t}
+            r config set zset-max-listpack-entries 0
+            assert_equal 2 [r zunionstore zsetcopy{t} 1 zsetone{t}]
+            assert_encoding skiplist zsetcopy{t}
+
+            r config set zset-max-listpack-entries 0
+            r config set zset-max-listpack-value 0
+            r del zsetone{t} zsetcopy{t}
+            r zadd zsetone{t} 1 a 2 b
+            assert_encoding skiplist zsetone{t}
+            r config set zset-max-listpack-entries 128
+            r config set zset-max-listpack-value 64
+            assert_equal 2 [r zunionstore zsetcopy{t} 1 zsetone{t}]
+            assert_encoding listpack zsetcopy{t}
+
+            r config set zset-max-listpack-entries $original_max
+            r config set zset-max-listpack-value $original_value
         }
 
         test "ZINTER RESP3 - $encoding" {
