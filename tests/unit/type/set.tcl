@@ -265,6 +265,29 @@ foreach type {single multiple single_multiple} {
         assert_equal 0 [r sintercard 1 non-existing-key limit 10]
     }
 
+    foreach {type contents} [list listpack {a b c} intset {1 2 3} hashtable $initelems(hashtable)] {
+        test "SUNION and SDIFF with one set - $type" {
+            create_set singleset{t} $contents
+            assert_encoding $type singleset{t}
+
+            set expected [lsort [r smembers singleset{t}]]
+            assert_equal $expected [lsort [r sunion singleset{t}]]
+            assert_equal $expected [lsort [r sdiff singleset{t}]]
+        }
+    }
+
+    test "SUNION and SDIFF with one missing set" {
+        r del missing{t}
+        assert_equal {} [r sunion missing{t}]
+        assert_equal {} [r sdiff missing{t}]
+    }
+
+    test "SUNION and SDIFF with one non-set key" {
+        r set key{t} value
+        assert_error "WRONGTYPE*" {r sunion key{t}}
+        assert_error "WRONGTYPE*" {r sdiff key{t}}
+    }
+
     foreach {type} {regular intset} {
         # Create sets setN{t} where N = 1..5
         if {$type eq "regular"} {

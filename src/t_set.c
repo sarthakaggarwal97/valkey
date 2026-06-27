@@ -1446,7 +1446,31 @@ void sinterstoreCommand(client *c) {
     sinterGenericCommand(c, c->argv + 2, c->argc - 2, c->argv[1], 0, 0);
 }
 
+static void setTypeReplyAll(client *c, robj *set) {
+    setTypeIterator *si;
+    char *str;
+    size_t len;
+    int64_t intobj;
+
+    addReplySetLen(c, setTypeSize(set));
+    si = setTypeInitIterator(set);
+    while (setTypeNext(si, &str, &len, &intobj) != -1) {
+        if (str != NULL)
+            addReplyBulkCBuffer(c, str, len);
+        else
+            addReplyBulkLongLong(c, intobj);
+    }
+    setTypeReleaseIterator(si);
+}
+
 void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum, robj *dstkey, int op) {
+    if (setnum == 1 && !dstkey) {
+        robj *setobj = lookupKeyReadOrReply(c, setkeys[0], shared.emptyset[c->resp]);
+        if (setobj == NULL || checkType(c, setobj, OBJ_SET)) return;
+        setTypeReplyAll(c, setobj);
+        return;
+    }
+
     robj **sets = zmalloc(sizeof(robj *) * setnum);
     setTypeIterator *si;
     robj *dstset = NULL;
@@ -1598,15 +1622,7 @@ void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum, robj *dstke
 
     /* Output the content of the resulting set, if not in STORE mode */
     if (!dstkey) {
-        addReplySetLen(c, cardinality);
-        si = setTypeInitIterator(dstset);
-        while (setTypeNext(si, &str, &len, &llval) != -1) {
-            if (str)
-                addReplyBulkCBuffer(c, str, len);
-            else
-                addReplyBulkLongLong(c, llval);
-        }
-        setTypeReleaseIterator(si);
+        setTypeReplyAll(c, dstset);
         server.lazyfree_lazy_server_del ? freeObjAsync(NULL, dstset, -1) : decrRefCount(dstset);
     } else {
         /* If we have a target key where to store the resulting set
