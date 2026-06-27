@@ -1959,6 +1959,7 @@ foreach {type large} [array get largevalue] {
         test "LTRIM out of range negative end index - $type" {
             assert_equal {1} [trim_list $type 0 -5]
             assert_equal {} [trim_list $type 0 -6]
+            assert_equal 0 [r exists mylist]
         }
 
         test "LSET - $type" {

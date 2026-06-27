@@ -28,6 +28,7 @@
  */
 
 #include "server.h"
+#include "module.h"
 
 /*-----------------------------------------------------------------------------
  * List API
@@ -891,6 +892,21 @@ void ltrimCommand(client *c) {
         if (end >= llen) end = llen - 1;
         ltrim = start;
         rtrim = llen - end - 1;
+    }
+
+    /* If the trim removes a whole quicklist, delete the key directly instead
+     * of unlinking every quicklist node and then deleting the empty key.
+     * Module keyspace notification callbacks can synchronously inspect the key
+     * during the "ltrim" event, so keep the old empty-list intermediate state
+     * when such callbacks are registered. */
+    if (o->encoding == OBJ_ENCODING_QUICKLIST && ltrim == llen && moduleNotifyKeyspaceSubscribersCnt() == 0) {
+        notifyKeyspaceEvent(NOTIFY_LIST, "ltrim", c->argv[1], c->db->id);
+        dbDelete(c->db, c->argv[1]);
+        notifyKeyspaceEvent(NOTIFY_GENERIC, "del", c->argv[1], c->db->id);
+        signalModifiedKey(c, c->db, c->argv[1]);
+        server.dirty += ltrim;
+        addReply(c, shared.ok);
+        return;
     }
 
     /* Remove list elements to perform the trim */
