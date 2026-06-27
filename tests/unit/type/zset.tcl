@@ -968,6 +968,9 @@ start_server {tags {"zset"}} {
             assert_equal 2 [r zintercard 2 zseta{t} zsetb{t} limit 0]
             assert_equal 1 [r zintercard 2 zseta{t} zsetb{t} limit 1]
             assert_equal 2 [r zintercard 2 zseta{t} zsetb{t} limit 10]
+            assert_equal 3 [r zintercard 3 zseta{t} zseta{t} zseta{t}]
+            assert_equal 2 [r zintercard 3 zseta{t} zseta{t} zseta{t} limit 2]
+            assert_equal 0 [r zintercard 3 zsetmissing1{t} zsetmissing2{t} zsetmissing3{t}]
         }
 
         test "ZINTER RESP3 - $encoding" {
@@ -2661,6 +2664,9 @@ start_server {tags {"zset"}} {
                 assert_encoding hashtable set_small{t}
                 assert_encoding hashtable set_big{t}
             }
+
+            assert_equal 5 [r zintercard 3 set_big{t} set_big{t} set_big{t}]
+            assert_equal 2 [r zintercard 3 set_big{t} set_big{t} set_big{t} limit 2]
 
             foreach zset_type {listpack skiplist} {
                 r del zset_small{t} zset_big{t}

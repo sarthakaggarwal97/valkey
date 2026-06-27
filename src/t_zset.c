@@ -2717,6 +2717,26 @@ static void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIn
         }
     }
 
+    if (cardinality_only) {
+        /* The intersection cardinality of the same input repeated is the
+         * input cardinality, capped by LIMIT. This also covers repeated
+         * missing keys. */
+        int all_same = 1;
+        for (i = 1; i < setnum; i++) {
+            if (src[i].subject != src[0].subject) {
+                all_same = 0;
+                break;
+            }
+        }
+        if (all_same) {
+            unsigned long length = zuiLength(&src[0]);
+            if (limit && length > (unsigned long)limit) length = limit;
+            addReplyLongLong(c, length);
+            zfree(src);
+            return;
+        }
+    }
+
     if (op != SET_OP_DIFF) {
         /* sort sets from the smallest to largest, this will improve our
          * algorithm's performance */
