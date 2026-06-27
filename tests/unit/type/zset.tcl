@@ -2282,6 +2282,37 @@ start_server {tags {"zset"}} {
         r zrange z2{t} 0 -1 withscores
     } {a 1 b 2 c 3 d 4}
 
+    test {ZRANGESTORE full range creates independent copy} {
+        r del zfull1{t} zfull2{t} zfull3{t}
+        r zadd zfull1{t} 1 a 2 b 3 c 4 d
+        assert_equal 4 [r zrangestore zfull2{t} zfull1{t} 0 -1]
+        r zrem zfull1{t} b
+        assert_equal {a 1 c 3 d 4} [r zrange zfull1{t} 0 -1 withscores]
+        assert_equal {a 1 b 2 c 3 d 4} [r zrange zfull2{t} 0 -1 withscores]
+
+        assert_equal 4 [r zrangestore zfull3{t} zfull2{t} 0 -1 REV]
+        assert_equal {a 1 b 2 c 3 d 4} [r zrange zfull3{t} 0 -1 withscores]
+    }
+
+    test {ZRANGESTORE full range creates independent skiplist copy} {
+        set original_max [lindex [r config get zset-max-listpack-entries] 1]
+
+        r config set zset-max-listpack-entries 0
+        r del zfullskip1{t} zfullskip2{t}
+        r zadd zfullskip1{t} 1 a 2 b 3 c 4 d
+        assert_encoding skiplist zfullskip1{t}
+        assert_equal 4 [r zrangestore zfullskip2{t} zfullskip1{t} 0 -1]
+        assert_encoding skiplist zfullskip2{t}
+        r zrem zfullskip1{t} b
+        assert_equal {a 1 c 3 d 4} [r zrange zfullskip1{t} 0 -1 withscores]
+        assert_equal {a 1 b 2 c 3 d 4} [r zrange zfullskip2{t} 0 -1 withscores]
+
+        assert_equal 4 [r zrangestore zfullskip2{t} zfullskip2{t} 0 -1]
+        assert_equal {a 1 b 2 c 3 d 4} [r zrange zfullskip2{t} 0 -1 withscores]
+
+        r config set zset-max-listpack-entries $original_max
+    }
+
     test {ZRANGESTORE RESP3} {
         r hello 3
         assert_equal [r zrange z2{t} 0 -1 withscores] {{a 1.0} {b 2.0} {c 3.0} {d 4.0}}
@@ -2390,6 +2421,28 @@ start_server {tags {"zset"}} {
         assert_encoding listpack z2{t}
         assert_equal 2 [r zrangestore z3{t} z1{t} 0 1]
         assert_encoding skiplist z3{t}
+        r config set zset-max-listpack-entries $original_max
+    }
+
+    test {ZRANGESTORE full range respects current zset encoding threshold} {
+        set original_max [lindex [r config get zset-max-listpack-entries] 1]
+
+        r config set zset-max-listpack-entries 128
+        r del z1{t} z2{t} z3{t}
+        r zadd z1{t} 1 a 2 b
+        assert_encoding listpack z1{t}
+        r config set zset-max-listpack-entries 1
+        assert_equal 2 [r zrangestore z2{t} z1{t} 0 -1]
+        assert_encoding skiplist z2{t}
+
+        r config set zset-max-listpack-entries 0
+        r del z1{t} z2{t} z3{t}
+        r zadd z1{t} 1 a 2 b
+        assert_encoding skiplist z1{t}
+        r config set zset-max-listpack-entries 128
+        assert_equal 2 [r zrangestore z3{t} z1{t} 0 -1]
+        assert_encoding listpack z3{t}
+
         r config set zset-max-listpack-entries $original_max
     }
 

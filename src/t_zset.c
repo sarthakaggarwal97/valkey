@@ -3064,6 +3064,59 @@ static void zrangeResultFinalizeStore(zrange_result_handler *handler, size_t res
     }
 }
 
+static int zsetElementsFitListpackValueLimit(robj *zobj) {
+    if (zobj->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *zl = objectGetVal(zobj);
+        unsigned char *eptr = lpSeek(zl, 0);
+        unsigned int vlen;
+        long long vlong;
+
+        while (eptr != NULL) {
+            unsigned char *vstr = lpGetValue(eptr, &vlen, &vlong);
+            if (vstr) {
+                if (vlen > server.zset_max_listpack_value) return 0;
+            } else if ((unsigned long)sdigits10(vlong) > server.zset_max_listpack_value) {
+                return 0;
+            }
+            eptr = lpNext(zl, eptr); /* score */
+            eptr = lpNext(zl, eptr); /* next member */
+        }
+        return 1;
+    } else if (zobj->encoding == OBJ_ENCODING_SKIPLIST) {
+        zset *zs = objectGetVal(zobj);
+        zskiplistNode *ln = zslGetHeader(zs->zsl)->level[0].forward;
+
+        while (ln != NULL) {
+            if (sdslen(zslGetNodeElement(ln)) > server.zset_max_listpack_value) return 0;
+            ln = ln->level[0].forward;
+        }
+        return 1;
+    } else {
+        serverPanic("Unknown sorted set encoding");
+    }
+}
+
+static int zsetCanDuplicateForZrangeStore(robj *zobj) {
+    unsigned long length = zsetLength(zobj);
+    int generic_encoding = OBJ_ENCODING_LISTPACK;
+
+    if (length > server.zset_max_listpack_entries || !zsetElementsFitListpackValueLimit(zobj))
+        generic_encoding = OBJ_ENCODING_SKIPLIST;
+
+    return zobj->encoding == generic_encoding;
+}
+
+static void zrangeResultStoreFullRange(zrange_result_handler *handler, robj *zobj) {
+    client *c = handler->client;
+    unsigned long length = zsetLength(zobj);
+    robj *dstobj = zsetDup(zobj);
+
+    setKey(c, c->db, handler->dstkey, &dstobj, 0);
+    notifyKeyspaceEvent(NOTIFY_ZSET, "zrangestore", handler->dstkey, c->db->id);
+    server.dirty++;
+    addReplyLongLong(c, length);
+}
+
 /* Initialize the consumer interface type with the requested type. */
 static void zrangeResultHandlerInit(zrange_result_handler *handler, client *client, zrange_consumer_type type) {
     memset(handler, 0, sizeof(*handler));
@@ -3722,6 +3775,11 @@ void zrangeGenericCommand(zrange_result_handler *handler,
     }
 
     if (checkType(c, zobj, OBJ_ZSET)) goto cleanup;
+
+    if (store && rangetype == ZRANGE_RANK && opt_start == 0 && opt_end == -1 && zsetCanDuplicateForZrangeStore(zobj)) {
+        zrangeResultStoreFullRange(handler, zobj);
+        goto cleanup;
+    }
 
     /* Step 4: Pass this to the command-specific handler. */
     switch (rangetype) {
