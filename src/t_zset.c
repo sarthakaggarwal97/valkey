@@ -1980,6 +1980,15 @@ typedef enum {
     ZRANGE_LEX,
 } zrange_type;
 
+static int zremrangeScoreRangeIsFull(zrangespec *range) {
+    return !range->minex && !range->maxex && isinf(range->min) && range->min < 0 && isinf(range->max) &&
+           range->max > 0;
+}
+
+static int zremrangeLexRangeIsFull(zlexrangespec *range) {
+    return range->min == shared.minstring && range->max == shared.maxstring;
+}
+
 /* Implements ZREMRANGEBYRANK, ZREMRANGEBYSCORE, ZREMRANGEBYLEX commands. */
 void zremrangeGenericCommand(client *c, zrange_type rangetype) {
     robj *key = c->argv[1];
@@ -1988,6 +1997,8 @@ void zremrangeGenericCommand(client *c, zrange_type rangetype) {
     unsigned long deleted = 0;
     zrangespec range;
     zlexrangespec lexrange;
+    int delete_full_range = 0;
+    unsigned long zlen = 0;
     long start, end, llen;
     char *notify_type = NULL;
 
@@ -2016,9 +2027,10 @@ void zremrangeGenericCommand(client *c, zrange_type rangetype) {
     /* Step 2: Lookup & range sanity checks if needed. */
     if ((zobj = lookupKeyWriteOrReply(c, key, shared.czero)) == NULL || checkType(c, zobj, OBJ_ZSET)) goto cleanup;
 
+    zlen = zsetLength(zobj);
     if (rangetype == ZRANGE_RANK) {
         /* Sanitize indexes. */
-        llen = zsetLength(zobj);
+        llen = zlen;
         if (start < 0) start = llen + start;
         if (end < 0) end = llen + end;
         if (start < 0) start = 0;
@@ -2030,10 +2042,21 @@ void zremrangeGenericCommand(client *c, zrange_type rangetype) {
             goto cleanup;
         }
         if (end >= llen) end = llen - 1;
+        delete_full_range = start == 0 && end == llen - 1;
+    } else if (rangetype == ZRANGE_SCORE) {
+        delete_full_range = zremrangeScoreRangeIsFull(&range);
+    } else if (rangetype == ZRANGE_LEX) {
+        delete_full_range = zremrangeLexRangeIsFull(&lexrange);
     }
 
     /* Step 3: Perform the range deletion operation. */
-    if (zobj->encoding == OBJ_ENCODING_LISTPACK) {
+    if (delete_full_range && (rangetype != ZRANGE_RANK || zobj->encoding == OBJ_ENCODING_SKIPLIST)) {
+        deleted = zlen;
+        /* Preserve the old command behavior of reclaiming removed elements
+         * synchronously even when lazyfree-lazy-server-del is enabled. */
+        dbSyncDelete(c->db, key);
+        keyremoved = 1;
+    } else if (zobj->encoding == OBJ_ENCODING_LISTPACK) {
         switch (rangetype) {
         case ZRANGE_AUTO:
         case ZRANGE_RANK: objectSetVal(zobj, zzlDeleteRangeByRank(objectGetVal(zobj), start + 1, end + 1, &deleted)); break;

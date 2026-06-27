@@ -742,6 +742,13 @@ start_server {tags {"zset"}} {
             # -inf to +inf
             assert_equal 5 [remrangebyscore -inf +inf]
             assert_equal {} [r zrange zset 0 -1]
+            assert_equal 0 [r exists zset]
+
+            # exclusive infinity endpoints are not a full range when infinity
+            # scores are present
+            create_zset zset {-inf n 0 z +inf p}
+            assert_equal 2 [r zremrangebyscore zset (-inf +inf]
+            assert_equal {n -inf} [r zrange zset 0 -1 withscores]
 
             # exclusive min
             assert_equal 4 [remrangebyscore (1 5]
@@ -796,6 +803,7 @@ start_server {tags {"zset"}} {
             # end overflow
             assert_equal 5 [remrangebyrank 0 10]
             assert_equal {} [r zrange zset 0 -1]
+            assert_equal 0 [r exists zset]
 
             # destroy when empty
             assert_equal 5 [remrangebyrank 0 4]
