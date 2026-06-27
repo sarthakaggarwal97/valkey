@@ -2595,6 +2595,72 @@ static void zdiff(zsetopsrc *src, long setnum, zset *dstzset, size_t *maxelelen,
     }
 }
 
+static void zsetReplyAll(client *c, robj *zobj, int withscores) {
+    unsigned long length = zsetLength(zobj);
+
+    if (withscores && c->resp == 2)
+        addReplyArrayLen(c, length * 2);
+    else
+        addReplyArrayLen(c, length);
+
+    if (zobj->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *zl = objectGetVal(zobj);
+        unsigned char *eptr = lpFirst(zl);
+        unsigned char *sptr = NULL;
+
+        if (eptr != NULL) sptr = lpNext(zl, eptr);
+        while (eptr != NULL) {
+            unsigned char *vstr;
+            unsigned int vlen;
+            long long vlong;
+
+            if (withscores && c->resp > 2) addReplyArrayLen(c, 2);
+            vstr = lpGetValue(eptr, &vlen, &vlong);
+            if (vstr != NULL)
+                addReplyBulkCBuffer(c, vstr, vlen);
+            else
+                addReplyBulkLongLong(c, vlong);
+            if (withscores) addReplyDouble(c, zzlGetScore(sptr));
+
+            zzlNext(zl, &eptr, &sptr);
+        }
+    } else if (zobj->encoding == OBJ_ENCODING_SKIPLIST) {
+        zset *zs = objectGetVal(zobj);
+        zskiplistNode *zn = zslGetHeader(zs->zsl)->level[0].forward;
+
+        while (zn != NULL) {
+            sds ele = zslGetNodeElement(zn);
+            if (withscores && c->resp > 2) addReplyArrayLen(c, 2);
+            addReplyBulkCBuffer(c, ele, sdslen(ele));
+            if (withscores) addReplyDouble(c, zn->score);
+            zn = zn->level[0].forward;
+        }
+    } else {
+        serverPanic("Unknown sorted set encoding");
+    }
+}
+
+static void zsetStoreSingle(client *c, robj *dstkey, robj *zobj, char *event) {
+    if (zobj != NULL) {
+        robj *dstobj = zsetDup(zobj);
+        setKey(c, c->db, dstkey, &dstobj, 0);
+        notifyKeyspaceEvent(NOTIFY_ZSET, event, dstkey, c->db->id);
+        addReplyLongLong(c, zsetLength(dstobj));
+        server.dirty++;
+    } else {
+        if (dbDelete(c->db, dstkey)) {
+            signalModifiedKey(c, c->db, dstkey);
+            notifyKeyspaceEvent(NOTIFY_GENERIC, "del", dstkey, c->db->id);
+            server.dirty++;
+        }
+        addReply(c, shared.czero);
+    }
+}
+
+static char *zsetOpStoreEvent(int op) {
+    return (op == SET_OP_UNION) ? "zunionstore" : (op == SET_OP_INTER ? "zinterstore" : "zdiffstore");
+}
+
 /* The zunionInterDiffGenericCommand() function is called in order to implement the
  * following commands: ZUNION, ZINTER, ZDIFF, ZUNIONSTORE, ZINTERSTORE, ZDIFFSTORE,
  * ZINTERCARD.
@@ -2714,6 +2780,36 @@ static void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIn
                 addReplyErrorObject(c, shared.syntaxerr);
                 return;
             }
+        }
+    }
+
+    if (setnum == 1) {
+        unsigned long length = zuiLength(&src[0]);
+
+        if (cardinality_only) {
+            if (limit && length > (unsigned long)limit) length = limit;
+            addReplyLongLong(c, length);
+            zfree(src);
+            return;
+        }
+
+        if (src[0].subject == NULL) {
+            if (dstkey) {
+                zsetStoreSingle(c, dstkey, NULL, zsetOpStoreEvent(op));
+            } else {
+                addReply(c, shared.emptyarray);
+            }
+            zfree(src);
+            return;
+        }
+
+        if (src[0].type == OBJ_ZSET && src[0].weight == 1.0) {
+            if (dstkey)
+                zsetStoreSingle(c, dstkey, src[0].subject, zsetOpStoreEvent(op));
+            else
+                zsetReplyAll(c, src[0].subject, withscores);
+            zfree(src);
+            return;
         }
     }
 

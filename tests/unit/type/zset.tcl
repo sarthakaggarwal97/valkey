@@ -970,6 +970,58 @@ start_server {tags {"zset"}} {
             assert_equal 2 [r zintercard 2 zseta{t} zsetb{t} limit 10]
         }
 
+        test "ZUNION/ZINTER/ZDIFF one input key - $encoding" {
+            r del zsetone{t}
+            r zadd zsetone{t} 3 a 1 b 2 c
+
+            assert_equal {b 1 c 2 a 3} [r zunion 1 zsetone{t} withscores]
+            assert_equal {b 1 c 2 a 3} [r zinter 1 zsetone{t} withscores]
+            assert_equal {b 1 c 2 a 3} [r zdiff 1 zsetone{t} withscores]
+            assert_equal 3 [r zintercard 1 zsetone{t}]
+            assert_equal 2 [r zintercard 1 zsetone{t} limit 2]
+        }
+
+        test "ZUNION/ZINTER one input key with weights - $encoding" {
+            r del zsetone{t}
+            r zadd zsetone{t} 3 a 1 b 2 c
+
+            assert_equal {b 2 c 4 a 6} [r zunion 1 zsetone{t} weights 2 withscores]
+            assert_equal {b 2 c 4 a 6} [r zinter 1 zsetone{t} weights 2 withscores]
+        }
+
+        test "ZUNION/ZINTER one input key RESP3 - $encoding" {
+            r del zsetone{t}
+            r zadd zsetone{t} 3 a 1 b 2 c
+
+            r hello 3
+            assert_equal {{b 1.0} {c 2.0} {a 3.0}} [r zunion 1 zsetone{t} withscores]
+            assert_equal {{b 1.0} {c 2.0} {a 3.0}} [r zinter 1 zsetone{t} withscores]
+            r hello 2
+        }
+
+        test "ZUNIONSTORE/ZINTERSTORE/ZDIFFSTORE one input key copies source - $encoding" {
+            r del zsetone{t} zsetcopy{t}
+            r zadd zsetone{t} 3 a 1 b 2 c
+
+            foreach cmd {zunionstore zinterstore zdiffstore} {
+                assert_equal 3 [r $cmd zsetcopy{t} 1 zsetone{t}]
+                assert_equal {b 1 c 2 a 3} [r zrange zsetcopy{t} 0 -1 withscores]
+
+                r zrem zsetcopy{t} b
+                assert_equal {b 1 c 2 a 3} [r zrange zsetone{t} 0 -1 withscores]
+            }
+        }
+
+        test "ZUNIONSTORE/ZINTERSTORE/ZDIFFSTORE one missing input deletes destination - $encoding" {
+            foreach cmd {zunionstore zinterstore zdiffstore} {
+                r del zsetone{t} zsetcopy{t}
+                r zadd zsetcopy{t} 1 old
+
+                assert_equal 0 [r $cmd zsetcopy{t} 1 zsetone{t}]
+                assert_equal 0 [r exists zsetcopy{t}]
+            }
+        }
+
         test "ZINTER RESP3 - $encoding" {
             r hello 3
             assert_equal {{b 3.0} {c 5.0}} [r zinter 2 zseta{t} zsetb{t} withscores]
