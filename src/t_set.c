@@ -1299,12 +1299,23 @@ void sinterGenericCommand(client *c,
         return;
     }
 
-    if (cardinality_only && setnum == 1) {
-        cardinality = setTypeSize(sets[0]);
-        if (limit && cardinality > limit) cardinality = limit;
-        addReplyLongLong(c, cardinality);
-        zfree(sets);
-        return;
+    if (cardinality_only) {
+        /* The intersection cardinality of the same input repeated is the
+         * input cardinality, capped by LIMIT. */
+        int all_same = 1;
+        for (j = 1; j < setnum; j++) {
+            if (sets[j] != sets[0]) {
+                all_same = 0;
+                break;
+            }
+        }
+        if (all_same) {
+            cardinality = setTypeSize(sets[0]);
+            if (limit && cardinality > limit) cardinality = limit;
+            addReplyLongLong(c, cardinality);
+            zfree(sets);
+            return;
+        }
     }
 
     /* Sort sets from the smallest to largest, this will improve our

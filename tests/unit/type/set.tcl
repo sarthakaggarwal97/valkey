@@ -263,6 +263,7 @@ foreach type {single multiple single_multiple} {
         assert_equal 0 [r sintercard 1 non-existing-key]
         assert_equal 0 [r sintercard 1 non-existing-key limit 0]
         assert_equal 0 [r sintercard 1 non-existing-key limit 10]
+        assert_equal 0 [r sintercard 3 non-existing-key non-existing-key non-existing-key]
     }
 
     foreach {type} {regular intset} {
@@ -318,6 +319,12 @@ foreach type {single multiple single_multiple} {
 
             assert_equal [r scard set5{t}] [r sintercard 1 set5{t}]
             assert_equal [r scard set5{t}] [r sintercard 1 set5{t} limit 10]
+        }
+
+        test "SINTERCARD with the same set repeated - $type" {
+            assert_equal [r scard set1{t}] [r sintercard 3 set1{t} set1{t} set1{t}]
+            assert_equal [r scard set1{t}] [r sintercard 3 set1{t} set1{t} set1{t} limit 0]
+            assert_equal 10 [r sintercard 3 set1{t} set1{t} set1{t} limit 10]
         }
 
         test "SINTER with two sets - $type" {
