@@ -311,6 +311,15 @@ foreach type {single multiple single_multiple} {
             }
         }
 
+        test "SINTERCARD with one set - $type" {
+            assert_equal [r scard set1{t}] [r sintercard 1 set1{t}]
+            assert_equal [r scard set1{t}] [r sintercard 1 set1{t} limit 0]
+            assert_equal 10 [r sintercard 1 set1{t} limit 10]
+
+            assert_equal [r scard set5{t}] [r sintercard 1 set5{t}]
+            assert_equal [r scard set5{t}] [r sintercard 1 set5{t} limit 10]
+        }
+
         test "SINTER with two sets - $type" {
             assert_equal [list 195 196 197 198 199 $large] [lsort [r sinter set1{t} set2{t}]]
         }

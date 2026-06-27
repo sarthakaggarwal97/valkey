@@ -1299,6 +1299,14 @@ void sinterGenericCommand(client *c,
         return;
     }
 
+    if (cardinality_only && setnum == 1) {
+        cardinality = setTypeSize(sets[0]);
+        if (limit && cardinality > limit) cardinality = limit;
+        addReplyLongLong(c, cardinality);
+        zfree(sets);
+        return;
+    }
+
     /* Sort sets from the smallest to largest, this will improve our
      * algorithm's performance */
     qsort(sets, setnum, sizeof(robj *), qsortCompareSetsByCardinality);
