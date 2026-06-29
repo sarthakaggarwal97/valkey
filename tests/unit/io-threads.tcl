@@ -67,12 +67,10 @@ start_server {config "minimal.conf" tags {"external:skip" "valgrind:skip"} overr
         activate_io_threads_and_wait
         set info [r info]
         set io_threads_count [dict get [r config get io-threads] io-threads]
-        array set initial_active_times {}
         for {set i 1} {$i <= $io_threads_count} {incr i} {
             set used_active_time [getInfoProperty $info used_active_time_io_thread_$i]
             if {$i < $io_threads_count} {
                 assert_morethan $used_active_time 0
-                set initial_active_times($i) $used_active_time
             } else {
                 assert_equal $used_active_time {}
             }
@@ -101,6 +99,15 @@ start_server {config "minimal.conf" tags {"external:skip" "valgrind:skip"} overr
 
         # Sleep for a time duration that is significantly longer than how much
         # time each of the io_threads would be active again when reactivated.
+        # Snapshot per-thread active time immediately before sleeping so the
+        # post-sleep assertion bounds only the work attributable to this
+        # reactivation. The counter is monotonic across the server lifetime, so
+        # an absolute bound would include earlier activations and is fragile.
+        set info [r info]
+        array set pre_sleep_active_times {}
+        for {set i 1} {$i < $io_threads_count} {incr i} {
+            set pre_sleep_active_times($i) [getInfoProperty $info used_active_time_io_thread_$i]
+        }
         set sleep_time_ms 1000
         after $sleep_time_ms
 
@@ -111,9 +118,10 @@ start_server {config "minimal.conf" tags {"external:skip" "valgrind:skip"} overr
         for {set i 1} {$i <= $io_threads_count} {incr i} {
             set used_active_time [getInfoProperty $info used_active_time_io_thread_$i]
             if {$i < $io_threads_count} {
-                assert {($used_active_time - $initial_active_times($i)) < ($sleep_time_ms/1000)}
-                # Assert that total active time is lower than the sleep duration assumed
-                assert {$used_active_time < ($sleep_time_ms/1000)}
+                # Bound only the active time accrued by this reactivation, not
+                # the monotonic lifetime total. Use /1000.0 to avoid Tcl
+                # integer division.
+                assert {($used_active_time - $pre_sleep_active_times($i)) < ($sleep_time_ms/1000.0)}
             } else {
                 assert_equal $used_active_time {}
             }
