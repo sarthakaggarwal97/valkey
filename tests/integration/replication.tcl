@@ -973,8 +973,16 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                         # Let one replica hit repl-timeout while the slow reader
                         # is paused, then restore a generous timeout so the
                         # remaining replica can finish the streamed RDB.
+                        #
+                        # The master can fire the timeout disconnect on either the
+                        # full-sync or the streaming-sync branch depending on whether
+                        # the RDB child is reaped in the same serverCron tick as the
+                        # disconnect loop. Both are legitimate timeout-driven
+                        # disconnects, so accept either message and then assert that
+                        # exactly one timeout disconnect happened.
                         $master config set repl-timeout 2
-                        wait_for_log_messages -2 {"*Disconnecting timedout replica (full sync)*"} $loglines 100 100
+                        wait_for_log_messages -2 {"*Disconnecting timedout replica (full sync)*" "*Disconnecting timedout replica (streaming sync)*"} $loglines 100 100
+                        assert_equal 1 [count_log_message -2 "Disconnecting timedout replica"]
                         $master config set repl-timeout 60
                     }
 
