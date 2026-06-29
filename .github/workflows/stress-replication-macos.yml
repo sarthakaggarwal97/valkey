@@ -1,0 +1,35 @@
+name: Stress integration/replication on macOS (100x)
+
+# Manually-triggered stress test. Runs the full integration/replication
+# test file 100 times on macos-latest to confirm the diskless timeout
+# rdb-pipe subcase is no longer flaky on macOS CI scheduling.
+#
+# 10 parallel shards x 10 loops each = 100 total runs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      loops_per_shard:
+        description: "Loops per shard (shards x loops = total runs)"
+        default: "10"
+
+permissions:
+  contents: read
+
+jobs:
+  stress-replication-macos:
+    runs-on: macos-latest
+    timeout-minutes: 720
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: make
+        run: make SERVER_CFLAGS='-Werror'
+      - name: stress test integration/replication
+        run: |
+          ./runtest --single integration/replication \
+            --loops ${{ github.event.inputs.loops_per_shard }} \
+            --accurate --verbose --clients 1 --no-latency --dump-logs
