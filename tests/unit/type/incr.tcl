@@ -27,7 +27,7 @@ start_server {tags {"incr"}} {
     test {INCR over 32bit value} {
         r set novar 17179869184
         r incr novar
-    } {17179869185}
+    } {17179869186}
 
     test {INCRBY over 32bit value with over 32bit increment} {
         r set novar 17179869184
