@@ -1,6 +1,6 @@
 {
     "PING": {
-        "summary": "Returns the server's liveliness response.",
+        "summary": "Returns the server's liveliness response (PONG).",
         "complexity": "O(1)",
         "group": "connection",
         "since": "1.0.0",
