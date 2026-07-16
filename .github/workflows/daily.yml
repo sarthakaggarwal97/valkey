@@ -125,6 +125,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: unittest
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
         run: |
@@ -213,6 +216,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: unittest
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
         run: |
@@ -321,6 +327,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: unittest
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
         run: |
@@ -381,6 +390,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -433,6 +445,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -508,6 +523,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: unittest
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
         run: |
@@ -575,6 +593,9 @@ jobs:
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: |
           ./runtest-sentinel --failures-output test-failures/sentinel.json --tls ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json --tls ${{github.event.inputs.cluster_test_args}}
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -632,6 +653,9 @@ jobs:
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: |
           ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -678,6 +702,9 @@ jobs:
       - name: test
         if: true && !contains(github.event.inputs.skiptests, 'valkey')
         run: ./runtest --io-threads --accurate --failures-output test-failures/valkey.json --verbose --tags network --dump-logs ${{github.event.inputs.test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json --io-threads ${{github.event.inputs.cluster_test_args}}
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -727,6 +754,9 @@ jobs:
         if: true && !contains(github.event.inputs.skiptests, 'valkey')
         run: |
           ./runtest --io-threads --tls --accurate --failures-output test-failures/valkey.json --verbose --tags network --dump-logs ${{github.event.inputs.test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json --io-threads --tls ${{github.event.inputs.cluster_test_args}}
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -1074,6 +1104,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: unittest
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
         run: |
@@ -1229,6 +1262,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: unittest
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
         run: |
@@ -1380,6 +1416,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: unittest
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
         run: |
@@ -1443,6 +1482,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -1520,6 +1562,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -1602,6 +1647,9 @@ jobs:
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: |
           ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json --tls-module ${{github.event.inputs.cluster_test_args}}
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -1679,6 +1727,9 @@ jobs:
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: |
           ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -1811,6 +1862,14 @@ jobs:
       - run: cd libbacktrace && ./configure && make && sudo make install
       - name: make
         run: make SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
+      - name: Upload test failures
+        if: always()
+        uses: ./.github/actions/upload-test-failures
+        with:
+          job-name: ${{ github.job }}
   build-old-macos-versions:
     strategy:
       fail-fast: false
@@ -1943,6 +2002,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -1998,6 +2060,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json ${{github.event.inputs.cluster_test_args}}
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -2131,6 +2196,9 @@ jobs:
       - name: sentinel tests
         if: true && !contains(github.event.inputs.skiptests, 'sentinel')
         run: ./runtest-sentinel --failures-output test-failures/sentinel.json --log-req-res --dont-clean --force-resp3 ${{github.event.inputs.cluster_test_args}}
+      - name: legacy cluster tests
+        if: true && !contains(github.event.inputs.skiptests, 'cluster')
+        run: test ! -f tests/cluster/run.tcl || ./runtest-cluster --failures-output test-failures/cluster.json --log-req-res --dont-clean --force-resp3 ${{github.event.inputs.cluster_test_args}}
       - name: Install Python dependencies
         uses: py-actions/py-dependency-install@30aa0023464ed4b5b116bd9fbdab87acf01a484e # v4.1.0
         with:
