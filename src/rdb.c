@@ -1608,8 +1608,8 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
         crp = &cr;
         save_rio = (rio *)crp;
     }
-    /* Streaming-compressed RDBs use the frame checksum policy recorded in the
-     * VCS envelope instead of the logical RDB CRC64 trailer. */
+    /* Streaming-compressed RDBs use codec-frame checksums instead of the
+     * logical RDB CRC64 trailer. */
     if (use_streaming_compression || !server.rdb_checksum) {
         save_rio->flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
         save_rio->update_cksum = NULL;
@@ -3658,11 +3658,37 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         uint64_t cksum, expected = rdb->cksum;
 
         if (rioRead(rdb, &cksum, 8) == 0) goto eoferr;
-        if (server.rdb_checksum && !server.skip_checksum_validation) {
+        if ((rdb->flags & RIO_FLAG_STREAMING_COMPRESSION) &&
+            (rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM)) {
+            streamReaderInfo info = {0};
+            if (decompressRioGetInfo((decompressRio *)rdb, &info) != 0 ||
+                !info.codec_checksum_info_available) {
+                serverLog(LL_WARNING, "Failed to read codec checksum metadata from streaming-compressed RDB");
+                return RDB_FAILED;
+            }
+
+            bool verification_disabled = !server.rdb_checksum || server.skip_checksum_validation;
+            if (!info.codec_block_checksum_enabled && !info.codec_content_checksum_enabled) {
+                serverLog(LL_NOTICE, "Logical CRC64 skipped; codec checksums disabled");
+            } else if (info.algo == ALGO_LZ4 &&
+                       info.codec_block_checksum_enabled &&
+                       info.codec_content_checksum_enabled) {
+                serverLog(LL_NOTICE,
+                          verification_disabled
+                              ? "Logical CRC64 skipped; LZ4 block/content checksums present but verification disabled"
+                              : "Logical CRC64 skipped; LZ4 block/content checksums enabled");
+            } else {
+                serverLog(LL_NOTICE,
+                          verification_disabled
+                              ? "Logical CRC64 skipped; %s frame checksums present but verification disabled (block=%s, content=%s)"
+                              : "Logical CRC64 skipped; %s frame checksums enabled (block=%s, content=%s)",
+                          compressionAlgoName(info.algo),
+                          info.codec_block_checksum_enabled ? "enabled" : "disabled",
+                          info.codec_content_checksum_enabled ? "enabled" : "disabled");
+            }
+        } else if (server.rdb_checksum && !server.skip_checksum_validation) {
             memrev64ifbe(&cksum);
-            if ((rdb->flags & RIO_FLAG_STREAMING_COMPRESSION) && (rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM)) {
-                serverLog(LL_NOTICE, "Skipping logical RDB checksum for streaming-compressed input");
-            } else if (rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) {
+            if (rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) {
                 serverLog(LL_NOTICE, "RDB file was saved with checksum disabled: skipped checksum for this transfer");
             } else if (cksum == 0) {
                 serverLog(LL_NOTICE, "RDB file was saved with checksum disabled: no check performed.");
@@ -3714,7 +3740,7 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     rio *load_rio = &rdb;
     decompressRio decompressor;
     bool decompressor_initialized = false;
-    compressionAlgo streaming_algo = ALGO_NONE;
+    streamReaderInfo stream_info = {0};
     int retval = RDB_FAILED;
     struct stat sb;
     int rdb_fd;
@@ -3732,7 +3758,9 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     startLoadingFile(sb.st_size, filename, rdbflags);
     rioInitWithFile(&rdb, fp);
 
-    decompressRioInitResult init_rc = rioInitWithRdbDecompression(&decompressor, &rdb, &streaming_algo);
+    bool verify_codec_checksums = server.rdb_checksum && !server.skip_checksum_validation;
+    decompressRioInitResult init_rc = rioInitWithRdbDecompression(
+        &decompressor, &rdb, verify_codec_checksums, &stream_info);
     if (init_rc == DECOMPRESS_RIO_INIT_INCOMPATIBLE) {
         serverLog(LL_WARNING,
                   "Invalid or unsupported RDB stream envelope in %s. "
@@ -3748,10 +3776,13 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     }
     decompressor_initialized = true;
     load_rio = (rio *)&decompressor;
+    if (rsi) {
+        rsi->loaded_format = stream_info.compressed ? RDB_LOAD_FORMAT_VCS : RDB_LOAD_FORMAT_PLAIN;
+    }
 
     if (load_rio->flags & RIO_FLAG_STREAMING_COMPRESSION) {
         serverLog(LL_NOTICE, "Loading compressed RDB (algo=%s) from %s",
-                  compressionAlgoName(streaming_algo), filename);
+                  compressionAlgoName(stream_info.algo), filename);
     }
 
     retval = rdbLoadRio(load_rio, rdbflags, rsi);

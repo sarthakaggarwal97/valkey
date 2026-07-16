@@ -22,6 +22,9 @@ void compressionLz4CompressorFree(streamCompressor *compressor);
 /* Initializes LZ4 decompressor state. Returns 0 on success. */
 int compressionLz4DecompressorInit(streamDecompressor *decompressor);
 
+/* Reports frame metadata already parsed by the normal decompression path. */
+int compressionLz4GetFrameInfo(streamDecompressor *decompressor);
+
 /* Releases LZ4 decompressor resources. */
 void compressionLz4DecompressorFree(streamDecompressor *decompressor);
 

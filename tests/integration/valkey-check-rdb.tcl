@@ -78,7 +78,7 @@ tags {"check-rdb network external:skip logreqres:skip"} {
 
             assert_equal 0 $failed
             assert_match {*RDB looks OK!*} $result
-            assert_match {*Skipping logical RDB checksum for streaming-compressed input.*} $result
+            assert_match {*Logical CRC64 skipped; lz4 frame checksums enabled (block=enabled, content=enabled).*} $result
             assert_match {*type.string.keys.total:1*} $result
             assert_no_match {*Checksum OK*} $result
         }
@@ -237,7 +237,7 @@ tags {"check-rdb network external:skip logreqres:skip"} {
                 exec $::VALKEY_CHECK_RDB_BIN $dump_rdb
             } result]
             assert_equal 0 $failed
-            assert_match {*Skipping logical RDB checksum for streaming-compressed input.*} $result
+            assert_match {*Logical CRC64 skipped; codec checksums disabled.*} $result
             assert_match {*RDB looks OK!*} $result
             assert_no_match {*Checksum OK*} $result
         }

@@ -37,6 +37,10 @@ typedef struct {
     compressionAlgo algo;
     bool errored;
     bool frame_done;
+    bool frame_info_ready;
+    bool block_checksum_enabled;
+    bool content_checksum_enabled;
+    bool verify_codec_checksums;
     void *ctx;
     size_t input_hint; /* Preferred compressed bytes for next feed, 0 if unknown. */
 } streamDecompressor;
@@ -58,6 +62,10 @@ void streamCompressorFree(streamCompressor *compressor);
 
 /* Initializes decompressor state for algo. Returns 0 on success. */
 int streamDecompressorInit(streamDecompressor *decompressor, compressionAlgo algo);
+
+/* Reports checksum metadata after normal decoding has consumed the codec
+ * header. Returns 0 when available, 1 before decoding starts, or -1 on error. */
+int streamDecompressorGetFrameInfo(streamDecompressor *decompressor);
 
 /* Releases resources owned by an initialized decompressor. */
 void streamDecompressorFree(streamDecompressor *decompressor);

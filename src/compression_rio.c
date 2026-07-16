@@ -100,7 +100,7 @@ int rioInitWithRdbCompression(compressRio *cr,
     streamWriterConfig cfg = {
         .algo = algo,
         .level = 0,
-        .stream_kind = STREAM_KIND_RDB,
+        .stream_kind = VCS_STREAM_RDB,
         .codec_checksum_enabled = codec_checksum_enabled,
     };
 
@@ -187,19 +187,25 @@ streamReaderError decompressRioGetError(decompressRio *dr) {
     return dr->reader.error_kind;
 }
 
+int decompressRioGetInfo(decompressRio *dr, streamReaderInfo *info) {
+    return streamReaderGetInfo(&dr->reader, info);
+}
+
 int decompressRioValidateEnd(decompressRio *dr) {
     return streamReaderValidateEnd(&dr->reader);
 }
 
 decompressRioInitResult rioInitWithRdbDecompression(decompressRio *dr,
                                                     rio *inner,
-                                                    compressionAlgo *algo) {
+                                                    bool verify_codec_checksums,
+                                                    streamReaderInfo *info) {
     streamReaderConfig cfg = {
-        .expected_stream_kind = STREAM_KIND_RDB,
+        .expected_stream_kind = VCS_STREAM_RDB,
         .allow_passthrough = true,
+        .verify_codec_checksums = verify_codec_checksums,
         .buffer_size = STREAM_READER_BUFFER_SIZE_DEFAULT,
     };
-    streamReaderInfo info = {0};
+    streamReaderInfo initial_info = {0};
 
     memset(dr, 0, sizeof(*dr));
     rioInitBase(&dr->base, decompressRioRead, rioWriteUnsupported, decompressRioTell,
@@ -208,10 +214,8 @@ decompressRioInitResult rioInitWithRdbDecompression(decompressRio *dr,
                     (inner->flags & (RIO_FLAG_SKIP_RDB_CHECKSUM | RIO_FLAG_CONN_BACKED)));
     dr->inner = inner;
 
-    if (algo) *algo = ALGO_NONE;
-
     if (streamReaderInit(&dr->reader, &cfg, decompressRioReadPartial, dr) != 0) return DECOMPRESS_RIO_INIT_ERROR;
-    if (streamReaderGetInfo(&dr->reader, &info) != 0) {
+    if (streamReaderGetInfo(&dr->reader, &initial_info) != 0) {
         streamReaderError error_kind = dr->reader.error_kind;
         decompressRioFree(dr);
         return error_kind == STREAM_READER_ERROR_INCOMPATIBLE
@@ -219,10 +223,10 @@ decompressRioInitResult rioInitWithRdbDecompression(decompressRio *dr,
                    : DECOMPRESS_RIO_INIT_ERROR;
     }
 
-    if (info.compressed) {
+    if (initial_info.compressed) {
         dr->base.flags |= RIO_FLAG_STREAMING_COMPRESSION | RIO_FLAG_SKIP_RDB_CHECKSUM;
-        if (algo) *algo = info.algo;
     }
+    if (info) *info = initial_info;
     return DECOMPRESS_RIO_INIT_OK;
 }
 

@@ -66,6 +66,12 @@ int compressionLz4DecompressorInit(streamDecompressor *decompressor) {
     return 0;
 }
 
+int compressionLz4GetFrameInfo(streamDecompressor *decompressor) {
+    assert(decompressor->ctx != NULL);
+    if (decompressor->frame_info_ready) return 0;
+    return decompressor->frame_done ? -1 : 1;
+}
+
 void compressionLz4DecompressorFree(streamDecompressor *decompressor) {
     if (decompressor->ctx) {
         LZ4F_freeDecompressionContext((LZ4F_dctx *)decompressor->ctx);
@@ -148,16 +154,63 @@ ssize_t compressionLz4DecompressFeed(streamDecompressor *decompressor,
                                      size_t input_len,
                                      size_t *input_consumed) {
     assert(decompressor->ctx != NULL);
+    *input_consumed = 0;
 
     LZ4F_dctx *dctx = (LZ4F_dctx *)decompressor->ctx;
+    size_t total_consumed = 0;
+
+    /* LZ4F_getFrameInfo consumes the same header LZ4F_decompress would parse.
+     * Do it lazily on the first normal feed so metadata costs no source read
+     * and the header is decoded exactly once. */
+    if (!decompressor->frame_info_ready) {
+        if (input_len < LZ4F_MIN_SIZE_TO_KNOW_HEADER_LENGTH) {
+            decompressor->input_hint = LZ4F_MIN_SIZE_TO_KNOW_HEADER_LENGTH;
+            return 0;
+        }
+
+        size_t header_size = LZ4F_headerSize(input, input_len);
+        if (LZ4F_isError(header_size)) {
+            decompressor->errored = true;
+            return -1;
+        }
+        if (input_len < header_size) {
+            decompressor->input_hint = header_size;
+            return 0;
+        }
+
+        LZ4F_frameInfo_t frame_info = {0};
+        size_t header_consumed = input_len;
+        size_t ret = LZ4F_getFrameInfo(dctx, &frame_info, input, &header_consumed);
+        if (LZ4F_isError(ret)) {
+            decompressor->errored = true;
+            return -1;
+        }
+        decompressor->block_checksum_enabled =
+            frame_info.blockChecksumFlag == LZ4F_blockChecksumEnabled;
+        decompressor->content_checksum_enabled =
+            frame_info.contentChecksumFlag == LZ4F_contentChecksumEnabled;
+        decompressor->frame_info_ready = true;
+        decompressor->input_hint = ret;
+        total_consumed = header_consumed;
+        input += header_consumed;
+        input_len -= header_consumed;
+        if (input_len == 0) {
+            *input_consumed = total_consumed;
+            return 0;
+        }
+    }
+
     size_t dst_size = output_capacity;
     size_t src_size = input_len;
-    size_t ret = LZ4F_decompress(dctx, output, &dst_size, input, &src_size, NULL);
+    LZ4F_decompressOptions_t options = {
+        .skipChecksums = !decompressor->verify_codec_checksums,
+    };
+    size_t ret = LZ4F_decompress(dctx, output, &dst_size, input, &src_size, &options);
     if (LZ4F_isError(ret)) {
         decompressor->errored = true;
         return -1;
     }
-    *input_consumed = src_size;
+    *input_consumed = total_consumed + src_size;
     decompressor->input_hint = ret;
     if (ret == 0) decompressor->frame_done = true;
     return (ssize_t)dst_size;

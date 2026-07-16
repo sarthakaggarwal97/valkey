@@ -43,13 +43,14 @@ int rioInitWithRdbCompression(compressRio *cr,
 int compressRioFinish(compressRio *cr);
 void compressRioFree(compressRio *cr);
 
-/* Sets *algo to the compressed stream algorithm, or ALGO_NONE for plain input.
- * Compressed RDB input sets RIO_FLAG_SKIP_RDB_CHECKSUM on dr->base because the
- * VCS frame carries the checksum policy. */
+/* Compressed RDB input sets RIO_FLAG_SKIP_RDB_CHECKSUM on dr->base because VCS
+ * uses codec-frame checksums instead of the logical RDB CRC64 trailer. */
 decompressRioInitResult rioInitWithRdbDecompression(decompressRio *dr,
                                                     rio *inner,
-                                                    compressionAlgo *algo);
+                                                    bool verify_codec_checksums,
+                                                    streamReaderInfo *info);
 streamReaderError decompressRioGetError(decompressRio *dr);
+int decompressRioGetInfo(decompressRio *dr, streamReaderInfo *info);
 int decompressRioValidateEnd(decompressRio *dr);
 void decompressRioFree(decompressRio *dr);
 
