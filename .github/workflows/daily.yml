@@ -269,6 +269,8 @@ jobs:
               make test-unit
             elif [ -f ./src/valkey-unit-tests ]; then
               ./src/valkey-unit-tests
+            elif [ ! -d ./src/unit ]; then
+              echo "No native unit-test framework exists on this release line"
             else
               echo "No unit-test binary was produced"
               exit 1
