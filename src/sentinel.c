@@ -116,6 +116,10 @@ static mstime_t sentinel_default_failover_timeout = 60 * 3 * 1000;
 #define SENTINEL_FAILOVER_STATE_RECONF_REPLICAS 5      /* REPLICAOF newprimary */
 #define SENTINEL_FAILOVER_STATE_UPDATE_CONFIG 6        /* Monitor promoted replica. */
 
+#define SENTINEL_COORD_FAILOVER_CLEANUP_NONE 0
+#define SENTINEL_COORD_FAILOVER_CLEANUP_PENDING 1
+#define SENTINEL_COORD_FAILOVER_CLEANUP_DONE 2
+
 #define SENTINEL_PRIMARY_LINK_STATUS_UP 0
 #define SENTINEL_PRIMARY_LINK_STATUS_DOWN 1
 
@@ -255,6 +259,7 @@ typedef struct sentinelValkeyInstance {
     mstime_t failover_timeout;                       /* Max time to refresh failover state. */
     mstime_t failover_delay_logged;                  /* For what failover_start_time value we
                                                       * logged the failover delay. */
+    int coord_failover_cleanup_state;                /* State of coordinated failover client cleanup. */
     struct sentinelValkeyInstance *promoted_replica; /* Promoted replica instance. */
     /* Scripts executed to notify admin or reconfigure clients: when they
      * are set to NULL no script is executed. */
@@ -416,7 +421,9 @@ sentinelValkeyInstance *sentinelSelectReplica(sentinelValkeyInstance *primary);
 void sentinelScheduleScriptExecution(char *path, ...);
 void sentinelStartFailover(sentinelValkeyInstance *primary);
 void sentinelDiscardReplyCallback(valkeyAsyncContext *c, void *reply, void *privdata);
+void sentinelFailoverCleanupReplyCallback(valkeyAsyncContext *c, void *reply, void *privdata);
 int sentinelKillClients(sentinelValkeyInstance *ri);
+void sentinelFailoverCleanupClients(sentinelValkeyInstance *primary);
 int sentinelSendReplicaOf(sentinelValkeyInstance *ri, const sentinelAddr *addr);
 char *sentinelVoteLeader(sentinelValkeyInstance *primary, uint64_t req_epoch, char *req_runid, uint64_t *leader_epoch);
 int sentinelFlushConfig(void);
@@ -1352,6 +1359,7 @@ sentinelValkeyInstance *createSentinelValkeyInstance(char *name,
     ri->failover_start_time = 0;
     ri->failover_timeout = sentinel_default_failover_timeout;
     ri->failover_delay_logged = 0;
+    ri->coord_failover_cleanup_state = SENTINEL_COORD_FAILOVER_CLEANUP_NONE;
     ri->promoted_replica = NULL;
     ri->notification_script = NULL;
     ri->client_reconfig_script = NULL;
@@ -1543,6 +1551,7 @@ void sentinelResetPrimary(sentinelValkeyInstance *ri, int flags) {
     ri->failover_state = SENTINEL_FAILOVER_STATE_NONE;
     ri->failover_state_change_time = 0;
     ri->failover_start_time = 0; /* We can failover again ASAP. */
+    ri->coord_failover_cleanup_state = SENTINEL_COORD_FAILOVER_CLEANUP_NONE;
     ri->promoted_replica = NULL;
     sdsfree(ri->runid);
     sdsfree(ri->replica_primary_host);
@@ -2621,10 +2630,7 @@ void sentinelRefreshInstanceInfo(sentinelValkeyInstance *ri, const char *info) {
             sentinelFlushConfig();
             sentinelEvent(LL_WARNING, "+promoted-slave", ri, "%@");
             if (sentinel.simfailure_flags & SENTINEL_SIMFAILURE_CRASH_AFTER_PROMOTION) sentinelSimFailureCrash();
-            if (ri->primary->flags & SRI_COORD_FAILOVER) {
-                sentinelKillClients(ri->primary);
-                sentinelKillClients(ri);
-            }
+            if (ri->primary->flags & SRI_COORD_FAILOVER) sentinelFailoverCleanupClients(ri->primary);
             sentinelEvent(LL_WARNING, "+failover-state-reconf-slaves", ri->primary, "%@");
             sentinelCallClientReconfScript(ri->primary, SENTINEL_LEADER, "start", ri->primary->addr, ri->addr);
             sentinelForceHelloUpdateForPrimary(ri->primary);
@@ -2712,6 +2718,18 @@ void sentinelDiscardReplyCallback(valkeyAsyncContext *c, void *reply, void *priv
     UNUSED(privdata);
 
     if (link) link->pending_commands--;
+}
+
+/* Confirm that the coordinated failover cleanup transaction reached the
+ * instance. A disconnected async context calls pending callbacks with a NULL
+ * reply, so retry the cleanup after Sentinel reconnects in that case. */
+void sentinelFailoverCleanupReplyCallback(valkeyAsyncContext *c, void *reply, void *privdata) {
+    sentinelValkeyInstance *ri = privdata;
+    instanceLink *link = c->data;
+
+    if (link) link->pending_commands--;
+    ri->coord_failover_cleanup_state =
+        reply ? SENTINEL_COORD_FAILOVER_CLEANUP_DONE : SENTINEL_COORD_FAILOVER_CLEANUP_NONE;
 }
 
 void sentinelPingReplyCallback(valkeyAsyncContext *c, void *reply, void *privdata) {
@@ -4804,12 +4822,12 @@ int sentinelFailoverTo(sentinelValkeyInstance *ri, const sentinelAddr *addr, mst
  * if the server was started with a configuration file).
  *
  * The command returns C_OK if the commands were accepted for
- * (later) delivery otherwise C_ERR. The command replies are just
- * discarded. */
+ * (later) delivery otherwise C_ERR. Intermediate replies are discarded,
+ * while the EXEC reply confirms that cleanup reached the instance. */
 int sentinelKillClients(sentinelValkeyInstance *ri) {
     int retval;
 
-    if (ri->link->cc == NULL) return C_ERR;
+    if (ri->link->cc == NULL || !(ri->link->cc->c.flags & VALKEY_CONNECTED)) return C_ERR;
 
     /* 1) Rewrite the configuration (the instance just switched roles)
      * 2) Disconnect all clients (but this one sending the command) in order
@@ -4817,8 +4835,8 @@ int sentinelKillClients(sentinelValkeyInstance *ri) {
      *    clients.
      * 3) Unblock client writes (which include PUBLISH).
      *
-     * Note that we don't check the replies returned by commands, since we
-     * will observe instead the effects in the next INFO output. */
+     * The individual command replies are not checked. The final EXEC reply
+     * only confirms that this transaction reached the instance. */
     retval = valkeyAsyncCommand(ri->link->cc,
                                 sentinelDiscardReplyCallback, ri, "%s",
                                 sentinelInstanceMapCommand(ri, "MULTI"));
@@ -4847,12 +4865,24 @@ int sentinelKillClients(sentinelValkeyInstance *ri) {
     ri->link->pending_commands++;
 
     retval = valkeyAsyncCommand(ri->link->cc,
-                                sentinelDiscardReplyCallback, ri, "%s",
+                                sentinelFailoverCleanupReplyCallback, ri, "%s",
                                 sentinelInstanceMapCommand(ri, "EXEC"));
     if (retval == C_ERR) return retval;
     ri->link->pending_commands++;
+    ri->coord_failover_cleanup_state = SENTINEL_COORD_FAILOVER_CLEANUP_PENDING;
 
     return C_OK;
+}
+
+void sentinelFailoverCleanupClients(sentinelValkeyInstance *primary) {
+    serverAssert(primary->flags & SRI_COORD_FAILOVER);
+    serverAssert(primary->promoted_replica != NULL);
+
+    if (primary->coord_failover_cleanup_state == SENTINEL_COORD_FAILOVER_CLEANUP_NONE)
+        sentinelKillClients(primary);
+
+    if (primary->promoted_replica->coord_failover_cleanup_state == SENTINEL_COORD_FAILOVER_CLEANUP_NONE)
+        sentinelKillClients(primary->promoted_replica);
 }
 
 /* Send REPLICAOF to the specified instance, always followed by a
@@ -4941,6 +4971,7 @@ void sentinelStartFailover(sentinelValkeyInstance *primary) {
     primary->failover_state = SENTINEL_FAILOVER_STATE_WAIT_START;
     primary->flags |= SRI_FAILOVER_IN_PROGRESS;
     primary->failover_epoch = ++sentinel.current_epoch;
+    primary->coord_failover_cleanup_state = SENTINEL_COORD_FAILOVER_CLEANUP_NONE;
     sentinelEvent(LL_WARNING, "+new-epoch", primary, "%llu", (unsigned long long)sentinel.current_epoch);
     sentinelEvent(LL_WARNING, "+try-failover", primary, "%@");
     primary->failover_start_time = mstime() + rand() % SENTINEL_MAX_DESYNC;
@@ -5129,6 +5160,7 @@ void sentinelFailoverSelectReplica(sentinelValkeyInstance *ri) {
     } else {
         sentinelEvent(LL_WARNING, "+selected-slave", replica, "%@");
         replica->flags |= SRI_PROMOTED;
+        replica->coord_failover_cleanup_state = SENTINEL_COORD_FAILOVER_CLEANUP_NONE;
         ri->promoted_replica = replica;
         ri->failover_state = SENTINEL_FAILOVER_STATE_SEND_REPLICAOF_NOONE;
         ri->failover_state_change_time = mstime();
@@ -5226,6 +5258,11 @@ void sentinelFailoverDetectEnd(sentinelValkeyInstance *primary) {
     }
     dictReleaseIterator(di);
 
+    if ((primary->flags & SRI_COORD_FAILOVER) &&
+        (primary->coord_failover_cleanup_state != SENTINEL_COORD_FAILOVER_CLEANUP_DONE ||
+         primary->promoted_replica->coord_failover_cleanup_state != SENTINEL_COORD_FAILOVER_CLEANUP_DONE))
+        not_reconfigured++;
+
     /* Force end of failover on timeout. */
     if (elapsed > primary->failover_timeout) {
         not_reconfigured = 0;
@@ -5270,6 +5307,11 @@ void sentinelFailoverReconfNextReplica(sentinelValkeyInstance *primary) {
     dictIterator *di;
     dictEntry *de;
     int in_progress = 0;
+
+    if ((primary->flags & SRI_COORD_FAILOVER) &&
+        (primary->coord_failover_cleanup_state != SENTINEL_COORD_FAILOVER_CLEANUP_DONE ||
+         primary->promoted_replica->coord_failover_cleanup_state != SENTINEL_COORD_FAILOVER_CLEANUP_DONE))
+        sentinelFailoverCleanupClients(primary);
 
     di = dictGetIterator(primary->replicas);
     while ((de = dictNext(di)) != NULL) {
@@ -5362,8 +5404,10 @@ void sentinelAbortFailover(sentinelValkeyInstance *ri) {
     ri->flags &= ~(SRI_FAILOVER_IN_PROGRESS | SRI_FORCE_FAILOVER | SRI_COORD_FAILOVER);
     ri->failover_state = SENTINEL_FAILOVER_STATE_NONE;
     ri->failover_state_change_time = mstime();
+    ri->coord_failover_cleanup_state = SENTINEL_COORD_FAILOVER_CLEANUP_NONE;
     if (ri->promoted_replica) {
         ri->promoted_replica->flags &= ~SRI_PROMOTED;
+        ri->promoted_replica->coord_failover_cleanup_state = SENTINEL_COORD_FAILOVER_CLEANUP_NONE;
         ri->promoted_replica = NULL;
     }
 }

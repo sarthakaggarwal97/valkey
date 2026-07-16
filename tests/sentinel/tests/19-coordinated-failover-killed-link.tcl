@@ -24,6 +24,8 @@ test "Coordinated failover tolerates old primary command link disconnect" {
     assert {[lindex $old_addr 1] == $old_port}
 
     set sentinel_client_name [sentinel_cmd_client_name $sentinel_id]
+    set rd [valkey_client valkey $old_master_id]
+    $rd reconnect 0
 
     wait_for_condition 1000 50 {
         [string match "*name=$sentinel_client_name*" [R $old_master_id CLIENT LIST]]
@@ -63,5 +65,11 @@ test "Coordinated failover tolerates old primary command link disconnect" {
         [lindex [S $sentinel_id SENTINEL GET-PRIMARY-ADDR-BY-NAME mymaster] 1] != $old_port
     } else {
         fail "Sentinel did not complete the coordinated failover"
+    }
+
+    wait_for_condition 3000 10 {
+        [catch {$rd PING} reply] && [string match "*I/O error*" $reply]
+    } else {
+        fail "Sentinel did not disconnect clients from the old primary after reconnecting, got: $reply"
     }
 }
