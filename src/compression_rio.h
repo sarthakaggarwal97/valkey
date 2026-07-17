@@ -47,7 +47,7 @@ void compressRioFree(compressRio *cr);
  * uses codec-frame checksums instead of the logical RDB CRC64 trailer. */
 decompressRioInitResult rioInitWithRdbDecompression(decompressRio *dr,
                                                     rio *inner,
-                                                    bool verify_codec_checksums,
+                                                    bool skip_codec_checksum_validation,
                                                     streamReaderInfo *info);
 streamReaderError decompressRioGetError(decompressRio *dr);
 int decompressRioGetInfo(decompressRio *dr, streamReaderInfo *info);

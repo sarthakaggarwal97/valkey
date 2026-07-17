@@ -65,7 +65,7 @@ typedef struct {
 typedef struct {
     uint8_t expected_stream_kind;
     bool allow_passthrough;
-    bool verify_codec_checksums;
+    bool skip_codec_checksum_validation;
     size_t buffer_size; /* Must be nonzero. */
 } streamReaderConfig;
 
@@ -115,7 +115,7 @@ typedef struct streamReader {
     } probe;
     size_t probe_replay_pos; /* Passthrough bytes left to replay from probe. */
     size_t buffer_size;
-    bool verify_codec_checksums;
+    bool skip_codec_checksum_validation;
     bool errored;
     streamReaderError error_kind;
 
@@ -151,7 +151,8 @@ int streamReadEnvelopeInfo(const uint8_t *buf,
 
 int streamReaderInit(streamReader *reader, streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx);
 
-/* Full or fail: returns len on success, 0 on EOF, -1 on error. */
+/* Returns up to len bytes, 0 on EOF, or -1 on error. An error after partial
+ * output is reported on the next call. */
 ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len);
 int streamReaderGetInfo(streamReader *reader, streamReaderInfo *info);
 int streamReaderValidateEnd(streamReader *reader);

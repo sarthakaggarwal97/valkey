@@ -197,12 +197,12 @@ int decompressRioValidateEnd(decompressRio *dr) {
 
 decompressRioInitResult rioInitWithRdbDecompression(decompressRio *dr,
                                                     rio *inner,
-                                                    bool verify_codec_checksums,
+                                                    bool skip_codec_checksum_validation,
                                                     streamReaderInfo *info) {
     streamReaderConfig cfg = {
         .expected_stream_kind = VCS_STREAM_RDB,
         .allow_passthrough = true,
-        .verify_codec_checksums = verify_codec_checksums,
+        .skip_codec_checksum_validation = skip_codec_checksum_validation,
         .buffer_size = STREAM_READER_BUFFER_SIZE_DEFAULT,
     };
     streamReaderInfo initial_info = {0};

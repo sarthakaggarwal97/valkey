@@ -301,4 +301,89 @@ tags {"repl external:skip"} {
             }
         }
     }
+
+    test "VCS full sync falls back to BGREWRITEAOF and removes the sync RDB" {
+        start_server {overrides {appendonly no rdbcompression lz4-stream save ""}} {
+            set source [srv 0 client]
+            for {set i 0} {$i < 100} {incr i} {
+                $source set "vcs-key:$i" [string repeat "vcs-value:$i " 8]
+            }
+            assert_equal "OK" [$source save]
+
+            set source_dir [lindex [$source config get dir] 1]
+            set vcs_rdb [file join $source_dir [lindex [$source config get dbfilename] 1]]
+            set fd [open $vcs_rdb r]
+            fconfigure $fd -translation binary
+            binary scan [read $fd 7] cu* envelope
+            close $fd
+            assert_equal [list 86 67 83 1 1 0 1] $envelope
+
+            set fake_port [find_available_port $::baseport $::portcount]
+            set ready_path [file join $source_dir fake-primary-ready]
+            set tclsh [info nameofexecutable]
+            set fake_pid [exec $tclsh tests/helpers/fake_primary_with_rdb.tcl \
+                $fake_port $vcs_rdb $ready_path &]
+
+            try {
+                wait_for_condition 50 100 {
+                    [file exists $ready_path]
+                } else {
+                    fail "fake primary did not start"
+                }
+
+                start_server {overrides {appendonly yes aof-use-rdb-preamble yes rdb-del-sync-files yes repl-diskless-load disabled save ""}} {
+                    set replica [srv 0 client]
+                    set replica_log [srv 0 stdout]
+                    set replica_dir [lindex [$replica config get dir] 1]
+                    set replica_rdb [file join $replica_dir [lindex [$replica config get dbfilename] 1]]
+
+                    $replica replicaof 127.0.0.1 $fake_port
+                    wait_for_sync $replica
+
+                    wait_for_condition 100 100 {
+                        [log_file_matches $replica_log "*has VCS physical format, falling back to BGREWRITEAOF*"]
+                    } else {
+                        fail "VCS AOF fallback was not logged"
+                    }
+                    waitForBgrewriteaof $replica
+
+                    wait_for_condition 100 100 {
+                        ![file exists $replica_rdb]
+                    } else {
+                        fail "VCS synchronization RDB was not removed"
+                    }
+
+                    set manifest_path [get_aof_manifest_path $replica]
+                    set base_name [get_cur_base_aof_name $manifest_path]
+                    assert {$base_name ne ""}
+                    assert {[string match "*.rdb" $base_name]}
+                    set base_path [file join $replica_dir \
+                        [lindex [$replica config get appenddirname] 1] $base_name]
+                    set fd [open $base_path r]
+                    fconfigure $fd -translation binary
+                    set base_prefix [read $fd 6]
+                    close $fd
+                    assert {$base_prefix eq "VALKEY" || $base_prefix eq "REDIS0"}
+
+                    assert_equal 100 [$replica dbsize]
+                    for {set i 0} {$i < 100} {incr i} {
+                        assert_equal [string repeat "vcs-value:$i " 8] [$replica get "vcs-key:$i"]
+                    }
+
+                    $replica replicaof no one
+                    restart_server 0 true false
+                    set replica [srv 0 client]
+                    wait_done_loading $replica
+
+                    assert_equal 100 [$replica dbsize]
+                    for {set i 0} {$i < 100} {incr i} {
+                        assert_equal [string repeat "vcs-value:$i " 8] [$replica get "vcs-key:$i"]
+                    }
+                }
+            } finally {
+                catch {exec kill $fake_pid}
+                file delete -force $ready_path
+            }
+        }
+    } {} {tls:skip}
 }

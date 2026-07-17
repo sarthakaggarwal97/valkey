@@ -1028,7 +1028,7 @@ int restartAOFWithSyncRdb(rdbLoadFormat loaded_format) {
                   "Sync RDB file %s has %s physical format, falling back to BGREWRITEAOF instead of reusing it as an AOF base",
                   server.rdb_filename,
                   loaded_format == RDB_LOAD_FORMAT_VCS ? "VCS" : "unknown");
-        return C_ERR;
+        goto cleanup;
     }
 
     if (dirCreateIfMissing(server.aof_dirname) == -1) {

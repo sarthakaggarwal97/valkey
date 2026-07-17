@@ -40,7 +40,7 @@ typedef struct {
     bool frame_info_ready;
     bool block_checksum_enabled;
     bool content_checksum_enabled;
-    bool verify_codec_checksums;
+    bool skip_codec_checksum_validation;
     void *ctx;
     size_t input_hint; /* Preferred compressed bytes for next feed, 0 if unknown. */
 } streamDecompressor;

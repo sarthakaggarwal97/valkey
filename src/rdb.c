@@ -3758,9 +3758,9 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     startLoadingFile(sb.st_size, filename, rdbflags);
     rioInitWithFile(&rdb, fp);
 
-    bool verify_codec_checksums = server.rdb_checksum && !server.skip_checksum_validation;
+    bool skip_codec_checksum_validation = !server.rdb_checksum || server.skip_checksum_validation;
     decompressRioInitResult init_rc = rioInitWithRdbDecompression(
-        &decompressor, &rdb, verify_codec_checksums, &stream_info);
+        &decompressor, &rdb, skip_codec_checksum_validation, &stream_info);
     if (init_rc == DECOMPRESS_RIO_INIT_INCOMPATIBLE) {
         serverLog(LL_WARNING,
                   "Invalid or unsupported RDB stream envelope in %s. "

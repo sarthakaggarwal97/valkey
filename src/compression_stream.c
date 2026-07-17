@@ -84,8 +84,8 @@ static int writeVcsEnvelope(streamWriterEmitFn emit_fn,
     return emit_fn(ctx, envelope, VCS_ENVELOPE_SIZE) == 0 ? 0 : -1;
 }
 
-/* Rejects unknown flag bits so a future format extension fails loud rather
- * than silently corrupting load. */
+/* Reject a nonzero reserved byte so a future envelope extension fails loud
+ * rather than being silently misinterpreted. */
 static int readVcsEnvelope(const uint8_t *buf,
                            size_t len,
                            compressionAlgo *algo,
@@ -318,7 +318,7 @@ static ssize_t streamReaderFailWithError(streamReader *reader,
 
 static int streamReaderInitCompressedState(streamReader *reader, size_t buffer_size) {
     if (streamDecompressorInit(&reader->decompressor, reader->probe.algo) != 0) return -1;
-    reader->decompressor.verify_codec_checksums = reader->verify_codec_checksums;
+    reader->decompressor.skip_codec_checksum_validation = reader->skip_codec_checksum_validation;
     reader->decompressor_initialized = true;
     reader->compressed_buf = zmalloc(buffer_size);
     reader->decompressed_buf = zmalloc(buffer_size);
@@ -352,7 +352,7 @@ int streamReaderInit(streamReader *reader, streamReaderConfig *cfg, streamReader
     reader->read_ctx = read_ctx;
     reader->probe_cfg.allow_passthrough = cfg->allow_passthrough;
     reader->probe_cfg.expected_stream_kind = cfg->expected_stream_kind;
-    reader->verify_codec_checksums = cfg->verify_codec_checksums;
+    reader->skip_codec_checksum_validation = cfg->skip_codec_checksum_validation;
     reader->buffer_size = cfg->buffer_size;
     if (reader->buffer_size < STREAM_READER_BUFFER_SIZE_MIN) {
         reader->buffer_size = STREAM_READER_BUFFER_SIZE_MIN;

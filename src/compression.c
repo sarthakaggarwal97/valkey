@@ -62,7 +62,6 @@ void streamCompressorFree(streamCompressor *compressor) {
 int streamDecompressorInit(streamDecompressor *decompressor, compressionAlgo algo) {
     memset(decompressor, 0, sizeof(*decompressor));
     decompressor->algo = algo;
-    decompressor->verify_codec_checksums = true;
 
     switch (algo) {
     case ALGO_LZ4:

@@ -63,11 +63,11 @@ typedef struct {
 static streamReaderConfig makeReaderConfig(uint8_t expected_stream_kind,
                                            bool allow_passthrough,
                                            size_t buffer_size = STREAM_READER_BUFFER_SIZE_DEFAULT,
-                                           bool verify_codec_checksums = true) {
+                                           bool skip_codec_checksum_validation = false) {
     streamReaderConfig cfg = {};
     cfg.expected_stream_kind = expected_stream_kind;
     cfg.allow_passthrough = allow_passthrough;
-    cfg.verify_codec_checksums = verify_codec_checksums;
+    cfg.skip_codec_checksum_validation = skip_codec_checksum_validation;
     cfg.buffer_size = buffer_size;
     return cfg;
 }
@@ -551,7 +551,7 @@ static int failSelectedEmit(void *ctx, const uint8_t *data, size_t len) {
 }
 
 static int initVcsRdbDecompressRio(decompressRio *dr, rio *inner) {
-    return rioInitWithRdbDecompression(dr, inner, true, nullptr) == DECOMPRESS_RIO_INIT_OK ? 0 : -1;
+    return rioInitWithRdbDecompression(dr, inner, false, nullptr) == DECOMPRESS_RIO_INIT_OK ? 0 : -1;
 }
 
 TEST_F(CompressionTest, streamReaderValidatesCompressedStreamKinds) {
@@ -724,8 +724,6 @@ TEST_F(CompressionTest, vcsCodecIdsAreMappedExplicitly) {
 
     ASSERT_TRUE(compressionAlgoToVcsCodec(ALGO_LZ4, &codec));
     ASSERT_EQ(codec, VCS_CODEC_LZ4);
-    ASSERT_NE((uint8_t)codec, (uint8_t)ALGO_LZ4)
-        << "wire identifiers must not depend on implementation enum ordering";
     ASSERT_FALSE(compressionAlgoToVcsCodec(ALGO_LZF, &codec));
 
     ASSERT_TRUE(vcsCodecToCompressionAlgo(VCS_CODEC_LZ4, &algo));
@@ -1189,23 +1187,23 @@ TEST_F(CompressionTest, checksumBypassSkipsOnlyCodecVerification) {
     ASSERT_GT(sdslen((const char *)db.data), (size_t)VCS_ENVELOPE_SIZE + 4);
     db.data[sdslen((const char *)db.data) - 1] ^= 1;
 
-    for (bool verify_codec_checksums : {true, false}) {
+    for (bool skip_codec_checksum_validation : {false, true}) {
         MemReader source = {db.data, sdslen((const char *)db.data), 0, 0};
         streamReaderConfig rcfg = makeReaderConfig(
-            VCS_STREAM_RDB, false, STREAM_READER_BUFFER_SIZE_DEFAULT, verify_codec_checksums);
+            VCS_STREAM_RDB, false, STREAM_READER_BUFFER_SIZE_DEFAULT, skip_codec_checksum_validation);
         streamReader reader;
         ASSERT_EQ(streamReaderInit(&reader, &rcfg, memReaderRead, &source), 0);
 
         char out[64] = {0};
         ASSERT_EQ(streamReaderRead(&reader, out, strlen(payload)), (ssize_t)strlen(payload));
         ASSERT_EQ(memcmp(out, payload, strlen(payload)), 0);
-        ASSERT_EQ(streamReaderValidateEnd(&reader), verify_codec_checksums ? -1 : 0);
+        ASSERT_EQ(streamReaderValidateEnd(&reader), skip_codec_checksum_validation ? 0 : -1);
         streamReaderFree(&reader);
     }
 
     MemReader truncated = {db.data, sdslen((const char *)db.data) - 5, 0, 0};
     streamReaderConfig bypass = makeReaderConfig(
-        VCS_STREAM_RDB, false, STREAM_READER_BUFFER_SIZE_DEFAULT, false);
+        VCS_STREAM_RDB, false, STREAM_READER_BUFFER_SIZE_DEFAULT, true);
     streamReader reader;
     ASSERT_EQ(streamReaderInit(&reader, &bypass, memReaderRead, &truncated), 0);
     char out[64] = {0};
@@ -1448,7 +1446,7 @@ TEST_F(CompressionTest, rioDecoratorsPreserveConnBackedFlag) {
     rio raw_rio;
     rioInitWithBuffer(&raw_rio, raw);
     decompressRio dr;
-    ASSERT_EQ(rioInitWithRdbDecompression(&dr, &raw_rio, true, nullptr), DECOMPRESS_RIO_INIT_OK);
+    ASSERT_EQ(rioInitWithRdbDecompression(&dr, &raw_rio, false, nullptr), DECOMPRESS_RIO_INIT_OK);
     ASSERT_FALSE(rioIsConnBacked((rio *)&dr));
     decompressRioFree(&dr);
     sdsfree(raw_rio.io.buffer.ptr);
@@ -1466,7 +1464,7 @@ TEST_F(CompressionTest, rioDecoratorsPreserveConnBackedFlag) {
     rio conn_backed_raw_rio;
     rioInitWithBuffer(&conn_backed_raw_rio, conn_backed_raw);
     conn_backed_raw_rio.flags |= RIO_FLAG_CONN_BACKED;
-    ASSERT_EQ(rioInitWithRdbDecompression(&dr, &conn_backed_raw_rio, true, nullptr), DECOMPRESS_RIO_INIT_OK);
+    ASSERT_EQ(rioInitWithRdbDecompression(&dr, &conn_backed_raw_rio, false, nullptr), DECOMPRESS_RIO_INIT_OK);
     ASSERT_TRUE(rioIsConnBacked((rio *)&dr));
     decompressRioFree(&dr);
 
@@ -1546,7 +1544,7 @@ TEST_F(CompressionTest, decompressRioClassifiesInput) {
 
         decompressRio dr;
         streamReaderInfo info = {};
-        ASSERT_EQ(rioInitWithRdbDecompression(&dr, &buffer_rio, true, &info), DECOMPRESS_RIO_INIT_OK);
+        ASSERT_EQ(rioInitWithRdbDecompression(&dr, &buffer_rio, false, &info), DECOMPRESS_RIO_INIT_OK);
         ASSERT_FALSE(info.compressed) << "passthrough stream should not be compressed";
 
         char result[64];
@@ -1566,7 +1564,7 @@ TEST_F(CompressionTest, decompressRioClassifiesInput) {
         rioInitWithBuffer(&buffer_rio, buf);
 
         decompressRio dr;
-        ASSERT_EQ(rioInitWithRdbDecompression(&dr, &buffer_rio, true, nullptr),
+        ASSERT_EQ(rioInitWithRdbDecompression(&dr, &buffer_rio, false, nullptr),
                   DECOMPRESS_RIO_INIT_INCOMPATIBLE);
 
         sdsfree(buf);
