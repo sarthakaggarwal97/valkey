@@ -553,6 +553,12 @@ static int initVcsRdbStreamReader(streamReader *reader, rio *r) {
     return rdbInitStreamReader(r, reader, false, nullptr) == RDB_STREAM_READER_INIT_OK ? 0 : -1;
 }
 
+static void countRioUpdateCalls(rio *r, const void *buf, size_t len) {
+    (void)buf;
+    (void)len;
+    r->cksum++;
+}
+
 static int emitToRioBackend(void *ctx, const uint8_t *data, size_t len) {
     return rioWriteRaw((rio *)ctx, data, len) ? 0 : -1;
 }
@@ -562,7 +568,6 @@ static int attachCompressionWriter(rio *r, streamWriter *writer, bool codec_chec
     cfg.codec_checksum_enabled = codec_checksum;
     if (streamWriterInit(writer, &cfg, emitToRioBackend, r) != 0) return -1;
     rioAttachStreamWriter(r, writer);
-    r->flags |= RIO_FLAG_STREAMING_COMPRESSION;
     return 0;
 }
 
@@ -578,7 +583,6 @@ static int finishCompressionWriter(rio *r, streamWriter *writer) {
 
 static void freeCompressionWriter(rio *r, streamWriter *writer) {
     rioDetachStreamWriter(r);
-    r->flags &= ~RIO_FLAG_STREAMING_COMPRESSION;
     streamWriterFree(writer);
 }
 
@@ -1473,6 +1477,42 @@ TEST_F(CompressionTest, rioStreamReaderTellTracksSourceProgress) {
 
     rdbFreeStreamReader(&buffer_rio, &reader);
     sdsfree(comp_sds);
+    dynamicBufFree(&db);
+}
+
+TEST_F(CompressionTest, rioStreamReaderHonorsMaxProcessingChunk) {
+    const size_t payload_len = 1024;
+    const size_t chunk_size = 128;
+    uint8_t payload[payload_len];
+    for (size_t i = 0; i < payload_len; i++) {
+        payload[i] = (uint8_t)(i % 251);
+    }
+
+    DynamicBuf db;
+    dynamicBufInit(&db);
+    streamWriterConfig cfg = makeWriterConfig(ALGO_LZ4, 0, VCS_STREAM_RDB);
+    streamWriter writer;
+    ASSERT_EQ(streamWriterInit(&writer, &cfg, emitToDynamicBuf, &db), 0);
+    ASSERT_EQ(streamWriterWrite(&writer, payload, payload_len), 0);
+    ASSERT_EQ(streamWriterFinish(&writer), 0);
+    streamWriterFree(&writer);
+
+    sds compressed = sdsnewlen(db.data, sdslen((const char *)db.data));
+    rio buffer_rio;
+    rioInitWithBuffer(&buffer_rio, compressed);
+    streamReader reader;
+    ASSERT_EQ(initVcsRdbStreamReader(&reader, &buffer_rio), 0);
+
+    buffer_rio.max_processing_chunk = chunk_size;
+    buffer_rio.update_cksum = countRioUpdateCalls;
+    uint8_t result[payload_len];
+    ASSERT_NE(rioRead(&buffer_rio, result, payload_len), 0u);
+    ASSERT_EQ(buffer_rio.cksum, payload_len / chunk_size);
+    ASSERT_EQ(buffer_rio.processed_bytes, payload_len);
+    ASSERT_EQ(memcmp(result, payload, payload_len), 0);
+
+    rdbFreeStreamReader(&buffer_rio, &reader);
+    sdsfree(compressed);
     dynamicBufFree(&db);
 }
 

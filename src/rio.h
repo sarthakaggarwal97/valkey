@@ -42,7 +42,7 @@
 #define RIO_FLAG_WRITE_ERROR (1 << 1)
 #define RIO_FLAG_CLOSE_ASAP (1 << 2) /* Rio was closed asynchronously during the current rio operation. */
 #define RIO_FLAG_SKIP_RDB_CHECKSUM (1 << 3)
-#define RIO_FLAG_STREAMING_COMPRESSION (1 << 4) /* Streaming compression active, skip per-string LZF */
+#define RIO_FLAG_STREAMING_COMPRESSION (1 << 4) /* Input uses whole-stream compression. */
 
 struct streamWriter;
 struct streamReader;
@@ -162,19 +162,19 @@ static inline size_t rioWriteRaw(rio *r, const void *buf, size_t len) {
 
 static inline size_t rioWrite(rio *r, const void *buf, size_t len) {
     if (r->flags & RIO_FLAG_WRITE_ERROR || r->flags & RIO_FLAG_CLOSE_ASAP) return 0;
-    if (len == 0) return 1;
-    if (r->stream_writer) {
-        if (r->update_cksum) r->update_cksum(r, buf, len);
-        if (rioWriteStream(r, buf, len) == 0) return 0;
-        r->processed_bytes += len;
-        return 1;
-    }
-
     while (len) {
         size_t bytes_to_write =
             (r->max_processing_chunk && r->max_processing_chunk < len) ? r->max_processing_chunk : len;
         if (r->update_cksum) r->update_cksum(r, buf, bytes_to_write);
-        if (rioWriteRaw(r, buf, bytes_to_write) == 0) return 0;
+        if (r->stream_writer) {
+            if (rioWriteStream(r, buf, bytes_to_write) == 0) return 0;
+        } else {
+            if (r->write(r, buf, bytes_to_write) == 0) {
+                r->flags |= RIO_FLAG_WRITE_ERROR;
+                return 0;
+            }
+            r->backend_processed_bytes += bytes_to_write;
+        }
         buf = (char *)buf + bytes_to_write;
         len -= bytes_to_write;
         r->processed_bytes += bytes_to_write;
@@ -184,22 +184,18 @@ static inline size_t rioWrite(rio *r, const void *buf, size_t len) {
 
 static inline size_t rioRead(rio *r, void *buf, size_t len) {
     if (r->flags & RIO_FLAG_READ_ERROR || r->flags & RIO_FLAG_CLOSE_ASAP) return 0;
-    if (len == 0) return 1;
-    if (r->stream_reader) {
-        if (rioReadStream(r, buf, len) == 0) return 0;
-        if (r->update_cksum) r->update_cksum(r, buf, len);
-        r->processed_bytes += len;
-        return 1;
-    }
-
     while (len) {
         size_t bytes_to_read =
             (r->max_processing_chunk && r->max_processing_chunk < len) ? r->max_processing_chunk : len;
-        if (r->read(r, buf, bytes_to_read) == 0) {
-            r->flags |= RIO_FLAG_READ_ERROR;
-            return 0;
+        if (r->stream_reader) {
+            if (rioReadStream(r, buf, bytes_to_read) == 0) return 0;
+        } else {
+            if (r->read(r, buf, bytes_to_read) == 0) {
+                r->flags |= RIO_FLAG_READ_ERROR;
+                return 0;
+            }
+            r->backend_processed_bytes += bytes_to_read;
         }
-        r->backend_processed_bytes += bytes_to_read;
         if (r->update_cksum) r->update_cksum(r, buf, bytes_to_read);
         buf = (char *)buf + bytes_to_read;
         len -= bytes_to_read;

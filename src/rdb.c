@@ -516,8 +516,7 @@ ssize_t rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
      * Skip per-string LZF when the rio has whole-stream compression so we
      * don't compress twice; standalone rios (DUMP, AOF rewrite, diskless)
      * still hit this path. */
-    if (server.rdb_compression && len > 20 &&
-        !(rdb && (rdb->flags & RIO_FLAG_STREAMING_COMPRESSION))) {
+    if (server.rdb_compression && len > 20 && !(rdb && rdb->stream_writer)) {
         n = rdbSaveLzfStringObject(rdb, s, len);
         if (n == -1) return -1;
         if (n > 0) return n;
@@ -1575,7 +1574,6 @@ static int rdbCompressionInit(rio *rdb,
 
     if (streamWriterInit(writer, &cfg, rdbCompressionEmit, rdb) != 0) return -1;
     rioAttachStreamWriter(rdb, writer);
-    rdb->flags |= RIO_FLAG_STREAMING_COMPRESSION;
     return 0;
 }
 
@@ -1585,7 +1583,6 @@ static int rdbCompressionFinish(rio *rdb, streamWriter *writer) {
         return -1;
     }
     if (rioFlushRaw(rdb) == 0) {
-        writer->errored = true;
         rdb->flags |= RIO_FLAG_WRITE_ERROR;
         return -1;
     }
@@ -1594,7 +1591,6 @@ static int rdbCompressionFinish(rio *rdb, streamWriter *writer) {
 
 static void rdbCompressionFree(rio *rdb, streamWriter *writer) {
     rioDetachStreamWriter(rdb);
-    rdb->flags &= ~RIO_FLAG_STREAMING_COMPRESSION;
     streamWriterFree(writer);
 }
 
