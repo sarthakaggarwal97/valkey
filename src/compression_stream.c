@@ -41,12 +41,12 @@ static void streamReaderProbeSetPassthrough(streamReader *reader) {
     reader->probe.ready = true;
     reader->probe.compressed = false;
     reader->probe.algo = ALGO_NONE;
-    reader->probe.stream_kind = 0;
+    reader->probe.stream_kind = VCS_STREAM_INVALID;
 }
 
 static void streamReaderProbeSetCompressed(streamReader *reader,
                                            compressionAlgo algo,
-                                           uint8_t stream_kind) {
+                                           vcsStreamKind stream_kind) {
     reader->probe.ready = true;
     reader->probe.compressed = true;
     reader->probe.algo = algo;
@@ -65,12 +65,17 @@ bool vcsCodecToCompressionAlgo(uint8_t codec, compressionAlgo *algo) {
     return true;
 }
 
+static bool vcsStreamKindIsRegistered(vcsStreamKind stream_kind) {
+    return stream_kind == VCS_STREAM_RDB;
+}
+
 static int writeVcsEnvelope(streamWriterEmitFn emit_fn,
                             void *ctx,
                             compressionAlgo algo,
-                            uint8_t stream_kind) {
+                            vcsStreamKind stream_kind) {
     vcsCodecId codec;
     if (!compressionAlgoToVcsCodec(algo, &codec)) return -1;
+    if (!vcsStreamKindIsRegistered(stream_kind)) return -1;
 
     uint8_t envelope[VCS_ENVELOPE_SIZE] = {
         VCS_MAGIC_0,
@@ -79,7 +84,7 @@ static int writeVcsEnvelope(streamWriterEmitFn emit_fn,
         [VCS_OFFSET_VERSION] = VCS_VERSION,
         [VCS_OFFSET_CODEC] = codec,
         [VCS_OFFSET_RESERVED] = 0,
-        [VCS_OFFSET_STREAM_KIND] = stream_kind,
+        [VCS_OFFSET_STREAM_KIND] = (uint8_t)stream_kind,
     };
     return emit_fn(ctx, envelope, VCS_ENVELOPE_SIZE) == 0 ? 0 : -1;
 }
@@ -89,7 +94,7 @@ static int writeVcsEnvelope(streamWriterEmitFn emit_fn,
 static int readVcsEnvelope(const uint8_t *buf,
                            size_t len,
                            compressionAlgo *algo,
-                           uint8_t *stream_kind) {
+                           vcsStreamKind *stream_kind) {
     if (len < VCS_ENVELOPE_SIZE) return -1;
 
     if (!vcsHasMagicPrefix(buf, VCS_MAGIC_SIZE)) return -1;
@@ -98,20 +103,23 @@ static int readVcsEnvelope(const uint8_t *buf,
     compressionAlgo parsed_algo;
     if (!vcsCodecToCompressionAlgo(buf[VCS_OFFSET_CODEC], &parsed_algo)) return -1;
     if (buf[VCS_OFFSET_RESERVED] != 0) return -1;
+    vcsStreamKind parsed_stream_kind = (vcsStreamKind)buf[VCS_OFFSET_STREAM_KIND];
+    if (!vcsStreamKindIsRegistered(parsed_stream_kind)) return -1;
 
     if (algo) *algo = parsed_algo;
-    if (stream_kind) *stream_kind = buf[VCS_OFFSET_STREAM_KIND];
+    if (stream_kind) *stream_kind = parsed_stream_kind;
     return 0;
 }
 
 int streamReadEnvelopeInfo(const uint8_t *buf,
                            size_t len,
-                           uint8_t expected_stream_kind,
+                           vcsStreamKind expected_stream_kind,
                            streamReaderInfo *info) {
-    uint8_t stream_kind = 0;
+    vcsStreamKind stream_kind = VCS_STREAM_INVALID;
     compressionAlgo algo = ALGO_NONE;
 
-    if (len < VCS_ENVELOPE_SIZE ||
+    if (!vcsStreamKindIsRegistered(expected_stream_kind) ||
+        len < VCS_ENVELOPE_SIZE ||
         readVcsEnvelope(buf, len, &algo, &stream_kind) != 0 ||
         stream_kind != expected_stream_kind) {
         return -1;
@@ -188,6 +196,7 @@ static vcsProbeResult streamReaderProbeFeed(streamReader *reader,
 
 int streamWriterInit(streamWriter *writer, streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx) {
     memset(writer, 0, sizeof(*writer));
+    if (!vcsStreamKindIsRegistered(cfg->stream_kind)) return -1;
     writer->emit_fn = emit_fn;
     writer->emit_ctx = emit_ctx;
     writer->stream_kind = cfg->stream_kind;
@@ -348,6 +357,7 @@ int streamReaderInit(streamReader *reader, streamReaderConfig *cfg, streamReader
     assert(cfg->buffer_size != 0);
 
     memset(reader, 0, sizeof(*reader));
+    if (!vcsStreamKindIsRegistered(cfg->expected_stream_kind)) return -1;
     reader->read_cb = read_cb;
     reader->read_ctx = read_ctx;
     reader->probe_cfg.allow_passthrough = cfg->allow_passthrough;

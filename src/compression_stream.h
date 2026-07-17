@@ -9,7 +9,9 @@
 
 #include "compression.h"
 
-/* VCS envelope:
+/* VCS envelope. The wire format and identifier registries are documented in
+ * design-docs/streaming-compression.md.
+ *
  *   [0..2] magic "VCS"
  *   [3]    version (currently VCS_VERSION)
  *   [4]    codec id
@@ -32,11 +34,14 @@
 
 /* Protocol identifiers are independent of implementation enum values. */
 typedef enum {
+    VCS_CODEC_INVALID = 0x00,
     VCS_CODEC_LZ4 = 0x01,
 } vcsCodecId;
 
-/* Identifies what the compressed bytes decode to. */
+/* Protocol identifiers for the semantics of the decompressed byte stream.
+ * Zero is reserved so omitted configuration cannot produce a valid stream. */
 typedef enum {
+    VCS_STREAM_INVALID = 0x00,
     VCS_STREAM_RDB = 0x01,
 } vcsStreamKind;
 
@@ -56,14 +61,14 @@ typedef ssize_t (*streamReaderReadFn)(void *ctx, void *buf, size_t len);
 typedef struct {
     compressionAlgo algo;
     int level;
-    uint8_t stream_kind;
+    vcsStreamKind stream_kind;
     bool codec_checksum_enabled;
 } streamWriterConfig;
 
 /* When allow_passthrough is set, non-VCS input is forwarded as raw bytes;
  * otherwise it is rejected. */
 typedef struct {
-    uint8_t expected_stream_kind;
+    vcsStreamKind expected_stream_kind;
     bool allow_passthrough;
     bool skip_codec_checksum_validation;
     size_t buffer_size; /* Must be nonzero. */
@@ -71,7 +76,7 @@ typedef struct {
 
 typedef struct {
     compressionAlgo algo;
-    uint8_t stream_kind;
+    vcsStreamKind stream_kind;
     bool compressed;
     bool codec_checksum_info_available;
     bool codec_block_checksum_enabled;
@@ -91,7 +96,7 @@ typedef struct streamWriter {
     size_t out_buf_size;
     streamWriterEmitFn emit_fn;
     void *emit_ctx;
-    uint8_t stream_kind;
+    vcsStreamKind stream_kind;
     bool envelope_written;
     bool finished;
     bool errored;
@@ -103,11 +108,11 @@ typedef struct streamReader {
 
     struct {
         bool allow_passthrough;
-        uint8_t expected_stream_kind;
+        vcsStreamKind expected_stream_kind;
     } probe_cfg;
     struct {
         uint8_t header[VCS_ENVELOPE_SIZE];
-        uint8_t stream_kind;
+        vcsStreamKind stream_kind;
         size_t header_len;
         compressionAlgo algo;
         bool ready;
@@ -146,7 +151,7 @@ int streamWriterFinish(streamWriter *writer);
 void streamWriterFree(streamWriter *writer);
 int streamReadEnvelopeInfo(const uint8_t *buf,
                            size_t len,
-                           uint8_t expected_stream_kind,
+                           vcsStreamKind expected_stream_kind,
                            streamReaderInfo *info);
 
 int streamReaderInit(streamReader *reader, streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx);
