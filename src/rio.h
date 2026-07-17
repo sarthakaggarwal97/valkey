@@ -169,11 +169,7 @@ static inline size_t rioWrite(rio *r, const void *buf, size_t len) {
         if (r->stream_writer) {
             if (rioWriteStream(r, buf, bytes_to_write) == 0) return 0;
         } else {
-            if (r->write(r, buf, bytes_to_write) == 0) {
-                r->flags |= RIO_FLAG_WRITE_ERROR;
-                return 0;
-            }
-            r->backend_processed_bytes += bytes_to_write;
+            if (rioWriteRaw(r, buf, bytes_to_write) == 0) return 0;
         }
         buf = (char *)buf + bytes_to_write;
         len -= bytes_to_write;
