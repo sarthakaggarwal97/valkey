@@ -3192,7 +3192,7 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
 bool rdbRioHasCorruptCompressedInput(rio *rdb) {
     /* rdbLoadRio also accepts raw rios, for example AOF preamble loads. */
     if (!rdb->stream_reader) return false;
-    return rdb->stream_reader->error_kind == STREAM_READER_ERROR_CORRUPT;
+    return streamReaderGetError(rdb->stream_reader) == STREAM_READER_ERROR_CORRUPT;
 }
 
 static ssize_t rdbStreamReadRaw(void *ctx, void *buf, size_t len) {
@@ -3214,7 +3214,7 @@ rdbStreamReaderInitResult rdbInitStreamReader(rio *rdb,
     if (algo) *algo = ALGO_NONE;
     if (streamReaderInit(reader, &cfg, rdbStreamReadRaw, rdb) != 0) return RDB_STREAM_READER_INIT_ERROR;
     if (streamReaderGetInfo(reader, &info) != 0) {
-        streamReaderError error_kind = reader->error_kind;
+        streamReaderError error_kind = streamReaderGetError(reader);
         streamReaderFree(reader);
         return error_kind == STREAM_READER_ERROR_INCOMPATIBLE
                    ? RDB_STREAM_READER_INIT_INCOMPATIBLE
@@ -3845,7 +3845,7 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     }
 
     retval = rdbLoadRio(&rdb, rdbflags, rsi);
-    if (retval == RDB_OK && streamReaderValidateEnd(&stream_reader) != 0) {
+    if (retval == RDB_OK && streamReaderFinish(&stream_reader) != 0) {
         serverLog(LL_WARNING, "Compressed RDB stream in %s did not end cleanly", filename);
         retval = RDB_FAILED;
     }

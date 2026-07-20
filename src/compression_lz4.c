@@ -88,11 +88,6 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
     LZ4F_cctx *cctx = (LZ4F_cctx *)compressor->ctx;
     size_t offset = 0;
 
-    /* Capacity-shortage returns are retriable: they happen before LZ4F mutates
-     * its own state, so the caller can grow the buffer and retry without
-     * breaking the frame. An LZ4F error after that point is permanent: the
-     * frame is partially emitted and cannot be retried. */
-
     if (!compressor->stream_started) {
         LZ4F_preferences_t prefs = lz4f_prefs;
         prefs.compressionLevel = compressor->level;
@@ -103,13 +98,13 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
                                                   ? LZ4F_contentChecksumEnabled
                                                   : LZ4F_noContentChecksum;
         size_t r = LZ4F_compressBegin(cctx, output, output_capacity, &prefs);
-        if (LZ4F_isError(r)) return -1; /* No frame bytes emitted yet: retriable, don't latch errored. */
+        if (LZ4F_isError(r)) return -1;
         offset = r;
         compressor->stream_started = true;
     }
 
     if (input_len > 0) {
-        if (offset >= output_capacity) return -1; /* Retriable: buffer too small, frame not yet advanced. */
+        if (offset >= output_capacity) return -1;
         size_t r = LZ4F_compressUpdate(cctx, output + offset, output_capacity - offset, input, input_len, NULL);
         if (LZ4F_isError(r)) return -1;
         offset += r;
@@ -119,14 +114,14 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
     case FLUSH_CONTINUE:
         break;
     case FLUSH_SYNC: {
-        if (offset >= output_capacity) return -1; /* Retriable: buffer too small, frame not yet advanced. */
+        if (offset >= output_capacity) return -1;
         size_t r = LZ4F_flush(cctx, output + offset, output_capacity - offset, NULL);
         if (LZ4F_isError(r)) return -1;
         offset += r;
         break;
     }
     case FLUSH_END: {
-        if (offset >= output_capacity) return -1; /* Retriable: buffer too small, frame not yet advanced. */
+        if (offset >= output_capacity) return -1;
         size_t r = LZ4F_compressEnd(cctx, output + offset, output_capacity - offset, NULL);
         if (LZ4F_isError(r)) return -1;
         offset += r;

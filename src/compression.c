@@ -9,15 +9,6 @@
 #include "serverassert.h"
 #include <string.h>
 
-bool compressionAlgoSupportsStreaming(compressionAlgo algo) {
-    switch (algo) {
-    case ALGO_LZ4:
-        return true;
-    default:
-        return false;
-    }
-}
-
 const char *compressionAlgoName(compressionAlgo algo) {
     switch (algo) {
     case ALGO_NONE:
@@ -102,13 +93,20 @@ ssize_t streamCompressorFeed(streamCompressor *compressor,
                              const uint8_t *input,
                              size_t input_len,
                              compressFlushMode flush_mode) {
+    if (compressor->errored) return -1;
+
+    ssize_t result;
     switch (compressor->algo) {
     case ALGO_LZ4:
-        return compressionLz4CompressFeed(compressor, output, output_capacity, input, input_len, flush_mode);
+        result = compressionLz4CompressFeed(compressor, output, output_capacity, input, input_len, flush_mode);
+        break;
     default:
         assert(0);
         return -1;
     }
+
+    if (result < 0) compressor->errored = true;
+    return result;
 }
 
 ssize_t streamDecompressorFeed(streamDecompressor *decompressor,

@@ -41,25 +41,21 @@ static void streamReaderProbeSetPassthrough(streamReader *reader) {
     reader->probe.ready = true;
     reader->probe.compressed = false;
     reader->probe.algo = ALGO_NONE;
-    reader->probe.stream_kind = 0;
 }
 
-static void streamReaderProbeSetCompressed(streamReader *reader,
-                                           compressionAlgo algo,
-                                           uint8_t stream_kind) {
+static void streamReaderProbeSetCompressed(streamReader *reader, compressionAlgo algo) {
     reader->probe.ready = true;
     reader->probe.compressed = true;
     reader->probe.algo = algo;
-    reader->probe.stream_kind = stream_kind;
 }
 
-bool compressionAlgoToVcsCodec(compressionAlgo algo, vcsCodecId *codec) {
+static bool compressionAlgoToVcsCodec(compressionAlgo algo, uint8_t *codec) {
     if (algo != ALGO_LZ4) return false;
     if (codec) *codec = VCS_CODEC_LZ4;
     return true;
 }
 
-bool vcsCodecToCompressionAlgo(uint8_t codec, compressionAlgo *algo) {
+static bool vcsCodecToCompressionAlgo(uint8_t codec, compressionAlgo *algo) {
     if (codec != VCS_CODEC_LZ4) return false;
     if (algo) *algo = ALGO_LZ4;
     return true;
@@ -69,7 +65,7 @@ static int writeVcsEnvelope(streamWriterEmitFn emit_fn,
                             void *ctx,
                             compressionAlgo algo,
                             uint8_t stream_kind) {
-    vcsCodecId codec;
+    uint8_t codec;
     if (!compressionAlgoToVcsCodec(algo, &codec)) return -1;
 
     uint8_t envelope[VCS_ENVELOPE_SIZE] = {
@@ -104,10 +100,10 @@ static int readVcsEnvelope(const uint8_t *buf,
     return 0;
 }
 
-int streamReadEnvelopeInfo(const uint8_t *buf,
-                           size_t len,
-                           uint8_t expected_stream_kind,
-                           streamReaderInfo *info) {
+static int streamReadEnvelopeInfo(const uint8_t *buf,
+                                  size_t len,
+                                  uint8_t expected_stream_kind,
+                                  streamReaderInfo *info) {
     uint8_t stream_kind = 0;
     compressionAlgo algo = ALGO_NONE;
 
@@ -119,7 +115,6 @@ int streamReadEnvelopeInfo(const uint8_t *buf,
 
     info->compressed = true;
     info->algo = algo;
-    info->stream_kind = stream_kind;
     return 0;
 }
 
@@ -160,7 +155,7 @@ static vcsProbeResult streamReaderProbeFeed(streamReader *reader,
                 *src_consumed = consumed;
                 return VCS_PROBE_ERROR;
             }
-            streamReaderProbeSetCompressed(reader, info.algo, info.stream_kind);
+            streamReaderProbeSetCompressed(reader, info.algo);
             *src_consumed = consumed;
             return VCS_PROBE_COMPRESSED;
         }
@@ -183,7 +178,7 @@ static vcsProbeResult streamReaderProbeFeed(streamReader *reader,
 
 #define STREAM_WRITER_INPUT_CHUNK_SIZE (1024 * 1024)
 
-int streamWriterInit(streamWriter *writer, streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx) {
+int streamWriterInit(streamWriter *writer, const streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx) {
     memset(writer, 0, sizeof(*writer));
     writer->emit_fn = emit_fn;
     writer->emit_ctx = emit_ctx;
@@ -279,7 +274,7 @@ int streamWriterFlush(streamWriter *writer) {
     /* Flush after finish is a no-op: frame is already closed. */
     if (writer->finished) return 0;
 
-    if (!writer->envelope_written || !writer->compressor.stream_started) return 0;
+    if (!writer->envelope_written) return 0;
     return streamWriterFeedAndEmit(writer, NULL, 0, FLUSH_SYNC);
 }
 
@@ -341,7 +336,7 @@ static void streamReaderResetCompressedState(streamReader *reader) {
     reader->decompressed_buf_len = 0;
 }
 
-int streamReaderInit(streamReader *reader, streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx) {
+int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx) {
     assert(cfg->buffer_size != 0);
 
     memset(reader, 0, sizeof(*reader));
@@ -592,11 +587,10 @@ int streamReaderGetInfo(streamReader *reader, streamReaderInfo *info) {
 
     info->compressed = reader->probe.compressed;
     info->algo = reader->probe.compressed ? reader->probe.algo : ALGO_NONE;
-    info->stream_kind = reader->probe.stream_kind;
     return 0;
 }
 
-int streamReaderValidateEnd(streamReader *reader) {
+int streamReaderFinish(streamReader *reader) {
     uint8_t buf[4096];
 
     if (streamReaderProbe(reader) != 0) return -1;
@@ -630,6 +624,10 @@ int streamReaderValidateEnd(streamReader *reader) {
         return -1;
     }
     return 0;
+}
+
+streamReaderError streamReaderGetError(const streamReader *reader) {
+    return reader->error_kind;
 }
 
 void streamReaderFree(streamReader *reader) {

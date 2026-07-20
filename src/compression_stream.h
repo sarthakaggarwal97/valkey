@@ -30,18 +30,13 @@
 #define VCS_OFFSET_RESERVED 5
 #define VCS_OFFSET_STREAM_KIND 6
 
-/* Protocol identifiers are independent of implementation enum values. */
-typedef enum {
-    VCS_CODEC_LZ4 = 0x01,
-} vcsCodecId;
+/* Wire identifier; deliberately independent of compressionAlgo values. */
+#define VCS_CODEC_LZ4 0x01
 
 /* Identifies what the compressed bytes decode to. */
 typedef enum {
     VCS_STREAM_RDB = 0x01,
 } vcsStreamKind;
-
-bool compressionAlgoToVcsCodec(compressionAlgo algo, vcsCodecId *codec);
-bool vcsCodecToCompressionAlgo(uint8_t codec, compressionAlgo *algo);
 
 typedef int (*streamWriterEmitFn)(void *ctx, const uint8_t *data, size_t len);
 /* Returns >0 bytes read, 0 on EOF, -1 on error. Partial reads allowed. */
@@ -71,7 +66,6 @@ typedef struct {
 
 typedef struct {
     compressionAlgo algo;
-    uint8_t stream_kind;
     bool compressed;
 } streamReaderInfo;
 
@@ -104,7 +98,6 @@ typedef struct streamReader {
     } probe_cfg;
     struct {
         uint8_t header[VCS_ENVELOPE_SIZE];
-        uint8_t stream_kind;
         size_t header_len;
         compressionAlgo algo;
         bool ready;
@@ -133,7 +126,7 @@ typedef struct streamReader {
  * freeing, since it emits the frame end; a writer freed without it is
  * truncated. The reader probes the envelope on the first read; callers that
  * need to classify the stream up front can use streamReaderGetInfo. */
-int streamWriterInit(streamWriter *writer, streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx);
+int streamWriterInit(streamWriter *writer, const streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx);
 
 /* Returns 0 on success and -1 on error. Errors are sticky: after a failed
  * write, flush, or finish, later operations fail without emitting bytes. */
@@ -141,18 +134,16 @@ int streamWriterWrite(streamWriter *writer, const void *buf, size_t len);
 int streamWriterFlush(streamWriter *writer);
 int streamWriterFinish(streamWriter *writer);
 void streamWriterFree(streamWriter *writer);
-int streamReadEnvelopeInfo(const uint8_t *buf,
-                           size_t len,
-                           uint8_t expected_stream_kind,
-                           streamReaderInfo *info);
-
-int streamReaderInit(streamReader *reader, streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx);
+int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx);
 
 /* Returns up to len bytes, 0 on EOF, or -1 on error. An error after partial
  * output is reported on the next call. */
 ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len);
 int streamReaderGetInfo(streamReader *reader, streamReaderInfo *info);
-int streamReaderValidateEnd(streamReader *reader);
+/* Completes and validates a finite compressed frame after the logical parser
+ * has consumed its payload. Must be called before free on successful reads. */
+int streamReaderFinish(streamReader *reader);
+streamReaderError streamReaderGetError(const streamReader *reader);
 void streamReaderFree(streamReader *reader);
 
 #endif /* COMPRESSION_STREAM_H */

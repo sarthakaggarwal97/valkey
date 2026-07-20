@@ -31,6 +31,7 @@ typedef struct {
     void *ctx;
     bool stream_started;
     bool codec_checksum;
+    bool errored;
 } streamCompressor;
 
 typedef struct {
@@ -44,9 +45,6 @@ typedef struct {
 
 /* Compression APIs expect caller-owned streamCompressor/streamDecompressor
  * storage and valid pointer arguments. Instances are not thread-safe. */
-
-/* Returns true when algo has a streaming codec implementation. */
-bool compressionAlgoSupportsStreaming(compressionAlgo algo);
 
 /* Returns a static algorithm name for logs and config output. */
 const char *compressionAlgoName(compressionAlgo algo);
@@ -71,7 +69,8 @@ size_t streamCompressorOutputBound(streamCompressor *compressor, size_t input_le
  * Called repeatedly to build one frame: FLUSH_CONTINUE keeps buffering,
  * FLUSH_SYNC drains buffered bytes but leaves the frame open, FLUSH_END
  * closes it. output must be at least streamCompressorOutputBound(input_len)
- * bytes. Returns bytes written, or -1 on error. */
+ * bytes. Returns bytes written, or -1 on error. Errors are terminal: after a
+ * failed feed, later feeds return -1 without calling the codec. */
 ssize_t streamCompressorFeed(streamCompressor *compressor,
                              uint8_t *output,
                              size_t output_capacity,

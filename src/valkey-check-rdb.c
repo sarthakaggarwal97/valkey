@@ -852,7 +852,7 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
         }
     }
 
-    if (streamReaderValidateEnd(&stream_reader) != 0) {
+    if (streamReaderFinish(&stream_reader) != 0) {
         rdbCheckError("Compressed RDB stream did not end cleanly");
         goto err;
     }
