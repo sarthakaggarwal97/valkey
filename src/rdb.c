@@ -3212,8 +3212,7 @@ rdbStreamReaderInitResult rdbInitStreamReader(rio *rdb,
     compressionAlgo detected_algo = ALGO_NONE;
 
     if (algo) *algo = ALGO_NONE;
-    if (streamReaderInit(reader, &cfg, rdbStreamReadRaw, rdb) != 0) return RDB_STREAM_READER_INIT_ERROR;
-    if (streamReaderGetAlgorithm(reader, &detected_algo) != 0) {
+    if (streamReaderInit(reader, &cfg, rdbStreamReadRaw, rdb, &detected_algo) != 0) {
         streamReaderError error_kind = streamReaderGetError(reader);
         streamReaderFree(reader);
         return error_kind == STREAM_READER_ERROR_INCOMPATIBLE

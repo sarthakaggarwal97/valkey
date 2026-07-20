@@ -7,7 +7,7 @@
 #ifndef COMPRESSION_STREAM_H
 #define COMPRESSION_STREAM_H
 
-#include "compression.h"
+#include "compression_lz4.h"
 
 /* VCS envelope:
  *   [0..2] magic "VCS"
@@ -87,7 +87,7 @@ typedef enum {
 } streamReaderState;
 
 typedef struct streamWriter {
-    streamCompressor compressor;
+    compressionLz4Compressor compressor;
     uint8_t *out_buf;
     size_t out_buf_size;
     streamWriterEmitFn emit_fn;
@@ -99,17 +99,16 @@ typedef struct streamWriter {
 typedef struct streamReader {
     streamReaderReadFn read_cb;
     void *read_ctx;
-    streamReaderConfig config;
     struct {
         uint8_t header[VCS_ENVELOPE_SIZE];
         size_t header_len;
-        compressionAlgo algo;
     } probe;
     size_t probe_replay_pos; /* Passthrough bytes left to replay from probe. */
+    size_t buffer_size;
     streamReaderError error_kind;
     streamReaderState state;
 
-    streamDecompressor decompressor;
+    compressionLz4Decompressor decompressor;
 
     uint8_t *compressed_buf;
     size_t compressed_buf_pos;
@@ -123,8 +122,8 @@ typedef struct streamReader {
 /* The writer pushes compressed bytes to a streamWriterEmitFn sink; the reader
  * pulls from a streamReaderReadFn source. streamWriterFinish must run before
  * freeing, since it emits the frame end; a writer freed without it is
- * truncated. The reader probes the envelope on the first read; callers that
- * need to classify the stream up front can use streamReaderGetAlgorithm. */
+ * truncated. Reader initialization probes the envelope and optionally returns
+ * the detected algorithm. */
 int streamWriterInit(streamWriter *writer, const streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx);
 
 /* Returns 0 on success and -1 on error. Errors are sticky: after a failed
@@ -133,12 +132,11 @@ int streamWriterWrite(streamWriter *writer, const void *buf, size_t len);
 int streamWriterFlush(streamWriter *writer);
 int streamWriterFinish(streamWriter *writer);
 void streamWriterFree(streamWriter *writer);
-int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx);
+int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx, compressionAlgo *detected_algo);
 
 /* Returns up to len bytes, 0 on EOF, or -1 on error. An error after partial
  * output is reported on the next call. */
 ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len);
-int streamReaderGetAlgorithm(streamReader *reader, compressionAlgo *algo);
 /* Completes and validates a finite compressed frame after the logical parser
  * has consumed its payload. Must be called before free on successful reads. */
 int streamReaderFinish(streamReader *reader);

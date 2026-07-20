@@ -9,35 +9,51 @@
 
 #include "compression.h"
 
-/* LZ4 codec hooks used by the generic streaming compression layer. Callers
- * allocate the streamCompressor/streamDecompressor and free initialized codec
- * state with the matching Free function. */
+typedef enum {
+    COMPRESS_FLUSH_CONTINUE = 0, /* Buffer internally. */
+    COMPRESS_FLUSH_SYNC = 1,     /* Drain buffered bytes, keep frame open. */
+    COMPRESS_FLUSH_END = 2,      /* Finalize frame. */
+} compressionFlushMode;
 
-/* Initializes LZ4 compressor state. Returns 0 on success. */
-int compressionLz4CompressorInit(streamCompressor *compressor);
+typedef struct {
+    int level; /* 0 selects the codec default. */
+    void *ctx;
+    bool stream_started;
+    bool codec_checksum;
+} compressionLz4Compressor;
+
+typedef struct {
+    bool frame_done;
+    bool skip_codec_checksum_validation;
+    void *ctx;
+    size_t input_hint; /* Preferred compressed bytes for next feed, 0 if unknown. */
+} compressionLz4Decompressor;
+
+/* Initializes LZ4 compressor state. */
+void compressionLz4CompressorInit(compressionLz4Compressor *compressor, int level, bool codec_checksum);
 
 /* Releases LZ4 compressor resources. */
-void compressionLz4CompressorFree(streamCompressor *compressor);
+void compressionLz4CompressorFree(compressionLz4Compressor *compressor);
 
-/* Initializes LZ4 decompressor state. Returns 0 on success. */
-int compressionLz4DecompressorInit(streamDecompressor *decompressor);
+/* Initializes LZ4 decompressor state. */
+void compressionLz4DecompressorInit(compressionLz4Decompressor *decompressor, bool skip_codec_checksum_validation);
 
 /* Releases LZ4 decompressor resources. */
-void compressionLz4DecompressorFree(streamDecompressor *decompressor);
+void compressionLz4DecompressorFree(compressionLz4Decompressor *decompressor);
 
 /* Returns a conservative upper bound for any flush mode. */
 size_t compressionLz4OutputBound(size_t input_len);
 
 /* Compresses input into output. input may be NULL when input_len is zero. */
-ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
+ssize_t compressionLz4CompressFeed(compressionLz4Compressor *compressor,
                                    uint8_t *output,
                                    size_t output_capacity,
                                    const uint8_t *input,
                                    size_t input_len,
-                                   compressFlushMode flush_mode);
+                                   compressionFlushMode flush_mode);
 
 /* Decompresses input into output and reports consumed input bytes. */
-ssize_t compressionLz4DecompressFeed(streamDecompressor *decompressor,
+ssize_t compressionLz4DecompressFeed(compressionLz4Decompressor *decompressor,
                                      uint8_t *output,
                                      size_t output_capacity,
                                      const uint8_t *input,

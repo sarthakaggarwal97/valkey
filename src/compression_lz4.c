@@ -8,6 +8,7 @@
 #include "serverassert.h"
 #include "zmalloc.h"
 #include <limits.h>
+#include <string.h>
 
 #define LZ4F_STATIC_LINKING_ONLY
 #include <lz4frame.h>
@@ -46,27 +47,30 @@ static const LZ4F_preferences_t lz4f_prefs = {
     .compressionLevel = 0,
 };
 
-int compressionLz4CompressorInit(streamCompressor *compressor) {
+void compressionLz4CompressorInit(compressionLz4Compressor *compressor, int level, bool codec_checksum) {
+    memset(compressor, 0, sizeof(*compressor));
+    compressor->level = level;
+    compressor->codec_checksum = codec_checksum;
     compressor->ctx = LZ4F_createCompressionContext_advanced(lz4f_mem, LZ4F_VERSION);
     assert(compressor->ctx != NULL);
-    return 0;
 }
 
-void compressionLz4CompressorFree(streamCompressor *compressor) {
+void compressionLz4CompressorFree(compressionLz4Compressor *compressor) {
     if (compressor->ctx) {
         LZ4F_freeCompressionContext((LZ4F_cctx *)compressor->ctx);
         compressor->ctx = NULL;
     }
 }
 
-int compressionLz4DecompressorInit(streamDecompressor *decompressor) {
+void compressionLz4DecompressorInit(compressionLz4Decompressor *decompressor, bool skip_codec_checksum_validation) {
+    memset(decompressor, 0, sizeof(*decompressor));
+    decompressor->skip_codec_checksum_validation = skip_codec_checksum_validation;
     decompressor->ctx = LZ4F_createDecompressionContext_advanced(lz4f_mem, LZ4F_VERSION);
     assert(decompressor->ctx != NULL);
     decompressor->input_hint = LZ4F_HEADER_SIZE_MIN;
-    return 0;
 }
 
-void compressionLz4DecompressorFree(streamDecompressor *decompressor) {
+void compressionLz4DecompressorFree(compressionLz4Decompressor *decompressor) {
     if (decompressor->ctx) {
         LZ4F_freeDecompressionContext((LZ4F_dctx *)decompressor->ctx);
         decompressor->ctx = NULL;
@@ -77,12 +81,12 @@ size_t compressionLz4OutputBound(size_t input_len) {
     return LZ4F_compressBound(input_len, &lz4f_prefs) + LZ4F_HEADER_SIZE_MAX + LZ4F_compressBound(0, &lz4f_prefs);
 }
 
-ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
+ssize_t compressionLz4CompressFeed(compressionLz4Compressor *compressor,
                                    uint8_t *output,
                                    size_t output_capacity,
                                    const uint8_t *input,
                                    size_t input_len,
-                                   compressFlushMode flush_mode) {
+                                   compressionFlushMode flush_mode) {
     assert(compressor->ctx != NULL);
 
     LZ4F_cctx *cctx = (LZ4F_cctx *)compressor->ctx;
@@ -111,16 +115,16 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
     }
 
     switch (flush_mode) {
-    case FLUSH_CONTINUE:
+    case COMPRESS_FLUSH_CONTINUE:
         break;
-    case FLUSH_SYNC: {
+    case COMPRESS_FLUSH_SYNC: {
         if (offset >= output_capacity) return -1;
         size_t r = LZ4F_flush(cctx, output + offset, output_capacity - offset, NULL);
         if (LZ4F_isError(r)) return -1;
         offset += r;
         break;
     }
-    case FLUSH_END: {
+    case COMPRESS_FLUSH_END: {
         if (offset >= output_capacity) return -1;
         size_t r = LZ4F_compressEnd(cctx, output + offset, output_capacity - offset, NULL);
         if (LZ4F_isError(r)) return -1;
@@ -136,13 +140,15 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
     return (ssize_t)offset;
 }
 
-ssize_t compressionLz4DecompressFeed(streamDecompressor *decompressor,
+ssize_t compressionLz4DecompressFeed(compressionLz4Decompressor *decompressor,
                                      uint8_t *output,
                                      size_t output_capacity,
                                      const uint8_t *input,
                                      size_t input_len,
                                      size_t *input_consumed) {
     assert(decompressor->ctx != NULL);
+    *input_consumed = 0;
+    if (decompressor->frame_done) return 0;
 
     LZ4F_dctx *dctx = (LZ4F_dctx *)decompressor->ctx;
     size_t dst_size = output_capacity;
@@ -151,10 +157,7 @@ ssize_t compressionLz4DecompressFeed(streamDecompressor *decompressor,
         .skipChecksums = decompressor->skip_codec_checksum_validation,
     };
     size_t ret = LZ4F_decompress(dctx, output, &dst_size, input, &src_size, &options);
-    if (LZ4F_isError(ret)) {
-        decompressor->errored = true;
-        return -1;
-    }
+    if (LZ4F_isError(ret)) return -1;
     *input_consumed = src_size;
     decompressor->input_hint = ret;
     if (ret == 0) decompressor->frame_done = true;
