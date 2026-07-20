@@ -409,10 +409,10 @@ TEST_F(CompressionTest, streamReaderClassifiesProbeInputs) {
         streamReader t;
         ASSERT_EQ(streamReaderInit(&t, &cfg, memReaderRead, &mr), 0);
 
-        streamReaderInfo info;
+        compressionAlgo algo = ALGO_NONE;
         if (cases[i].expect_probe_ok) {
-            ASSERT_EQ(streamReaderGetInfo(&t, &info), 0) << cases[i].name;
-            ASSERT_FALSE(info.compressed) << cases[i].name;
+            ASSERT_EQ(streamReaderGetAlgorithm(&t, &algo), 0) << cases[i].name;
+            ASSERT_EQ(algo, ALGO_NONE) << cases[i].name;
 
             uint8_t out[16] = {0};
             ASSERT_EQ(streamReaderRead(&t, out, cases[i].expected_read_len), (ssize_t)cases[i].expected_read_len)
@@ -420,7 +420,7 @@ TEST_F(CompressionTest, streamReaderClassifiesProbeInputs) {
             ASSERT_EQ(memcmp(out, cases[i].input, cases[i].expected_read_len), 0) << cases[i].name;
             ASSERT_EQ(streamReaderRead(&t, out, sizeof(out)), 0) << cases[i].name;
         } else {
-            ASSERT_EQ(streamReaderGetInfo(&t, &info), -1) << cases[i].name;
+            ASSERT_EQ(streamReaderGetAlgorithm(&t, &algo), -1) << cases[i].name;
             ASSERT_EQ(streamReaderGetError(&t), cases[i].expected_error) << cases[i].name;
 
             uint8_t out[8] = {0};
@@ -448,8 +448,8 @@ TEST_F(CompressionTest, streamReaderRejectsEveryTruncatedVcsEnvelope) {
         streamReader reader;
         ASSERT_EQ(streamReaderInit(&reader, &cfg, memReaderRead, &mr), 0);
 
-        streamReaderInfo info;
-        ASSERT_EQ(streamReaderGetInfo(&reader, &info), -1) << "accepted VCS prefix length " << prefix_len;
+        compressionAlgo algo = ALGO_NONE;
+        ASSERT_EQ(streamReaderGetAlgorithm(&reader, &algo), -1) << "accepted VCS prefix length " << prefix_len;
         ASSERT_EQ(streamReaderGetError(&reader), STREAM_READER_ERROR_INCOMPATIBLE)
             << "VCS prefix length " << prefix_len;
         streamReaderFree(&reader);
@@ -459,9 +459,9 @@ TEST_F(CompressionTest, streamReaderRejectsEveryTruncatedVcsEnvelope) {
     streamReaderConfig cfg = makeReaderConfig(VCS_STREAM_RDB, true);
     streamReader reader;
     ASSERT_EQ(streamReaderInit(&reader, &cfg, memReaderRead, &empty), 0);
-    streamReaderInfo info;
-    ASSERT_EQ(streamReaderGetInfo(&reader, &info), 0);
-    ASSERT_FALSE(info.compressed);
+    compressionAlgo algo = ALGO_LZ4;
+    ASSERT_EQ(streamReaderGetAlgorithm(&reader, &algo), 0);
+    ASSERT_EQ(algo, ALGO_NONE);
     uint8_t out = 0;
     ASSERT_EQ(streamReaderRead(&reader, &out, 1), 0);
     streamReaderFree(&reader);
@@ -473,14 +473,14 @@ TEST_F(CompressionTest, streamReaderZeroLengthReadDoesNotProbe) {
     streamReaderConfig cfg = makeReaderConfig(VCS_STREAM_RDB, true, 1);
     streamReader reader;
     ASSERT_EQ(streamReaderInit(&reader, &cfg, overreadReaderRead, &source), 0);
-    ASSERT_EQ(reader.buffer_size, (size_t)STREAM_READER_BUFFER_SIZE_MIN);
+    ASSERT_EQ(reader.config.buffer_size, (size_t)STREAM_READER_BUFFER_SIZE_MIN);
 
     uint8_t out = 0;
     ASSERT_EQ(streamReaderRead(&reader, &out, 0), 0);
     ASSERT_EQ(source.calls, 0) << "a zero-length read must not consume the source";
 
-    streamReaderInfo info;
-    ASSERT_EQ(streamReaderGetInfo(&reader, &info), -1);
+    compressionAlgo algo = ALGO_NONE;
+    ASSERT_EQ(streamReaderGetAlgorithm(&reader, &algo), -1);
     ASSERT_EQ(streamReaderGetError(&reader), STREAM_READER_ERROR_IO);
     streamReaderFree(&reader);
 }
@@ -502,10 +502,10 @@ TEST_F(CompressionTest, streamReaderRejectsOversizedReadRequest) {
     ASSERT_EQ(streamReaderRead(&t, out, oversized), -1)
         << "oversized reads should fail before touching stream state";
 
-    streamReaderInfo info;
-    ASSERT_EQ(streamReaderGetInfo(&t, &info), 0)
+    compressionAlgo algo = ALGO_LZ4;
+    ASSERT_EQ(streamReaderGetAlgorithm(&t, &algo), 0)
         << "oversized read failure should not poison the reader";
-    ASSERT_FALSE(info.compressed) << "plain input should still probe as passthrough";
+    ASSERT_EQ(algo, ALGO_NONE) << "plain input should still probe as passthrough";
 
     ASSERT_EQ(streamReaderRead(&t, out, sizeof(input)), (ssize_t)sizeof(input));
     ASSERT_EQ(memcmp(out, input, sizeof(input)), 0) << "subsequent valid read should still succeed";
@@ -645,18 +645,17 @@ TEST_F(CompressionTest, streamReaderValidatesCompressedStreamKinds) {
         streamReader r;
         ASSERT_EQ(streamReaderInit(&r, &rcfg, memReaderRead, &mr), 0);
 
-        streamReaderInfo info;
+        compressionAlgo algo = ALGO_NONE;
         if (cases[i].expect_ok) {
-            ASSERT_EQ(streamReaderGetInfo(&r, &info), 0) << cases[i].name;
-            ASSERT_TRUE(info.compressed) << cases[i].name;
-            ASSERT_EQ(info.algo, ALGO_LZ4) << cases[i].name;
+            ASSERT_EQ(streamReaderGetAlgorithm(&r, &algo), 0) << cases[i].name;
+            ASSERT_EQ(algo, ALGO_LZ4) << cases[i].name;
 
             uint8_t out[64] = {0};
             ASSERT_EQ(streamReaderRead(&r, out, payload_len), (ssize_t)payload_len) << cases[i].name;
             ASSERT_EQ(memcmp(out, cases[i].payload, payload_len), 0) << cases[i].name;
             ASSERT_EQ(streamReaderRead(&r, out, sizeof(out)), 0) << cases[i].name;
         } else {
-            ASSERT_EQ(streamReaderGetInfo(&r, &info), -1) << cases[i].name;
+            ASSERT_EQ(streamReaderGetAlgorithm(&r, &algo), -1) << cases[i].name;
             ASSERT_EQ(streamReaderGetError(&r), STREAM_READER_ERROR_INCOMPATIBLE) << cases[i].name;
 
             uint8_t out[32] = {0};
@@ -674,8 +673,8 @@ TEST_F(CompressionTest, streamReaderClassifiesSourceCallbackFailuresAsIoErrors) 
     streamReaderConfig failed_cfg = makeReaderConfig(VCS_STREAM_RDB, true);
     streamReader failed_reader;
     ASSERT_EQ(streamReaderInit(&failed_reader, &failed_cfg, flakyReaderRead, &failed_source), 0);
-    streamReaderInfo info;
-    ASSERT_EQ(streamReaderGetInfo(&failed_reader, &info), -1);
+    compressionAlgo algo = ALGO_NONE;
+    ASSERT_EQ(streamReaderGetAlgorithm(&failed_reader, &algo), -1);
     ASSERT_EQ(streamReaderGetError(&failed_reader), STREAM_READER_ERROR_IO);
     streamReaderFree(&failed_reader);
 
@@ -739,8 +738,8 @@ TEST_F(CompressionTest, streamReaderRejectsInvalidEnvelopeFields) {
         streamReader reader;
         ASSERT_EQ(streamReaderInit(&reader, &cfg, memReaderRead, &source), 0) << cases[i].name;
 
-        streamReaderInfo info;
-        ASSERT_EQ(streamReaderGetInfo(&reader, &info), -1) << cases[i].name;
+        compressionAlgo algo = ALGO_NONE;
+        ASSERT_EQ(streamReaderGetAlgorithm(&reader, &algo), -1) << cases[i].name;
         ASSERT_EQ(streamReaderGetError(&reader), STREAM_READER_ERROR_INCOMPATIBLE) << cases[i].name;
         streamReaderFree(&reader);
     }
@@ -827,7 +826,7 @@ TEST_F(CompressionTest, streamWriterInitFree) {
     streamWriterConfig cfg = makeWriterConfig(ALGO_LZ4, 0, VCS_STREAM_RDB);
     streamWriter t;
     ASSERT_EQ(streamWriterInit(&t, &cfg, emitToDynamicBuf, &db), 0);
-    ASSERT_EQ(t.errored, false) << "should not be errored";
+    ASSERT_EQ(t.state, STREAM_WRITER_STATE_INITIAL);
 
     streamWriterFree(&t);
     dynamicBufFree(&db);
@@ -878,7 +877,7 @@ TEST_F(CompressionTest, streamWriterSinkFailuresAreSticky) {
         ASSERT_EQ(streamWriterInit(&writer, &cfg, failSelectedEmit, &emitter), 0);
 
         ASSERT_EQ(streamWriterWrite(&writer, "payload", 7), -1) << "sink call " << fail_on_call;
-        ASSERT_TRUE(writer.errored);
+        ASSERT_EQ(writer.state, STREAM_WRITER_STATE_ERROR);
         ASSERT_EQ(streamWriterWrite(&writer, "retry", 5), -1);
         ASSERT_EQ(streamWriterFlush(&writer), -1);
         ASSERT_EQ(streamWriterFinish(&writer), -1);
@@ -910,11 +909,11 @@ TEST_F(CompressionTest, streamWriterRoundTrip) {
     const char *test_data = "Hello, compression world! This is a test of the stream writer API.";
     size_t data_len = strlen(test_data);
     ASSERT_EQ(streamWriterWrite(&t, test_data, data_len), 0);
-    ASSERT_EQ(t.errored, false) << "should not be errored after write";
+    ASSERT_EQ(t.state, STREAM_WRITER_STATE_ACTIVE);
     ASSERT_GE(sdslen((const char *)db.data), (size_t)VCS_ENVELOPE_SIZE) << "write should emit envelope";
 
     ASSERT_EQ(streamWriterFinish(&t), 0);
-    ASSERT_EQ(t.errored, false) << "should not be errored after finish";
+    ASSERT_EQ(t.state, STREAM_WRITER_STATE_FINISHED);
 
     ASSERT_GE(sdslen((const char *)db.data), (size_t)VCS_ENVELOPE_SIZE)
         << "output should have at least envelope size";
@@ -1198,11 +1197,16 @@ TEST_F(CompressionTest, streamReaderFinishAcceptsClosedFrame) {
     streamReaderConfig rcfg = makeReaderConfig(VCS_STREAM_RDB, false);
     streamReader reader;
     ASSERT_EQ(streamReaderInit(&reader, &rcfg, memReaderRead, &reader_ctx), 0);
+    ASSERT_EQ(reader.state, STREAM_READER_STATE_INITIAL);
 
     char out[64];
     ASSERT_EQ(streamReaderRead(&reader, out, strlen(payload)), (ssize_t)strlen(payload));
+    ASSERT_EQ(reader.state, STREAM_READER_STATE_COMPRESSED);
     ASSERT_EQ(memcmp(out, payload, strlen(payload)), 0);
     ASSERT_EQ(streamReaderFinish(&reader), 0);
+    ASSERT_EQ(reader.state, STREAM_READER_STATE_FINISHED);
+    ASSERT_EQ(streamReaderFinish(&reader), 0);
+    ASSERT_EQ(streamReaderRead(&reader, out, sizeof(out)), 0);
 
     streamReaderFree(&reader);
     streamWriterFree(&w);

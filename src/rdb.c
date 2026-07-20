@@ -3209,11 +3209,11 @@ rdbStreamReaderInitResult rdbInitStreamReader(rio *rdb,
         .skip_codec_checksum_validation = skip_codec_checksum_validation,
         .buffer_size = STREAM_READER_BUFFER_SIZE_DEFAULT,
     };
-    streamReaderInfo info = {0};
+    compressionAlgo detected_algo = ALGO_NONE;
 
     if (algo) *algo = ALGO_NONE;
     if (streamReaderInit(reader, &cfg, rdbStreamReadRaw, rdb) != 0) return RDB_STREAM_READER_INIT_ERROR;
-    if (streamReaderGetInfo(reader, &info) != 0) {
+    if (streamReaderGetAlgorithm(reader, &detected_algo) != 0) {
         streamReaderError error_kind = streamReaderGetError(reader);
         streamReaderFree(reader);
         return error_kind == STREAM_READER_ERROR_INCOMPATIBLE
@@ -3222,9 +3222,9 @@ rdbStreamReaderInitResult rdbInitStreamReader(rio *rdb,
     }
 
     rioAttachStreamReader(rdb, reader);
-    if (info.compressed) {
+    if (detected_algo != ALGO_NONE) {
         rdb->flags |= RIO_FLAG_STREAMING_COMPRESSION | RIO_FLAG_SKIP_RDB_CHECKSUM;
-        if (algo) *algo = info.algo;
+        if (algo) *algo = detected_algo;
     }
     return RDB_STREAM_READER_INIT_OK;
 }
