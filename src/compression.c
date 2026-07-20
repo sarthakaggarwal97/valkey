@@ -54,8 +54,7 @@ size_t streamCompressorOutputBound(const streamCompressor *compressor, size_t in
     case ALGO_LZ4:
         return compressionLz4OutputBound(input_len);
     default:
-        assert(0);
-        return 0;
+        panic("Unsupported stream compression algorithm: %d", compressor->algo);
     }
 }
 
@@ -69,8 +68,7 @@ ssize_t streamCompressorFeed(streamCompressor *compressor,
     case ALGO_LZ4:
         return compressionLz4CompressFeed(compressor, output, output_capacity, input, input_len, flush_mode);
     default:
-        assert(0);
-        return -1;
+        panic("Unsupported stream compression algorithm: %d", compressor->algo);
     }
 }
 
@@ -113,7 +111,6 @@ ssize_t streamDecompressorFeed(streamDecompressor *decompressor,
         return compressionLz4DecompressFeed(decompressor, output, output_capacity,
                                             input, input_len, input_consumed);
     default:
-        assert(0);
-        return -1;
+        panic("Unsupported stream decompression algorithm: %d", decompressor->algo);
     }
 }

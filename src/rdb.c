@@ -1557,7 +1557,7 @@ werr: /* Write error. */
     return C_ERR;
 }
 
-static int rdbCompressionEmit(void *ctx, const uint8_t *data, size_t len) {
+static int rdbCompressionWrite(void *ctx, const uint8_t *data, size_t len) {
     return rioWriteRaw((rio *)ctx, data, len) ? 0 : -1;
 }
 
@@ -1568,11 +1568,10 @@ static int rdbCompressionInit(rio *rdb,
     streamWriterConfig cfg = {
         .algo = algo,
         .level = 0,
-        .stream_kind = VCS_STREAM_RDB,
         .codec_checksum_enabled = codec_checksum_enabled,
     };
 
-    if (streamWriterInit(writer, &cfg, rdbCompressionEmit, rdb) != 0) return -1;
+    if (streamWriterInit(writer, &cfg, rdbCompressionWrite, rdb) != 0) return -1;
     rioAttachStreamWriter(rdb, writer);
     return 0;
 }
@@ -3192,7 +3191,7 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
 bool rdbRioHasCorruptCompressedInput(rio *rdb) {
     /* rdbLoadRio also accepts raw rios, for example AOF preamble loads. */
     if (!rdb->stream_reader) return false;
-    return streamReaderGetErrorKind(rdb->stream_reader) == STREAM_READER_ERROR_CORRUPT;
+    return rdb->stream_reader->error_kind == STREAM_READER_ERROR_CORRUPT;
 }
 
 static ssize_t rdbStreamReadRaw(void *ctx, void *buf, size_t len) {
@@ -3204,7 +3203,6 @@ rdbStreamReaderInitResult rdbInitStreamReader(rio *rdb,
                                               bool skip_codec_checksum_validation,
                                               compressionAlgo *algo) {
     streamReaderConfig cfg = {
-        .expected_stream_kind = VCS_STREAM_RDB,
         .allow_passthrough = true,
         .skip_codec_checksum_validation = skip_codec_checksum_validation,
         .buffer_size = STREAM_READER_BUFFER_SIZE_DEFAULT,
@@ -3213,7 +3211,7 @@ rdbStreamReaderInitResult rdbInitStreamReader(rio *rdb,
 
     if (algo) *algo = ALGO_NONE;
     if (streamReaderInit(reader, &cfg, rdbStreamReadRaw, rdb, &detected_algo) != 0) {
-        streamReaderErrorKind error_kind = streamReaderGetErrorKind(reader);
+        streamReaderErrorKind error_kind = reader->error_kind;
         streamReaderFree(reader);
         return error_kind == STREAM_READER_ERROR_INCOMPATIBLE
                    ? RDB_STREAM_READER_INIT_INCOMPATIBLE
@@ -3847,6 +3845,17 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     if (retval == RDB_OK && streamReaderFinish(&stream_reader) != 0) {
         serverLog(LL_WARNING, "Compressed RDB stream in %s did not end cleanly", filename);
         retval = RDB_FAILED;
+    }
+    if (retval == RDB_OK && (rdb.flags & RIO_FLAG_STREAMING_COMPRESSION)) {
+        uint8_t trailing_byte;
+        ssize_t trailing_len = rioReadRawPartial(&rdb, &trailing_byte, 1);
+        if (trailing_len < 0) {
+            serverLog(LL_WARNING, "I/O error while checking the end of compressed RDB stream in %s", filename);
+            retval = RDB_FAILED;
+        } else if (trailing_len > 0) {
+            serverLog(LL_WARNING, "Compressed RDB stream in %s has trailing data", filename);
+            retval = RDB_FAILED;
+        }
     }
 
 done:

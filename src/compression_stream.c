@@ -5,7 +5,6 @@
  */
 
 #include "compression_stream.h"
-#include "serverassert.h"
 #include "zmalloc.h"
 #include <limits.h>
 #include <string.h>
@@ -25,10 +24,9 @@ static bool vcsHasMagicPrefix(const uint8_t *buf, size_t len) {
     return memcmp(buf, VCS_MAGIC, n) == 0;
 }
 
-static int writeVcsEnvelope(streamWriterEmitFn emit_fn,
+static int writeVcsEnvelope(streamWriterWriteFn write_cb,
                             void *ctx,
-                            compressionAlgo algo,
-                            uint8_t stream_kind) {
+                            compressionAlgo algo) {
     uint8_t codec;
     switch (algo) {
     case ALGO_LZ4:
@@ -45,16 +43,14 @@ static int writeVcsEnvelope(streamWriterEmitFn emit_fn,
         [VCS_OFFSET_VERSION] = VCS_VERSION,
         [VCS_OFFSET_CODEC] = codec,
         [VCS_OFFSET_RESERVED] = 0,
-        [VCS_OFFSET_STREAM_KIND] = stream_kind,
+        [VCS_OFFSET_STREAM_KIND] = VCS_STREAM_RDB,
     };
-    return emit_fn(ctx, envelope, VCS_ENVELOPE_SIZE) == 0 ? 0 : -1;
+    return write_cb(ctx, envelope, VCS_ENVELOPE_SIZE) == 0 ? 0 : -1;
 }
 
-/* Reject a nonzero reserved byte so a future envelope extension fails loud
+/* Reject a nonzero reserved byte so a future envelope extension fails loudly
  * rather than being silently misinterpreted. */
-static int readVcsEnvelope(const uint8_t *buf,
-                           compressionAlgo *algo,
-                           uint8_t *stream_kind) {
+static int readVcsEnvelope(const uint8_t *buf, compressionAlgo *algo) {
     if (buf[VCS_OFFSET_VERSION] != VCS_VERSION) return -1;
 
     switch (buf[VCS_OFFSET_CODEC]) {
@@ -65,8 +61,7 @@ static int readVcsEnvelope(const uint8_t *buf,
         return -1;
     }
     if (buf[VCS_OFFSET_RESERVED] != 0) return -1;
-
-    *stream_kind = buf[VCS_OFFSET_STREAM_KIND];
+    if (buf[VCS_OFFSET_STREAM_KIND] != VCS_STREAM_RDB) return -1;
     return 0;
 }
 
@@ -74,11 +69,10 @@ static int readVcsEnvelope(const uint8_t *buf,
 
 #define STREAM_WRITER_INPUT_CHUNK_SIZE (1024 * 1024)
 
-int streamWriterInit(streamWriter *writer, const streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx) {
+int streamWriterInit(streamWriter *writer, const streamWriterConfig *cfg, streamWriterWriteFn write_cb, void *write_ctx) {
     memset(writer, 0, sizeof(*writer));
-    writer->emit_fn = emit_fn;
-    writer->emit_ctx = emit_ctx;
-    writer->stream_kind = cfg->stream_kind;
+    writer->write_cb = write_cb;
+    writer->write_ctx = write_ctx;
 
     if (streamCompressorInit(&writer->compressor, cfg->algo, cfg->level,
                              cfg->codec_checksum_enabled) != 0) {
@@ -93,8 +87,7 @@ int streamWriterInit(streamWriter *writer, const streamWriterConfig *cfg, stream
 static int streamWriterEnsureEnvelope(streamWriter *writer) {
     if (writer->state == STREAM_WRITER_STATE_ACTIVE) return 0;
     if (writer->state != STREAM_WRITER_STATE_INITIAL) return -1;
-    if (writeVcsEnvelope(writer->emit_fn, writer->emit_ctx, writer->compressor.algo,
-                         writer->stream_kind) != 0) {
+    if (writeVcsEnvelope(writer->write_cb, writer->write_ctx, writer->compressor.algo) != 0) {
         writer->state = STREAM_WRITER_STATE_ERROR;
         return -1;
     }
@@ -102,10 +95,10 @@ static int streamWriterEnsureEnvelope(streamWriter *writer) {
     return 0;
 }
 
-static int streamWriterFeedAndEmit(streamWriter *writer,
-                                   const uint8_t *input,
-                                   size_t input_len,
-                                   compressFlushMode flush_mode) {
+static int streamWriterFeedAndWrite(streamWriter *writer,
+                                    const uint8_t *input,
+                                    size_t input_len,
+                                    compressFlushMode flush_mode) {
     const size_t needed = streamCompressorOutputBound(&writer->compressor, input_len);
     if (needed > writer->out_buf_size) {
         writer->out_buf = zrealloc(writer->out_buf, needed);
@@ -119,7 +112,7 @@ static int streamWriterFeedAndEmit(streamWriter *writer,
         writer->state = STREAM_WRITER_STATE_ERROR;
         return -1;
     }
-    if (compressed > 0 && writer->emit_fn(writer->emit_ctx, writer->out_buf, (size_t)compressed) != 0) {
+    if (compressed > 0 && writer->write_cb(writer->write_ctx, writer->out_buf, (size_t)compressed) != 0) {
         writer->state = STREAM_WRITER_STATE_ERROR;
         return -1;
     }
@@ -128,11 +121,7 @@ static int streamWriterFeedAndEmit(streamWriter *writer,
 
 void streamWriterFree(streamWriter *writer) {
     streamCompressorFree(&writer->compressor);
-    if (writer->out_buf) {
-        zfree(writer->out_buf);
-        writer->out_buf = NULL;
-    }
-    writer->out_buf_size = 0;
+    zfree(writer->out_buf);
 }
 
 int streamWriterWrite(streamWriter *writer, const void *buf, size_t len) {
@@ -148,7 +137,7 @@ int streamWriterWrite(streamWriter *writer, const void *buf, size_t len) {
         size_t chunk_len = remaining < STREAM_WRITER_INPUT_CHUNK_SIZE
                                ? remaining
                                : STREAM_WRITER_INPUT_CHUNK_SIZE;
-        if (streamWriterFeedAndEmit(writer, src, chunk_len, FLUSH_CONTINUE) != 0) return -1;
+        if (streamWriterFeedAndWrite(writer, src, chunk_len, COMPRESS_FLUSH_CONTINUE) != 0) return -1;
         src += chunk_len;
         remaining -= chunk_len;
     }
@@ -161,7 +150,7 @@ int streamWriterFlush(streamWriter *writer) {
     if (writer->state == STREAM_WRITER_STATE_FINISHED) return 0;
 
     if (writer->state == STREAM_WRITER_STATE_INITIAL) return 0;
-    return streamWriterFeedAndEmit(writer, NULL, 0, FLUSH_SYNC);
+    return streamWriterFeedAndWrite(writer, NULL, 0, COMPRESS_FLUSH_SYNC);
 }
 
 int streamWriterFinish(streamWriter *writer) {
@@ -171,7 +160,7 @@ int streamWriterFinish(streamWriter *writer) {
     /* Even an empty stream produces a valid envelope + empty frame so the
      * loader sees a well-formed file. */
     if (streamWriterEnsureEnvelope(writer) != 0) return -1;
-    if (streamWriterFeedAndEmit(writer, NULL, 0, FLUSH_END) != 0) return -1;
+    if (streamWriterFeedAndWrite(writer, NULL, 0, COMPRESS_FLUSH_END) != 0) return -1;
     writer->state = STREAM_WRITER_STATE_FINISHED;
     return 0;
 }
@@ -180,7 +169,6 @@ int streamWriterFinish(streamWriter *writer) {
 
 static void streamReaderSetError(streamReader *reader, streamReaderErrorKind error_kind) {
     if (reader->error_kind == STREAM_READER_ERROR_NONE) reader->error_kind = error_kind;
-    reader->state = STREAM_READER_STATE_ERROR;
 }
 
 static ssize_t streamReaderFail(streamReader *reader,
@@ -191,8 +179,6 @@ static ssize_t streamReaderFail(streamReader *reader,
 }
 
 int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx, compressionAlgo *detected_algo) {
-    assert(cfg->buffer_size != 0);
-
     memset(reader, 0, sizeof(*reader));
     reader->read_cb = read_cb;
     reader->read_ctx = read_ctx;
@@ -225,9 +211,7 @@ int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, stream
         }
 
         if (reader->probe.header_len == VCS_ENVELOPE_SIZE) {
-            uint8_t stream_kind;
-            if (readVcsEnvelope(reader->probe.header, &algo, &stream_kind) != 0 ||
-                stream_kind != cfg->expected_stream_kind) {
+            if (readVcsEnvelope(reader->probe.header, &algo) != 0) {
                 streamReaderSetError(reader, STREAM_READER_ERROR_INCOMPATIBLE);
                 return -1;
             }
@@ -277,6 +261,9 @@ static ssize_t streamReaderReadPassthrough(streamReader *reader, uint8_t *dst, s
     return (ssize_t)(total + (size_t)got);
 }
 
+/* Feed buffered input to the codec. out_written includes bytes produced before
+ * an error, allowing the caller to return partial output before the sticky
+ * error is reported on the next read. */
 static int streamReaderDrainCompressedBuf(streamReader *reader,
                                           uint8_t *out,
                                           size_t out_size,
@@ -308,6 +295,8 @@ static int streamReaderDrainCompressedBuf(streamReader *reader,
     return 0;
 }
 
+/* Read more encoded input. Returns 1 for progress, 0 for source EOF, and -1
+ * for an I/O error or a full buffer on which the codec made no progress. */
 static int streamReaderRefillCompressedBuf(streamReader *reader) {
     if (reader->decompressor.frame_done) return 0;
 
@@ -339,6 +328,8 @@ static int streamReaderRefillCompressedBuf(streamReader *reader) {
     return 1;
 }
 
+/* Fill the decoded-output buffer. A source or codec error after partial output
+ * is left sticky and reported after those bytes have been returned. */
 static ssize_t streamReaderFillDecompressedBuf(streamReader *reader) {
     size_t written = 0;
 
@@ -378,10 +369,7 @@ static ssize_t streamReaderReadCompressed(streamReader *reader, uint8_t *dst, si
         if (available == 0) {
             ssize_t filled = streamReaderFillDecompressedBuf(reader);
             if (filled < 0) {
-                return streamReaderFail(
-                    reader, total,
-                    reader->error_kind == STREAM_READER_ERROR_NONE ? STREAM_READER_ERROR_IO
-                                                                   : reader->error_kind);
+                return total > 0 ? (ssize_t)total : -1;
             }
             if (filled == 0 && !reader->decompressor.frame_done) {
                 return streamReaderFail(reader, total, STREAM_READER_ERROR_CORRUPT);
@@ -396,14 +384,14 @@ static ssize_t streamReaderReadCompressed(streamReader *reader, uint8_t *dst, si
         dst += to_copy;
         remaining -= to_copy;
         total += to_copy;
-        if (reader->state == STREAM_READER_STATE_ERROR) break;
+        if (reader->error_kind != STREAM_READER_ERROR_NONE) break;
     }
 
     return (ssize_t)total;
 }
 
 ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len) {
-    if (reader->state == STREAM_READER_STATE_ERROR) return -1;
+    if (reader->error_kind != STREAM_READER_ERROR_NONE) return -1;
     if (reader->state == STREAM_READER_STATE_FINISHED) return 0;
     if (len == 0) return 0;
     if (len > (size_t)SSIZE_MAX) return -1;
@@ -417,7 +405,7 @@ ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len) {
 int streamReaderFinish(streamReader *reader) {
     uint8_t buf[4096];
 
-    if (reader->state == STREAM_READER_STATE_ERROR) return -1;
+    if (reader->error_kind != STREAM_READER_ERROR_NONE) return -1;
     if (reader->state == STREAM_READER_STATE_FINISHED) return 0;
     if (reader->state == STREAM_READER_STATE_PASSTHROUGH) {
         reader->state = STREAM_READER_STATE_FINISHED;
@@ -442,25 +430,12 @@ int streamReaderFinish(streamReader *reader) {
         return -1;
     }
 
-    ssize_t got = reader->read_cb(reader->read_ctx, buf, 1);
-    if (got < 0 || got > 1) {
-        streamReaderSetError(reader, STREAM_READER_ERROR_IO);
-        return -1;
-    }
-    if (got > 0) {
-        streamReaderSetError(reader, STREAM_READER_ERROR_CORRUPT);
-        return -1;
-    }
     reader->state = STREAM_READER_STATE_FINISHED;
     return 0;
 }
 
-streamReaderErrorKind streamReaderGetErrorKind(const streamReader *reader) {
-    return reader->error_kind;
-}
-
 void streamReaderFree(streamReader *reader) {
     streamDecompressorFree(&reader->decompressor);
-    if (reader->compressed_buf) zfree(reader->compressed_buf);
-    if (reader->decompressed_buf) zfree(reader->decompressed_buf);
+    zfree(reader->compressed_buf);
+    zfree(reader->decompressed_buf);
 }

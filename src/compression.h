@@ -20,9 +20,9 @@ typedef enum {
 } compressionAlgo;
 
 typedef enum {
-    FLUSH_CONTINUE = 0, /* Buffer internally. */
-    FLUSH_SYNC = 1,     /* Drain buffered bytes, keep frame open. */
-    FLUSH_END = 2,      /* Finalize frame. */
+    COMPRESS_FLUSH_CONTINUE = 0, /* Buffer internally. */
+    COMPRESS_FLUSH_SYNC = 1,     /* Drain buffered bytes, keep frame open. */
+    COMPRESS_FLUSH_END = 2,      /* Finalize frame. */
 } compressFlushMode;
 
 typedef struct {
