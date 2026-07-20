@@ -3192,7 +3192,7 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
 bool rdbRioHasCorruptCompressedInput(rio *rdb) {
     /* rdbLoadRio also accepts raw rios, for example AOF preamble loads. */
     if (!rdb->stream_reader) return false;
-    return streamReaderGetError(rdb->stream_reader) == STREAM_READER_ERROR_CORRUPT;
+    return streamReaderGetErrorKind(rdb->stream_reader) == STREAM_READER_ERROR_CORRUPT;
 }
 
 static ssize_t rdbStreamReadRaw(void *ctx, void *buf, size_t len) {
@@ -3213,7 +3213,7 @@ rdbStreamReaderInitResult rdbInitStreamReader(rio *rdb,
 
     if (algo) *algo = ALGO_NONE;
     if (streamReaderInit(reader, &cfg, rdbStreamReadRaw, rdb, &detected_algo) != 0) {
-        streamReaderError error_kind = streamReaderGetError(reader);
+        streamReaderErrorKind error_kind = streamReaderGetErrorKind(reader);
         streamReaderFree(reader);
         return error_kind == STREAM_READER_ERROR_INCOMPATIBLE
                    ? RDB_STREAM_READER_INIT_INCOMPATIBLE

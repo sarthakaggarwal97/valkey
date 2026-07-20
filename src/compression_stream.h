@@ -7,7 +7,7 @@
 #ifndef COMPRESSION_STREAM_H
 #define COMPRESSION_STREAM_H
 
-#include "compression_lz4.h"
+#include "compression.h"
 
 /* VCS envelope:
  *   [0..2] magic "VCS"
@@ -69,7 +69,7 @@ typedef enum {
     STREAM_READER_ERROR_IO = 1,
     STREAM_READER_ERROR_INCOMPATIBLE = 2,
     STREAM_READER_ERROR_CORRUPT = 3,
-} streamReaderError;
+} streamReaderErrorKind;
 
 typedef enum {
     STREAM_WRITER_STATE_INITIAL = 0,
@@ -87,7 +87,7 @@ typedef enum {
 } streamReaderState;
 
 typedef struct streamWriter {
-    compressionLz4Compressor compressor;
+    streamCompressor compressor;
     uint8_t *out_buf;
     size_t out_buf_size;
     streamWriterEmitFn emit_fn;
@@ -105,10 +105,10 @@ typedef struct streamReader {
     } probe;
     size_t probe_replay_pos; /* Passthrough bytes left to replay from probe. */
     size_t buffer_size;
-    streamReaderError error_kind;
+    streamReaderErrorKind error_kind;
     streamReaderState state;
 
-    compressionLz4Decompressor decompressor;
+    streamDecompressor decompressor;
 
     uint8_t *compressed_buf;
     size_t compressed_buf_pos;
@@ -140,7 +140,7 @@ ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len);
 /* Completes and validates a finite compressed frame after the logical parser
  * has consumed its payload. Must be called before free on successful reads. */
 int streamReaderFinish(streamReader *reader);
-streamReaderError streamReaderGetError(const streamReader *reader);
+streamReaderErrorKind streamReaderGetErrorKind(const streamReader *reader);
 void streamReaderFree(streamReader *reader);
 
 #endif /* COMPRESSION_STREAM_H */

@@ -8,7 +8,6 @@
 #include "serverassert.h"
 #include "zmalloc.h"
 #include <limits.h>
-#include <string.h>
 
 #define LZ4F_STATIC_LINKING_ONLY
 #include <lz4frame.h>
@@ -47,30 +46,27 @@ static const LZ4F_preferences_t lz4f_prefs = {
     .compressionLevel = 0,
 };
 
-void compressionLz4CompressorInit(compressionLz4Compressor *compressor, int level, bool codec_checksum) {
-    memset(compressor, 0, sizeof(*compressor));
-    compressor->level = level;
-    compressor->codec_checksum = codec_checksum;
+int compressionLz4CompressorInit(streamCompressor *compressor) {
     compressor->ctx = LZ4F_createCompressionContext_advanced(lz4f_mem, LZ4F_VERSION);
     assert(compressor->ctx != NULL);
+    return 0;
 }
 
-void compressionLz4CompressorFree(compressionLz4Compressor *compressor) {
+void compressionLz4CompressorFree(streamCompressor *compressor) {
     if (compressor->ctx) {
         LZ4F_freeCompressionContext((LZ4F_cctx *)compressor->ctx);
         compressor->ctx = NULL;
     }
 }
 
-void compressionLz4DecompressorInit(compressionLz4Decompressor *decompressor, bool skip_codec_checksum_validation) {
-    memset(decompressor, 0, sizeof(*decompressor));
-    decompressor->skip_codec_checksum_validation = skip_codec_checksum_validation;
+int compressionLz4DecompressorInit(streamDecompressor *decompressor) {
     decompressor->ctx = LZ4F_createDecompressionContext_advanced(lz4f_mem, LZ4F_VERSION);
     assert(decompressor->ctx != NULL);
     decompressor->input_hint = LZ4F_HEADER_SIZE_MIN;
+    return 0;
 }
 
-void compressionLz4DecompressorFree(compressionLz4Decompressor *decompressor) {
+void compressionLz4DecompressorFree(streamDecompressor *decompressor) {
     if (decompressor->ctx) {
         LZ4F_freeDecompressionContext((LZ4F_dctx *)decompressor->ctx);
         decompressor->ctx = NULL;
@@ -81,12 +77,12 @@ size_t compressionLz4OutputBound(size_t input_len) {
     return LZ4F_compressBound(input_len, &lz4f_prefs) + LZ4F_HEADER_SIZE_MAX + LZ4F_compressBound(0, &lz4f_prefs);
 }
 
-ssize_t compressionLz4CompressFeed(compressionLz4Compressor *compressor,
+ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
                                    uint8_t *output,
                                    size_t output_capacity,
                                    const uint8_t *input,
                                    size_t input_len,
-                                   compressionFlushMode flush_mode) {
+                                   compressFlushMode flush_mode) {
     assert(compressor->ctx != NULL);
 
     LZ4F_cctx *cctx = (LZ4F_cctx *)compressor->ctx;
@@ -115,16 +111,16 @@ ssize_t compressionLz4CompressFeed(compressionLz4Compressor *compressor,
     }
 
     switch (flush_mode) {
-    case COMPRESS_FLUSH_CONTINUE:
+    case FLUSH_CONTINUE:
         break;
-    case COMPRESS_FLUSH_SYNC: {
+    case FLUSH_SYNC: {
         if (offset >= output_capacity) return -1;
         size_t r = LZ4F_flush(cctx, output + offset, output_capacity - offset, NULL);
         if (LZ4F_isError(r)) return -1;
         offset += r;
         break;
     }
-    case COMPRESS_FLUSH_END: {
+    case FLUSH_END: {
         if (offset >= output_capacity) return -1;
         size_t r = LZ4F_compressEnd(cctx, output + offset, output_capacity - offset, NULL);
         if (LZ4F_isError(r)) return -1;
@@ -140,7 +136,7 @@ ssize_t compressionLz4CompressFeed(compressionLz4Compressor *compressor,
     return (ssize_t)offset;
 }
 
-ssize_t compressionLz4DecompressFeed(compressionLz4Decompressor *decompressor,
+ssize_t compressionLz4DecompressFeed(streamDecompressor *decompressor,
                                      uint8_t *output,
                                      size_t output_capacity,
                                      const uint8_t *input,

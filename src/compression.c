@@ -5,6 +5,9 @@
  */
 
 #include "compression.h"
+#include "compression_lz4.h"
+#include "serverassert.h"
+#include <string.h>
 
 const char *compressionAlgoName(compressionAlgo algo) {
     switch (algo) {
@@ -16,5 +19,101 @@ const char *compressionAlgoName(compressionAlgo algo) {
         return "lz4";
     default:
         return "unknown";
+    }
+}
+
+int streamCompressorInit(streamCompressor *compressor,
+                         compressionAlgo algo,
+                         int level,
+                         bool codec_checksum) {
+    memset(compressor, 0, sizeof(*compressor));
+    compressor->algo = algo;
+    compressor->level = level;
+    compressor->codec_checksum = codec_checksum;
+
+    switch (algo) {
+    case ALGO_LZ4:
+        return compressionLz4CompressorInit(compressor);
+    default:
+        return -1;
+    }
+}
+
+void streamCompressorFree(streamCompressor *compressor) {
+    switch (compressor->algo) {
+    case ALGO_LZ4:
+        compressionLz4CompressorFree(compressor);
+        break;
+    default:
+        break;
+    }
+}
+
+size_t streamCompressorOutputBound(const streamCompressor *compressor, size_t input_len) {
+    switch (compressor->algo) {
+    case ALGO_LZ4:
+        return compressionLz4OutputBound(input_len);
+    default:
+        assert(0);
+        return 0;
+    }
+}
+
+ssize_t streamCompressorFeed(streamCompressor *compressor,
+                             uint8_t *output,
+                             size_t output_capacity,
+                             const uint8_t *input,
+                             size_t input_len,
+                             compressFlushMode flush_mode) {
+    switch (compressor->algo) {
+    case ALGO_LZ4:
+        return compressionLz4CompressFeed(compressor, output, output_capacity, input, input_len, flush_mode);
+    default:
+        assert(0);
+        return -1;
+    }
+}
+
+int streamDecompressorInit(streamDecompressor *decompressor,
+                           compressionAlgo algo,
+                           bool skip_codec_checksum_validation) {
+    memset(decompressor, 0, sizeof(*decompressor));
+    decompressor->algo = algo;
+    decompressor->skip_codec_checksum_validation = skip_codec_checksum_validation;
+
+    switch (algo) {
+    case ALGO_LZ4:
+        return compressionLz4DecompressorInit(decompressor);
+    default:
+        return -1;
+    }
+}
+
+void streamDecompressorFree(streamDecompressor *decompressor) {
+    switch (decompressor->algo) {
+    case ALGO_LZ4:
+        compressionLz4DecompressorFree(decompressor);
+        break;
+    default:
+        break;
+    }
+}
+
+ssize_t streamDecompressorFeed(streamDecompressor *decompressor,
+                               uint8_t *output,
+                               size_t output_capacity,
+                               const uint8_t *input,
+                               size_t input_len,
+                               size_t *input_consumed) {
+    *input_consumed = 0;
+    if (decompressor->frame_done) return 0;
+
+    switch (decompressor->algo) {
+    case ALGO_LZ4:
+        return compressionLz4DecompressFeed(decompressor, output, output_capacity,
+                                            input, input_len, input_consumed);
+    default:
+        assert(0);
+        return -1;
     }
 }
