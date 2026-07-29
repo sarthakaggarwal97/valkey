@@ -47,6 +47,7 @@ static const LZ4F_preferences_t lz4f_prefs[] = {
             .blockMode = LZ4F_blockLinked,
         },
         .compressionLevel = 0,
+        .autoFlush = 1,
     },
     [true] = {
         .frameInfo = {
@@ -56,76 +57,70 @@ static const LZ4F_preferences_t lz4f_prefs[] = {
             .blockMode = LZ4F_blockLinked,
         },
         .compressionLevel = 0,
+        .autoFlush = 1,
     },
 };
 
-static const LZ4F_preferences_t *compressionLz4Preferences(const streamCompressor *compressor) {
-    return &lz4f_prefs[compressor->codec_checksum];
+static LZ4F_preferences_t compressionLz4Preferences(const streamCompressor *compressor) {
+    LZ4F_preferences_t prefs = lz4f_prefs[compressor->codec_checksum];
+    prefs.compressionLevel = compressor->level;
+    return prefs;
 }
 
-int compressionLz4CompressorInit(streamCompressor *compressor) {
+static int compressionLz4CompressorInit(streamCompressor *compressor) {
     compressor->ctx = LZ4F_createCompressionContext_advanced(lz4f_mem, LZ4F_VERSION);
-    assert(compressor->ctx != NULL);
-    return 0;
+    return compressor->ctx ? 0 : -1;
 }
 
-void compressionLz4CompressorFree(streamCompressor *compressor) {
+static void compressionLz4CompressorFree(streamCompressor *compressor) {
     if (compressor->ctx) {
         LZ4F_freeCompressionContext((LZ4F_cctx *)compressor->ctx);
         compressor->ctx = NULL;
     }
 }
 
-int compressionLz4DecompressorInit(streamDecompressor *decompressor) {
+static int compressionLz4DecompressorInit(streamDecompressor *decompressor) {
     decompressor->ctx = LZ4F_createDecompressionContext_advanced(lz4f_mem, LZ4F_VERSION);
-    assert(decompressor->ctx != NULL);
+    if (!decompressor->ctx) return -1;
     decompressor->input_hint = LZ4F_HEADER_SIZE_MIN;
     return 0;
 }
 
-void compressionLz4DecompressorFree(streamDecompressor *decompressor) {
+static void compressionLz4DecompressorFree(streamDecompressor *decompressor) {
     if (decompressor->ctx) {
         LZ4F_freeDecompressionContext((LZ4F_dctx *)decompressor->ctx);
         decompressor->ctx = NULL;
     }
 }
 
-size_t compressionLz4OutputBound(const streamCompressor *compressor,
-                                 size_t input_len,
-                                 compressFlushMode flush_mode) {
-    switch (flush_mode) {
-    case FLUSH_CONTINUE:
-    case FLUSH_SYNC:
-    case FLUSH_END:
-        break;
-    default:
-        assert(0 && "invalid compressFlushMode");
+static size_t compressionLz4OutputBound(const streamCompressor *compressor, size_t input_len) {
+    size_t full_blocks = input_len / LZ4_STREAM_BLOCK_SIZE;
+    if (full_blocks > UINT_MAX ||
+        (full_blocks == UINT_MAX && input_len % LZ4_STREAM_BLOCK_SIZE != 0)) {
         return 0;
     }
 
-    if (input_len > SIZE_MAX - compressor->input_buffered) return 0;
-
-    /* autoFlush makes compressBound cover both the update and any requested
-     * flush/end in one calculation. Include the exact bytes already buffered by
-     * the active frame; this avoids a second worst-case 64 KB allowance. */
-    LZ4F_preferences_t bound_prefs = *compressionLz4Preferences(compressor);
-    bound_prefs.autoFlush = 1;
-    size_t bound = LZ4F_compressBound(input_len + compressor->input_buffered, &bound_prefs);
+    /* streamWriter supplies complete blocks and explicitly drains partial
+     * blocks. With autoFlush, one bound covers update plus flush/end overhead. */
+    LZ4F_preferences_t prefs = compressionLz4Preferences(compressor);
+    size_t bound = LZ4F_compressBound(input_len, &prefs);
     if (LZ4F_isError(bound)) return 0;
 
     if (!compressor->stream_started) {
         if (bound > SIZE_MAX - LZ4F_HEADER_SIZE_MAX) return 0;
         bound += LZ4F_HEADER_SIZE_MAX;
     }
+    if (bound > (size_t)SSIZE_MAX) return 0;
     return bound;
 }
 
-ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
-                                   uint8_t *output,
-                                   size_t output_capacity,
-                                   const uint8_t *input,
-                                   size_t input_len,
-                                   compressFlushMode flush_mode) {
+static ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
+                                          uint8_t *output,
+                                          size_t output_capacity,
+                                          const uint8_t *input,
+                                          size_t input_len,
+                                          bool input_stable,
+                                          compressFlushMode flush_mode) {
     assert(compressor->ctx != NULL);
 
     LZ4F_cctx *cctx = (LZ4F_cctx *)compressor->ctx;
@@ -136,8 +131,7 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
      * have been consumed. */
 
     if (!compressor->stream_started) {
-        LZ4F_preferences_t prefs = *compressionLz4Preferences(compressor);
-        prefs.compressionLevel = compressor->level;
+        LZ4F_preferences_t prefs = compressionLz4Preferences(compressor);
         size_t r = LZ4F_compressBegin(cctx, output, output_capacity, &prefs);
         if (LZ4F_isError(r)) return -1;
         offset = r;
@@ -145,19 +139,20 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
     }
 
     if (input_len > 0) {
+        LZ4F_compressOptions_t options = {
+            .stableSrc = input_stable,
+        };
         if (offset >= output_capacity) {
             compressor->errored = true;
             return -1;
         }
-        size_t r = LZ4F_compressUpdate(cctx, output + offset, output_capacity - offset, input, input_len, NULL);
+        size_t r = LZ4F_compressUpdate(cctx, output + offset, output_capacity - offset,
+                                       input, input_len, &options);
         if (LZ4F_isError(r)) {
             compressor->errored = true;
             return -1;
         }
         offset += r;
-        compressor->input_buffered =
-            (compressor->input_buffered + input_len % LZ4_STREAM_BLOCK_SIZE) %
-            LZ4_STREAM_BLOCK_SIZE;
     }
 
     switch (flush_mode) {
@@ -174,7 +169,6 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
             return -1;
         }
         offset += r;
-        compressor->input_buffered = 0;
         break;
     }
     case FLUSH_END: {
@@ -188,7 +182,6 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
             return -1;
         }
         offset += r;
-        compressor->input_buffered = 0;
         compressor->stream_started = false;
         break;
     }
@@ -205,12 +198,12 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
     return (ssize_t)offset;
 }
 
-ssize_t compressionLz4DecompressFeed(streamDecompressor *decompressor,
-                                     uint8_t *output,
-                                     size_t output_capacity,
-                                     const uint8_t *input,
-                                     size_t input_len,
-                                     size_t *input_consumed) {
+static ssize_t compressionLz4DecompressFeed(streamDecompressor *decompressor,
+                                            uint8_t *output,
+                                            size_t output_capacity,
+                                            const uint8_t *input,
+                                            size_t input_len,
+                                            size_t *input_consumed) {
     assert(decompressor->ctx != NULL);
 
     LZ4F_dctx *dctx = (LZ4F_dctx *)decompressor->ctx;
@@ -226,3 +219,17 @@ ssize_t compressionLz4DecompressFeed(streamDecompressor *decompressor,
     if (ret == 0) decompressor->frame_done = true;
     return (ssize_t)dst_size;
 }
+
+const compressionCodec compressionLz4Codec = {
+    .algo = ALGO_LZ4,
+    .vcs_id = VCS_CODEC_LZ4,
+    .name = "lz4",
+    .chunk_size = LZ4_STREAM_BLOCK_SIZE,
+    .compressor_init = compressionLz4CompressorInit,
+    .compressor_output_bound = compressionLz4OutputBound,
+    .compressor_feed = compressionLz4CompressFeed,
+    .compressor_free = compressionLz4CompressorFree,
+    .decompressor_init = compressionLz4DecompressorInit,
+    .decompressor_feed = compressionLz4DecompressFeed,
+    .decompressor_free = compressionLz4DecompressorFree,
+};

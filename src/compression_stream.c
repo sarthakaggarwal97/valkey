@@ -48,14 +48,15 @@ static int buildVcsEnvelope(uint8_t *out,
                             compressionAlgo algo,
                             uint8_t stream_kind,
                             bool codec_checksum_enabled) {
-    if (!compressionAlgoSupportsStreaming(algo)) return -1;
+    const compressionCodec *codec = compressionCodecByAlgo(algo);
+    if (!codec) return -1;
 
     uint8_t envelope[VCS_ENVELOPE_SIZE] = {
         VCS_MAGIC_0,
         VCS_MAGIC_1,
         VCS_MAGIC_2,
         [VCS_OFFSET_VERSION] = VCS_VERSION,
-        [VCS_OFFSET_ALGO] = (uint8_t)algo,
+        [VCS_OFFSET_ALGO] = codec->vcs_id,
         [VCS_OFFSET_FLAGS] = codec_checksum_enabled ? VCS_FLAG_CODEC_CHECKSUM : 0,
         [VCS_OFFSET_STREAM_KIND] = stream_kind,
     };
@@ -85,13 +86,13 @@ static int readVcsEnvelope(const uint8_t *buf,
     if (!vcsHasMagicPrefix(buf, VCS_MAGIC_SIZE)) return -1;
     if (buf[VCS_OFFSET_VERSION] != VCS_VERSION) return -1;
 
-    compressionAlgo parsed_algo = (compressionAlgo)buf[VCS_OFFSET_ALGO];
-    if (!compressionAlgoSupportsStreaming(parsed_algo)) return -1;
+    const compressionCodec *codec = compressionCodecByVcsId(buf[VCS_OFFSET_ALGO]);
+    if (!codec) return -1;
 
     uint8_t flags = buf[VCS_OFFSET_FLAGS];
     if (flags & ~VCS_FLAG_CODEC_CHECKSUM) return -1;
 
-    if (algo) *algo = parsed_algo;
+    if (algo) *algo = codec->algo;
     if (stream_kind) *stream_kind = buf[VCS_OFFSET_STREAM_KIND];
     if (codec_checksum_enabled) *codec_checksum_enabled = (flags & VCS_FLAG_CODEC_CHECKSUM) != 0;
     return 0;
@@ -186,9 +187,6 @@ streamProbeResult streamProbeFeed(streamProbe *probe,
 
 /* ===== Streaming writer ===== */
 
-#define STREAM_WRITER_INPUT_CHUNK_SIZE (1024 * 1024)
-#define STREAM_WRITER_SINK_INPUT_CHUNK_SIZE (128 * 1024)
-
 int streamWriterInit(streamWriter *writer,
                      const streamWriterConfig *cfg,
                      streamWriterEmitFn emit_fn,
@@ -198,9 +196,8 @@ int streamWriterInit(streamWriter *writer,
     writer->emit_ctx = emit_ctx;
     writer->stream_kind = cfg->stream_kind;
 
-    if (streamCompressorInit(&writer->compressor, cfg->algo, cfg->level) != 0) return -1;
-    writer->compressor.codec_checksum = cfg->codec_checksum_enabled;
-    return 0;
+    return streamCompressorInit(&writer->compressor, cfg->algo, cfg->level,
+                                cfg->codec_checksum_enabled);
 }
 
 void streamWriterSetSink(streamWriter *writer, sds *sink) {
@@ -213,13 +210,14 @@ static int streamWriterEnsureEnvelope(streamWriter *writer) {
     if (writer->envelope_written) return 0;
     if (writer->sink) {
         uint8_t envelope[VCS_ENVELOPE_SIZE];
-        if (buildVcsEnvelope(envelope, writer->compressor.algo, writer->stream_kind,
+        if (buildVcsEnvelope(envelope, streamCompressorAlgo(&writer->compressor), writer->stream_kind,
                              writer->compressor.codec_checksum) != 0) {
             writer->errored = true;
             return -1;
         }
         *writer->sink = sdscatlen(*writer->sink, (char *)envelope, VCS_ENVELOPE_SIZE);
-    } else if (writeVcsEnvelope(writer->emit_fn, writer->emit_ctx, writer->compressor.algo,
+    } else if (writeVcsEnvelope(writer->emit_fn, writer->emit_ctx,
+                                streamCompressorAlgo(&writer->compressor),
                                 writer->stream_kind, writer->compressor.codec_checksum) != 0) {
         writer->errored = true;
         return -1;
@@ -237,27 +235,36 @@ static int streamWriterEmit(streamWriter *writer, const uint8_t *buf, size_t len
     return 0;
 }
 
-static int streamWriterEnsureOutBuf(streamWriter *writer,
-                                    size_t input_len,
-                                    compressFlushMode flush_mode) {
-    size_t needed = streamCompressorOutputBound(&writer->compressor, input_len, flush_mode);
-    if (needed == 0) {
+static int streamWriterEnsureScratch(streamWriter *writer) {
+    if (writer->scratch) return 0;
+
+    size_t input_size = streamCompressorChunkSize(&writer->compressor);
+    size_t output_size = 0;
+    if (!writer->sink) {
+        output_size = streamCompressorOutputBound(&writer->compressor, input_size);
+    }
+    if (input_size == 0 || (!writer->sink && output_size == 0) ||
+        input_size > SIZE_MAX - output_size) {
         writer->errored = true;
         return -1;
     }
-    if (needed > writer->out_buf_size) {
-        writer->out_buf = zrealloc(writer->out_buf, needed);
-        writer->out_buf_size = needed;
-    }
+
+    writer->scratch = zmalloc(input_size + output_size);
+    writer->in_buf = writer->scratch;
+    writer->in_buf_size = input_size;
+    writer->out_buf = output_size ? writer->scratch + input_size : NULL;
+    writer->out_buf_size = output_size;
     return 0;
 }
 
-/* Sink path: compress directly into the caller's sds tail, no scratch/emit. */
+/* Sink path: compress directly into the caller's sds tail, without an output
+ * scratch buffer or emit callback. */
 static int streamWriterFeedToSink(streamWriter *writer,
                                   const uint8_t *input,
                                   size_t input_len,
+                                  bool input_stable,
                                   compressFlushMode flush_mode) {
-    size_t bound = streamCompressorOutputBound(&writer->compressor, input_len, flush_mode);
+    size_t bound = streamCompressorOutputBound(&writer->compressor, input_len);
     if (bound == 0) {
         writer->errored = true;
         return -1;
@@ -268,8 +275,9 @@ static int streamWriterFeedToSink(streamWriter *writer,
         *writer->sink = sdsMakeRoomFor(*writer->sink, bound);
     ssize_t compressed = streamCompressorFeed(&writer->compressor,
                                               (uint8_t *)(*writer->sink) + sdslen(*writer->sink),
-                                              sdsavail(*writer->sink), input, input_len, flush_mode);
-    if (compressed < 0) {
+                                              sdsavail(*writer->sink), input, input_len,
+                                              input_stable, flush_mode);
+    if (compressed < 0 || (size_t)compressed > sdsavail(*writer->sink)) {
         writer->errored = true;
         return -1;
     }
@@ -280,15 +288,23 @@ static int streamWriterFeedToSink(streamWriter *writer,
 static int streamWriterFeedAndEmit(streamWriter *writer,
                                    const uint8_t *input,
                                    size_t input_len,
+                                   bool input_stable,
                                    compressFlushMode flush_mode) {
-    if (writer->sink) return streamWriterFeedToSink(writer, input, input_len, flush_mode);
+    if (streamWriterEnsureScratch(writer) != 0 || input_len > writer->in_buf_size) return -1;
+    if (writer->sink) {
+        return streamWriterFeedToSink(writer, input, input_len, input_stable, flush_mode);
+    }
 
-    if (streamWriterEnsureOutBuf(writer, input_len, flush_mode) != 0) return -1;
+    size_t bound = streamCompressorOutputBound(&writer->compressor, input_len);
+    if (bound == 0 || bound > writer->out_buf_size) {
+        writer->errored = true;
+        return -1;
+    }
 
     ssize_t compressed = streamCompressorFeed(&writer->compressor, writer->out_buf,
                                               writer->out_buf_size,
-                                              input, input_len, flush_mode);
-    if (compressed < 0) {
+                                              input, input_len, input_stable, flush_mode);
+    if (compressed < 0 || (size_t)compressed > writer->out_buf_size) {
         writer->errored = true;
         return -1;
     }
@@ -297,11 +313,30 @@ static int streamWriterFeedAndEmit(streamWriter *writer,
 
 void streamWriterFree(streamWriter *writer) {
     streamCompressorFree(&writer->compressor);
-    if (writer->out_buf) {
-        zfree(writer->out_buf);
-        writer->out_buf = NULL;
-    }
+    zfree(writer->scratch);
+    writer->scratch = NULL;
+    writer->in_buf = NULL;
+    writer->in_buf_len = 0;
+    writer->in_buf_size = 0;
+    writer->out_buf = NULL;
     writer->out_buf_size = 0;
+}
+
+static int streamWriterStart(streamWriter *writer) {
+    if (streamWriterEnsureEnvelope(writer) != 0) return -1;
+    if (writer->compressor.stream_started) return 0;
+    return streamWriterFeedAndEmit(writer, NULL, 0, false, FLUSH_CONTINUE);
+}
+
+static int streamWriterDrainInput(streamWriter *writer,
+                                  bool input_stable,
+                                  compressFlushMode flush_mode) {
+    const uint8_t *input = writer->in_buf_len ? writer->in_buf : NULL;
+    size_t input_len = writer->in_buf_len;
+
+    if (streamWriterFeedAndEmit(writer, input, input_len, input_stable, flush_mode) != 0) return -1;
+    writer->in_buf_len = 0;
+    return 0;
 }
 
 int streamWriterWrite(streamWriter *writer, const void *buf, size_t len) {
@@ -315,14 +350,38 @@ int streamWriterWrite(streamWriter *writer, const void *buf, size_t len) {
 
     const uint8_t *src = (const uint8_t *)buf;
     size_t remaining = len;
-    size_t chunk_limit = writer->sink ? STREAM_WRITER_SINK_INPUT_CHUNK_SIZE
-                                      : STREAM_WRITER_INPUT_CHUNK_SIZE;
-    if (streamWriterEnsureEnvelope(writer) != 0) return -1;
-    while (remaining > 0) {
-        size_t chunk_len = remaining < chunk_limit ? remaining : chunk_limit;
-        if (streamWriterFeedAndEmit(writer, src, chunk_len, FLUSH_CONTINUE) != 0) return -1;
-        src += chunk_len;
-        remaining -= chunk_len;
+    if (streamWriterStart(writer) != 0) return -1;
+
+    if (writer->in_buf_len > 0) {
+        size_t to_copy = writer->in_buf_size - writer->in_buf_len;
+        if (to_copy > remaining) to_copy = remaining;
+        memcpy(writer->in_buf + writer->in_buf_len, src, to_copy);
+        writer->in_buf_len += to_copy;
+        src += to_copy;
+        remaining -= to_copy;
+
+        /* Keep a linked-block dictionary in caller or writer memory only when
+         * another complete block is fed before this call returns. */
+        if (writer->in_buf_len == writer->in_buf_size &&
+            streamWriterDrainInput(writer, remaining >= writer->in_buf_size,
+                                   FLUSH_CONTINUE) != 0) {
+            return -1;
+        }
+    }
+
+    while (remaining >= writer->in_buf_size) {
+        bool input_stable = remaining - writer->in_buf_size >= writer->in_buf_size;
+        if (streamWriterFeedAndEmit(writer, src, writer->in_buf_size,
+                                    input_stable, FLUSH_CONTINUE) != 0) {
+            return -1;
+        }
+        src += writer->in_buf_size;
+        remaining -= writer->in_buf_size;
+    }
+
+    if (remaining > 0) {
+        memcpy(writer->in_buf, src, remaining);
+        writer->in_buf_len = remaining;
     }
     return 0;
 }
@@ -333,7 +392,7 @@ int streamWriterFlush(streamWriter *writer) {
     if (writer->finished) return 0;
 
     if (!writer->envelope_written || !writer->compressor.stream_started) return 0;
-    return streamWriterFeedAndEmit(writer, NULL, 0, FLUSH_SYNC);
+    return streamWriterDrainInput(writer, false, FLUSH_SYNC);
 }
 
 int streamWriterFinish(streamWriter *writer) {
@@ -344,7 +403,7 @@ int streamWriterFinish(streamWriter *writer) {
     /* Even an empty stream produces a valid envelope + empty frame so the
      * loader sees a well-formed file. */
     if (streamWriterEnsureEnvelope(writer) != 0) return -1;
-    return streamWriterFeedAndEmit(writer, NULL, 0, FLUSH_END);
+    return streamWriterDrainInput(writer, false, FLUSH_END);
 }
 
 /* ===== Streaming reader ===== */
@@ -629,9 +688,8 @@ void streamReaderFree(streamReader *reader) {
     streamReaderResetCompressedState(reader);
 }
 
-/* Approximate scratch memory held by the writer's output buffer, for
- * client-output-buffer accounting. */
+/* Scratch memory held by the writer, for client-output-buffer accounting. */
 size_t streamWriterMemUsage(const streamWriter *writer) {
     if (!writer) return 0;
-    return writer->out_buf_size;
+    return writer->in_buf_size + writer->out_buf_size;
 }

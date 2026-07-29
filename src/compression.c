@@ -9,13 +9,26 @@
 #include "serverassert.h"
 #include <string.h>
 
-bool compressionAlgoSupportsStreaming(compressionAlgo algo) {
-    switch (algo) {
-    case ALGO_LZ4:
-        return true;
-    default:
-        return false;
+static const compressionCodec *const stream_codecs[] = {
+    &compressionLz4Codec,
+};
+
+const compressionCodec *compressionCodecByAlgo(compressionAlgo algo) {
+    for (size_t i = 0; i < sizeof(stream_codecs) / sizeof(stream_codecs[0]); i++) {
+        if (stream_codecs[i]->algo == algo) return stream_codecs[i];
     }
+    return NULL;
+}
+
+const compressionCodec *compressionCodecByVcsId(uint8_t vcs_id) {
+    for (size_t i = 0; i < sizeof(stream_codecs) / sizeof(stream_codecs[0]); i++) {
+        if (stream_codecs[i]->vcs_id == vcs_id) return stream_codecs[i];
+    }
+    return NULL;
+}
+
+bool compressionAlgoSupportsStreaming(compressionAlgo algo) {
+    return compressionCodecByAlgo(algo) != NULL;
 }
 
 const char *compressionAlgoName(compressionAlgo algo) {
@@ -24,78 +37,65 @@ const char *compressionAlgoName(compressionAlgo algo) {
         return "none";
     case ALGO_LZF:
         return "lzf";
-    case ALGO_LZ4:
-        return "lz4";
     default:
-        return "unknown";
+        break;
     }
+
+    const compressionCodec *codec = compressionCodecByAlgo(algo);
+    return codec ? codec->name : "unknown";
 }
 
-int streamCompressorInit(streamCompressor *compressor, compressionAlgo algo, int level) {
+int streamCompressorInit(streamCompressor *compressor,
+                         compressionAlgo algo,
+                         int level,
+                         bool codec_checksum) {
     memset(compressor, 0, sizeof(*compressor));
-    compressor->algo = algo;
+    compressor->codec = compressionCodecByAlgo(algo);
     compressor->level = level;
+    compressor->codec_checksum = codec_checksum;
 
-    switch (algo) {
-    case ALGO_LZ4:
-        if (compressionLz4CompressorInit(compressor) != 0) {
-            compressionLz4CompressorFree(compressor);
-            return -1;
-        }
-        return 0;
-    default:
+    if (!compressor->codec) return -1;
+    if (compressor->codec->compressor_init(compressor) != 0) {
+        compressor->codec->compressor_free(compressor);
+        compressor->codec = NULL;
         return -1;
     }
+    return 0;
 }
 
 void streamCompressorFree(streamCompressor *compressor) {
-    switch (compressor->algo) {
-    case ALGO_LZ4:
-        compressionLz4CompressorFree(compressor);
-        return;
-    default:
-        assert(0);
-        return;
-    }
+    if (compressor->codec) compressor->codec->compressor_free(compressor);
+}
+
+compressionAlgo streamCompressorAlgo(const streamCompressor *compressor) {
+    return compressor && compressor->codec ? compressor->codec->algo : ALGO_NONE;
+}
+
+size_t streamCompressorChunkSize(const streamCompressor *compressor) {
+    assert(compressor->codec != NULL);
+    return compressor->codec->chunk_size;
 }
 
 int streamDecompressorInit(streamDecompressor *decompressor, compressionAlgo algo) {
     memset(decompressor, 0, sizeof(*decompressor));
-    decompressor->algo = algo;
+    decompressor->codec = compressionCodecByAlgo(algo);
 
-    switch (algo) {
-    case ALGO_LZ4:
-        if (compressionLz4DecompressorInit(decompressor) != 0) {
-            compressionLz4DecompressorFree(decompressor);
-            return -1;
-        }
-        return 0;
-    default:
+    if (!decompressor->codec) return -1;
+    if (decompressor->codec->decompressor_init(decompressor) != 0) {
+        decompressor->codec->decompressor_free(decompressor);
+        decompressor->codec = NULL;
         return -1;
     }
+    return 0;
 }
 
 void streamDecompressorFree(streamDecompressor *decompressor) {
-    switch (decompressor->algo) {
-    case ALGO_LZ4:
-        compressionLz4DecompressorFree(decompressor);
-        return;
-    default:
-        assert(0);
-        return;
-    }
+    if (decompressor->codec) decompressor->codec->decompressor_free(decompressor);
 }
 
-size_t streamCompressorOutputBound(const streamCompressor *compressor,
-                                   size_t input_len,
-                                   compressFlushMode flush_mode) {
-    switch (compressor->algo) {
-    case ALGO_LZ4:
-        return compressionLz4OutputBound(compressor, input_len, flush_mode);
-    default:
-        assert(0);
-        return 0;
-    }
+size_t streamCompressorOutputBound(const streamCompressor *compressor, size_t input_len) {
+    assert(compressor->codec != NULL);
+    return compressor->codec->compressor_output_bound(compressor, input_len);
 }
 
 ssize_t streamCompressorFeed(streamCompressor *compressor,
@@ -103,16 +103,14 @@ ssize_t streamCompressorFeed(streamCompressor *compressor,
                              size_t output_capacity,
                              const uint8_t *input,
                              size_t input_len,
+                             bool input_stable,
                              compressFlushMode flush_mode) {
     if (compressor->errored) return -1;
 
-    switch (compressor->algo) {
-    case ALGO_LZ4:
-        return compressionLz4CompressFeed(compressor, output, output_capacity, input, input_len, flush_mode);
-    default:
-        assert(0);
-        return -1;
-    }
+    assert(compressor->codec != NULL);
+    assert(!input_stable || flush_mode == FLUSH_CONTINUE);
+    return compressor->codec->compressor_feed(compressor, output, output_capacity,
+                                              input, input_len, input_stable, flush_mode);
 }
 
 ssize_t streamDecompressorFeed(streamDecompressor *decompressor,
@@ -125,11 +123,7 @@ ssize_t streamDecompressorFeed(streamDecompressor *decompressor,
     if (decompressor->errored) return -1;
     if (decompressor->frame_done) return 0;
 
-    switch (decompressor->algo) {
-    case ALGO_LZ4:
-        return compressionLz4DecompressFeed(decompressor, output, output_capacity, input, input_len, input_consumed);
-    default:
-        assert(0);
-        return -1;
-    }
+    assert(decompressor->codec != NULL);
+    return decompressor->codec->decompressor_feed(decompressor, output, output_capacity,
+                                                  input, input_len, input_consumed);
 }

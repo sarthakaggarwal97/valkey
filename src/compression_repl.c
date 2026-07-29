@@ -82,7 +82,7 @@ size_t replCompressorMemUsage(const replCompressor *rc) {
 }
 
 compressionAlgo replCompressorAlgo(const replCompressor *rc) {
-    return rc ? rc->writer.compressor.algo : ALGO_NONE;
+    return rc ? streamCompressorAlgo(&rc->writer.compressor) : ALGO_NONE;
 }
 
 /* ===== Replica-side decompressor ===== */

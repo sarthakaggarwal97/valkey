@@ -99,6 +99,10 @@ typedef enum {
 
 typedef struct streamWriter {
     streamCompressor compressor;
+    uint8_t *scratch;
+    uint8_t *in_buf;
+    size_t in_buf_len;
+    size_t in_buf_size;
     uint8_t *out_buf;
     size_t out_buf_size;
     streamWriterEmitFn emit_fn;
@@ -173,8 +177,8 @@ int streamReaderGetInfo(streamReader *reader, streamReaderInfo *info);
 int streamReaderValidateEnd(streamReader *reader);
 void streamReaderFree(streamReader *reader);
 
-/* Approximate scratch memory held by the writer, for client-output-buffer
- * accounting. Codec-owned allocations are omitted. */
+/* Scratch memory held by the writer, for client-output-buffer accounting.
+ * Codec-owned allocations are omitted. */
 size_t streamWriterMemUsage(const streamWriter *writer);
 
 #endif /* COMPRESSION_STREAM_H */

@@ -59,6 +59,7 @@ TEST(replCompression, capaCompressionStr) {
 TEST(replCompression, algoConstants) {
     /* ALGO_LZ4 must be non-zero so it's distinguishable from zero-init. */
     EXPECT_NE(ALGO_LZ4, 0);
+    EXPECT_EQ(VCS_CODEC_LZ4, 0x02) << "the VCS LZ4 wire ID is format-stable";
 }
 
 TEST(replCompression, adapterRoundTripAndBufferHandoff) {
@@ -200,8 +201,13 @@ TEST(replCompression, compressibleBatchUsesBoundedStagingAllocation) {
     ASSERT_EQ(replCompressorWrite(compressor, payload.data(), payload.size()), 0);
     ASSERT_EQ(replCompressorFlush(compressor), 0);
     EXPECT_LT(sdsalloc(compressor->out_buf), (size_t)256 * 1024);
+    EXPECT_EQ(compressor->writer.in_buf_size, (size_t)(64 * 1024));
+    EXPECT_EQ(compressor->writer.out_buf, nullptr);
+    EXPECT_EQ(compressor->writer.out_buf_size, 0u);
+    EXPECT_EQ(streamWriterMemUsage(&compressor->writer), (size_t)(64 * 1024));
     EXPECT_EQ(replCompressorMemUsage(compressor),
-              sizeof(*compressor) + sdsalloc(compressor->out_buf));
+              sizeof(*compressor) + streamWriterMemUsage(&compressor->writer) +
+                  sdsalloc(compressor->out_buf));
 
     replCompressorDestroy(compressor);
 }
