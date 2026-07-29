@@ -121,6 +121,8 @@ static replDecodeResult replDecodeFeed(replDecompressor *rd, const uint8_t *in, 
         size_t used = sdslen(rd->decode_buf);
         if (used > output_max) return REPL_DECODE_OVERFLOW;
         size_t output_remaining = output_max - used;
+        /* Allow one byte beyond the cap so exceeding it surfaces as OVERFLOW
+         * instead of a zero-capacity feed that looks like a stuck decoder. */
         size_t output_limit = output_remaining < SIZE_MAX ? output_remaining + 1 : output_remaining;
         size_t reserve = output_limit;
         if (reserve > REPL_DECODE_CHUNK) reserve = REPL_DECODE_CHUNK;
@@ -177,6 +179,10 @@ replDecodeResult replDecompressorDecode(replDecompressor *rd,
         if (out_len) *out_len = len;
         return REPL_DECODE_PASSTHROUGH;
     }
+
+    /* A compressed stream whose decoder failed to initialize stays errored;
+     * feeding it would silently drop input. */
+    if (rd->probe.ready && !rd->decompressor_initialized) return REPL_DECODE_ERR;
 
     if (!rd->probe.ready) {
         size_t buffered_prefix = rd->probe.header_len;

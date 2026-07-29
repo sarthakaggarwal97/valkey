@@ -532,29 +532,18 @@ static ssize_t streamReaderReadCompressed(streamReader *reader, uint8_t *dst, si
     size_t total = 0;
 
     while (total < len && !reader->decompressor.frame_done) {
-        if (reader->compressed_buf_len == 0) {
-            int read_rc = streamReaderRefillCompressedBuf(reader);
-            if (read_rc < 0) {
-                streamReaderError error_kind = reader->error_kind == STREAM_READER_ERROR_NONE
-                                                   ? STREAM_READER_ERROR_IO
-                                                   : reader->error_kind;
-                return streamReaderFailWithError(reader, total, error_kind);
+        if (reader->compressed_buf_len > 0) {
+            size_t written = 0;
+            if (streamReaderDrainCompressedBuf(reader, dst + total, len - total, &written) != 0) {
+                total += written;
+                return streamReaderFailWithError(reader, total, reader->error_kind);
             }
-            if (read_rc == 0) {
-                return streamReaderFailWithError(reader, total, STREAM_READER_ERROR_CORRUPT);
-            }
-        }
-
-        size_t written = 0;
-        if (streamReaderDrainCompressedBuf(reader, dst + total, len - total, &written) != 0) {
             total += written;
-            return streamReaderFailWithError(reader, total, reader->error_kind);
+            if (total == len || reader->decompressor.frame_done) break;
         }
-        total += written;
-        if (total == len || reader->decompressor.frame_done || reader->compressed_buf_len == 0) continue;
 
-        /* Input remains but the decoder needs more bytes to progress. Preserve
-         * the unconsumed prefix and append another bounded source read. */
+        /* The decoder needs more transport bytes to progress. Preserve any
+         * unconsumed prefix and append another bounded source read. */
         int read_rc = streamReaderRefillCompressedBuf(reader);
         if (read_rc < 0) {
             streamReaderError error_kind = reader->error_kind == STREAM_READER_ERROR_NONE
