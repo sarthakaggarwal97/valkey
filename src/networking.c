@@ -1560,6 +1560,105 @@ void addWritePreparedReplyBulkLongLong(writePreparedClient *wpc, long long ll) {
     addWritePreparedReplyBulkCBuffer(wpc, buf, len);
 }
 
+/* -----------------------------------------------------------------------------
+ * Reply batching
+ *
+ * Commands that emit many small bulk strings (LRANGE, MGET, ...) pay the
+ * per-call overhead of the low level reply functions three times per element
+ * (length header, payload, CRLF), and large replies additionally take the
+ * reply-list path for most of those calls. A replyBatch coalesces whole
+ * elements into a single buffer that is handed to the reply machinery in
+ * chunks of up to PROTO_REPLY_CHUNK_BYTES, which greatly reduces that
+ * overhead.
+ *
+ * The client must be write-prepared, and no other addReply* call may be made
+ * on the same client between replyBatchInit() and replyBatchFlush().
+ * -------------------------------------------------------------------------- */
+
+void replyBatchInit(replyBatch *b, writePreparedClient *wpc) {
+    b->wpc = wpc;
+    b->len = 0;
+}
+
+void replyBatchFlush(replyBatch *b) {
+    if (b->len == 0) return;
+    _addReplyToBufferOrList((client *)b->wpc, b->buf, b->len);
+    b->len = 0;
+}
+
+/* Append a bulk string ($<len>\r\n<payload>\r\n) to the batch. */
+void replyBatchAddBulkCBuffer(replyBatch *b, const void *p, size_t len) {
+    char hdr_buf[LONG_STR_SIZE + 3];
+    const char *hdr;
+    size_t hdr_len;
+
+    if (len < OBJ_SHARED_BULKHDR_LEN) {
+        hdr = objectGetVal(shared.bulkhdr[len]);
+        hdr_len = OBJ_SHARED_HDR_STRLEN(len);
+    } else {
+        hdr_buf[0] = '$';
+        hdr_len = ll2string(hdr_buf + 1, sizeof(hdr_buf) - 1, len) + 1;
+        hdr_buf[hdr_len++] = '\r';
+        hdr_buf[hdr_len++] = '\n';
+        hdr = hdr_buf;
+    }
+
+    size_t item_len = hdr_len + len + 2;
+    if (item_len > sizeof(b->buf) - b->len) {
+        replyBatchFlush(b);
+        /* Elements that can never fit are sent through the regular path. */
+        if (item_len > sizeof(b->buf)) {
+            addWritePreparedReplyBulkCBuffer(b->wpc, p, len);
+            return;
+        }
+    }
+
+    char *dst = b->buf + b->len;
+    memcpy(dst, hdr, hdr_len);
+    dst += hdr_len;
+    memcpy(dst, p, len);
+    dst += len;
+    dst[0] = '\r';
+    dst[1] = '\n';
+    b->len += item_len;
+}
+
+/* Append a long long as a bulk string to the batch. */
+void replyBatchAddBulkLongLong(replyBatch *b, long long ll) {
+    char buf[LONG_STR_SIZE];
+    size_t len = ll2string(buf, sizeof(buf), ll);
+    replyBatchAddBulkCBuffer(b, buf, len);
+}
+
+/* Append a string object as a bulk string to the batch. */
+void replyBatchAddBulkObject(replyBatch *b, robj *o) {
+    client *c = (client *)b->wpc;
+    if (o->encoding == OBJ_ENCODING_INT) {
+        char buf[LONG_STR_SIZE];
+        size_t len = ll2string(buf, sizeof(buf), (long)objectGetVal(o));
+        replyBatchAddBulkCBuffer(b, buf, len);
+        return;
+    }
+    serverAssertWithInfo(c, o, sdsEncodedObject(o));
+    if (isCopyAvoidPreferred(c, o)) {
+        /* Keep large values on the copy-avoidance path (bulk string
+         * reference) instead of copying them into the batch buffer. */
+        replyBatchFlush(b);
+        addReplyBulk(c, o);
+        return;
+    }
+    replyBatchAddBulkCBuffer(b, objectGetVal(o), sdslen(objectGetVal(o)));
+}
+
+/* Append a null reply to the batch, in the protocol version of the client. */
+void replyBatchAddNull(replyBatch *b) {
+    const char *proto = ((client *)b->wpc)->resp == 2 ? "$-1\r\n" : "_\r\n";
+    size_t len = ((client *)b->wpc)->resp == 2 ? 5 : 3;
+    if (len > sizeof(b->buf) - b->len) replyBatchFlush(b);
+    memcpy(b->buf + b->len, proto, len);
+    b->len += len;
+}
+
 /* Reply with a verbatim type having the specified extension.
  *
  * The 'ext' is the "extension" of the file, actually just a three

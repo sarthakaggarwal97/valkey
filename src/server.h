@@ -1434,6 +1434,14 @@ static inline int getClientType(client *c) {
  * prepareClientForFutureWrites(client *c). */
 typedef struct writePreparedClient writePreparedClient;
 
+/* Batches many small reply elements into a single buffer before handing them
+ * to the reply machinery, to reduce per-element overhead. See networking.c. */
+typedef struct replyBatch {
+    writePreparedClient *wpc;
+    size_t len;
+    char buf[PROTO_REPLY_CHUNK_BYTES];
+} replyBatch;
+
 /* ACL information */
 typedef struct aclInfo {
     long long user_auth_failures;         /* Auth failure counts on user level */
@@ -2945,6 +2953,12 @@ void addReplyBulkCBuffer(client *c, const void *p, size_t len);
 void addWritePreparedReplyBulkCBuffer(writePreparedClient *c, const void *p, size_t len);
 void addReplyBulkLongLong(client *c, long long ll);
 void addWritePreparedReplyBulkLongLong(writePreparedClient *c, long long ll);
+void replyBatchInit(replyBatch *b, writePreparedClient *wpc);
+void replyBatchFlush(replyBatch *b);
+void replyBatchAddBulkCBuffer(replyBatch *b, const void *p, size_t len);
+void replyBatchAddBulkLongLong(replyBatch *b, long long ll);
+void replyBatchAddBulkObject(replyBatch *b, robj *o);
+void replyBatchAddNull(replyBatch *b);
 void addReply(client *c, robj *obj);
 void addReplyStatusLength(client *c, const char *s, size_t len);
 void addReplySds(client *c, sds s);

@@ -253,9 +253,15 @@ start_server {tags {"string"}} {
 
         set large_value [string repeat y 2048]
         r set mget:large{t} $large_value
+        # Large enough to exceed the copy-avoidance threshold
+        # (min-string-size-avoid-copy-reply) and take the bulk string
+        # reference path in the middle of batched small replies.
+        set huge_value [string repeat z 20000]
+        r set mget:huge{t} $huge_value
+        r set mget:int{t} 12345
         r sadd mget:set{t} member
-        lappend keys mget:missing{t} mget:set{t} mget:large{t}
-        lappend expected {} {} $large_value
+        lappend keys mget:missing{t} mget:set{t} mget:large{t} mget:huge{t} mget:int{t}
+        lappend expected {} {} $large_value $huge_value 12345
         assert_equal $expected [r mget {*}$keys]
 
         set resp3 [valkey_client]

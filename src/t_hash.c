@@ -1247,6 +1247,27 @@ static void addHashIteratorCursorToReply(writePreparedClient *wpc, hashTypeItera
     }
 }
 
+/* Like addHashIteratorCursorToReply, but appends to a replyBatch. */
+static void addHashIteratorCursorToReplyBatch(replyBatch *batch, hashTypeIterator *hi, int what) {
+    if (hi->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *vstr = NULL;
+        unsigned int vlen = UINT_MAX;
+        long long vll = LLONG_MAX;
+
+        hashTypeCurrentFromListpack(hi, what, &vstr, &vlen, &vll);
+        if (vstr)
+            replyBatchAddBulkCBuffer(batch, vstr, vlen);
+        else
+            replyBatchAddBulkLongLong(batch, vll);
+    } else if (hi->encoding == OBJ_ENCODING_HASHTABLE) {
+        size_t len;
+        char *value = hashTypeCurrentFromHashTable(hi, what, &len);
+        replyBatchAddBulkCBuffer(batch, value, len);
+    } else {
+        serverPanic("Unknown hash encoding");
+    }
+}
+
 void hsetnxCommand(client *c) {
     robj *o;
     if ((o = hashTypeLookupWriteOrCreate(c, c->argv[1])) == NULL) return;
@@ -1785,16 +1806,19 @@ void genericHgetallCommand(client *c, int flags) {
      * HGETALL case. Otherwise to use a flat array makes more sense. */
     void *replylen = addReplyDeferredLen(c);
     hashTypeInitIterator(o, &hi);
+    replyBatch batch;
+    replyBatchInit(&batch, wpc);
     while (hashTypeNext(&hi) != C_ERR) {
         if (flags & OBJ_HASH_FIELD) {
-            addHashIteratorCursorToReply(wpc, &hi, OBJ_HASH_FIELD);
+            addHashIteratorCursorToReplyBatch(&batch, &hi, OBJ_HASH_FIELD);
             count++;
         }
         if (flags & OBJ_HASH_VALUE) {
-            addHashIteratorCursorToReply(wpc, &hi, OBJ_HASH_VALUE);
+            addHashIteratorCursorToReplyBatch(&batch, &hi, OBJ_HASH_VALUE);
             count++;
         }
     }
+    replyBatchFlush(&batch);
 
     hashTypeResetIterator(&hi);
     /* Make sure we returned the right number of elements. */

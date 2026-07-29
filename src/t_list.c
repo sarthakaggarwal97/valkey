@@ -661,15 +661,18 @@ void addListQuicklistRangeReply(client *c, robj *o, int from, int rangelen, int 
 
     int direction = reverse ? AL_START_TAIL : AL_START_HEAD;
     quicklistIter *iter = quicklistGetIteratorAtIdx(objectGetVal(o), direction, from);
+    replyBatch batch;
+    replyBatchInit(&batch, wpc);
     while (rangelen--) {
         quicklistEntry qe;
         serverAssert(quicklistNext(iter, &qe)); /* fail on corrupt data */
         if (qe.value) {
-            addWritePreparedReplyBulkCBuffer(wpc, qe.value, qe.sz);
+            replyBatchAddBulkCBuffer(&batch, qe.value, qe.sz);
         } else {
-            addWritePreparedReplyBulkLongLong(wpc, qe.longval);
+            replyBatchAddBulkLongLong(&batch, qe.longval);
         }
     }
+    replyBatchFlush(&batch);
     quicklistReleaseIterator(iter);
 }
 
@@ -686,16 +689,19 @@ void addListListpackRangeReply(client *c, robj *o, int from, int rangelen, int r
     unsigned int vlen;
     long long lval;
 
+    replyBatch batch;
+    replyBatchInit(&batch, wpc);
     while (rangelen--) {
         serverAssert(p); /* fail on corrupt data */
         vstr = lpGetValue(p, &vlen, &lval);
         if (vstr) {
-            addWritePreparedReplyBulkCBuffer(wpc, vstr, vlen);
+            replyBatchAddBulkCBuffer(&batch, vstr, vlen);
         } else {
-            addWritePreparedReplyBulkLongLong(wpc, lval);
+            replyBatchAddBulkLongLong(&batch, lval);
         }
         p = reverse ? lpPrev(objectGetVal(o), p) : lpNext(objectGetVal(o), p);
     }
+    replyBatchFlush(&batch);
 }
 
 /* A helper for replying with a list's range between the inclusive start and end

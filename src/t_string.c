@@ -527,93 +527,27 @@ void getrangeCommand(client *c) {
     }
 }
 
-/* Coalesce small MGET elements while keeping larger values on the existing
- * reply path, which can avoid copying them when I/O threads are active. */
-#define MGET_REPLY_BUFFER_VALUE_MAX 1024
-
-typedef struct {
-    client *c;
-    size_t len;
-    char buf[PROTO_REPLY_CHUNK_BYTES];
-} mgetReplyBuffer;
-
-static void mgetReplyBufferFlush(mgetReplyBuffer *reply) {
-    if (reply->len == 0) return;
-    addReplyProto(reply->c, reply->buf, reply->len);
-    reply->len = 0;
-}
-
-static void mgetReplyBufferAppend(mgetReplyBuffer *reply, const char *data, size_t len) {
-    serverAssert(len <= sizeof(reply->buf));
-    if (len > sizeof(reply->buf) - reply->len) mgetReplyBufferFlush(reply);
-    memcpy(reply->buf + reply->len, data, len);
-    reply->len += len;
-}
-
-static void mgetReplyBufferAppendBulk(mgetReplyBuffer *reply, robj *o) {
-    char integer[32];
-    const char *value;
-    size_t value_len;
-
-    if (o->encoding == OBJ_ENCODING_INT) {
-        value_len = ll2string(integer, sizeof(integer), (long)objectGetVal(o));
-        value = integer;
-    } else {
-        serverAssert(sdsEncodedObject(o));
-        value = objectGetVal(o);
-        value_len = sdslen(value);
-    }
-
-    if (value_len > MGET_REPLY_BUFFER_VALUE_MAX) {
-        mgetReplyBufferFlush(reply);
-        addReplyBulk(reply->c, o);
+void mgetCommand(client *c) {
+    writePreparedClient *wpc = prepareClientForFutureWrites(c);
+    if (!wpc) {
+        /* The reply is suppressed, but lookups must still happen for their
+         * side effects (lazy expiration, LRU/LFU update, hit/miss stats). */
+        for (int j = 1; j < c->argc; j++) lookupKeyRead(c->db, c->argv[j]);
         return;
     }
+    addWritePreparedReplyArrayLen(wpc, c->argc - 1);
 
-    char header_buf[32];
-    const char *header;
-    size_t header_len;
-    if (value_len < OBJ_SHARED_BULKHDR_LEN) {
-        header = objectGetVal(shared.bulkhdr[value_len]);
-        header_len = OBJ_SHARED_HDR_STRLEN(value_len);
-    } else {
-        header_buf[0] = '$';
-        size_t digits = ll2string(header_buf + 1, sizeof(header_buf) - 1, value_len);
-        header_buf[digits + 1] = '\r';
-        header_buf[digits + 2] = '\n';
-        header = header_buf;
-        header_len = digits + 3;
-    }
-
-    size_t item_len = header_len + value_len + 2;
-    if (item_len > sizeof(reply->buf) - reply->len) mgetReplyBufferFlush(reply);
-    memcpy(reply->buf + reply->len, header, header_len);
-    reply->len += header_len;
-    memcpy(reply->buf + reply->len, value, value_len);
-    reply->len += value_len;
-    memcpy(reply->buf + reply->len, "\r\n", 2);
-    reply->len += 2;
-}
-
-void mgetCommand(client *c) {
-    mgetReplyBuffer reply;
-    reply.c = c;
-    reply.len = 0;
-    addReplyArrayLen(c, c->argc - 1);
-
+    replyBatch batch;
+    replyBatchInit(&batch, wpc);
     for (int j = 1; j < c->argc; j++) {
         robj *o = lookupKeyRead(c->db, c->argv[j]);
         if (o == NULL || o->type != OBJ_STRING) {
-            if (c->resp == 2) {
-                mgetReplyBufferAppend(&reply, "$-1\r\n", 5);
-            } else {
-                mgetReplyBufferAppend(&reply, "_\r\n", 3);
-            }
+            replyBatchAddNull(&batch);
         } else {
-            mgetReplyBufferAppendBulk(&reply, o);
+            replyBatchAddBulkObject(&batch, o);
         }
     }
-    mgetReplyBufferFlush(&reply);
+    replyBatchFlush(&batch);
 }
 
 void msetGenericCommand(client *c, int nx) {

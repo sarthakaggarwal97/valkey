@@ -1337,6 +1337,11 @@ void sinterGenericCommand(client *c,
      * the element against all the other sets, if at least one set does
      * not include the element it is discarded */
     int only_integers = 1;
+    replyBatch batch;
+    /* A non-NULL 'replylen' implies the client is write-prepared (see
+     * addReplyDeferredLen), so replies can be batched. When it is NULL the
+     * per-element addReply* calls would be suppressed anyway. */
+    if (replylen) replyBatchInit(&batch, (writePreparedClient *)c);
     si = setTypeInitIterator(sets[0]);
     while ((encoding = setTypeNext(si, &str, &len, &intobj)) != -1) {
         for (j = 1; j < setnum; j++) {
@@ -1352,10 +1357,12 @@ void sinterGenericCommand(client *c,
                 /* We stop the searching after reaching the limit. */
                 if (limit && cardinality >= limit) break;
             } else if (!dstkey) {
-                if (str != NULL)
-                    addReplyBulkCBuffer(c, str, len);
-                else
-                    addReplyBulkLongLong(c, intobj);
+                if (replylen) {
+                    if (str != NULL)
+                        replyBatchAddBulkCBuffer(&batch, str, len);
+                    else
+                        replyBatchAddBulkLongLong(&batch, intobj);
+                }
                 cardinality++;
             } else {
                 if (str && only_integers) {
@@ -1402,6 +1409,7 @@ void sinterGenericCommand(client *c,
             decrRefCount(dstset);
         }
     } else {
+        if (replylen) replyBatchFlush(&batch);
         setDeferredSetLen(c, replylen, cardinality);
     }
     zfree(sets);
@@ -1598,15 +1606,21 @@ void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum, robj *dstke
 
     /* Output the content of the resulting set, if not in STORE mode */
     if (!dstkey) {
-        addReplySetLen(c, cardinality);
-        si = setTypeInitIterator(dstset);
-        while (setTypeNext(si, &str, &len, &llval) != -1) {
-            if (str)
-                addReplyBulkCBuffer(c, str, len);
-            else
-                addReplyBulkLongLong(c, llval);
+        writePreparedClient *wpc = prepareClientForFutureWrites(c);
+        if (wpc) {
+            addReplySetLen(c, cardinality);
+            replyBatch batch;
+            replyBatchInit(&batch, wpc);
+            si = setTypeInitIterator(dstset);
+            while (setTypeNext(si, &str, &len, &llval) != -1) {
+                if (str)
+                    replyBatchAddBulkCBuffer(&batch, str, len);
+                else
+                    replyBatchAddBulkLongLong(&batch, llval);
+            }
+            setTypeReleaseIterator(si);
+            replyBatchFlush(&batch);
         }
-        setTypeReleaseIterator(si);
         server.lazyfree_lazy_server_del ? freeObjAsync(NULL, dstset, -1) : decrRefCount(dstset);
     } else {
         /* If we have a target key where to store the resulting set
