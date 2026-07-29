@@ -73,8 +73,28 @@ void compressionLz4DecompressorFree(streamDecompressor *decompressor) {
     }
 }
 
-size_t compressionLz4OutputBound(size_t input_len) {
-    return LZ4F_compressBound(input_len, &lz4f_prefs) + LZ4F_HEADER_SIZE_MAX + LZ4F_compressBound(0, &lz4f_prefs);
+size_t compressionLz4OutputBound(size_t input_len, compressFlushMode flush_mode) {
+    size_t bound = LZ4F_compressBound(input_len, &lz4f_prefs);
+    if (LZ4F_isError(bound)) return 0;
+
+    switch (flush_mode) {
+    case FLUSH_CONTINUE:
+        break;
+    case FLUSH_SYNC:
+    case FLUSH_END:
+        if (input_len > 0) {
+            size_t flush_bound = LZ4F_compressBound(0, &lz4f_prefs);
+            if (LZ4F_isError(flush_bound) || bound > SIZE_MAX - flush_bound) return 0;
+            bound += flush_bound;
+        }
+        break;
+    default:
+        assert(0 && "invalid compressFlushMode");
+        return 0;
+    }
+
+    if (bound > SIZE_MAX - LZ4F_HEADER_SIZE_MAX) return 0;
+    return bound + LZ4F_HEADER_SIZE_MAX;
 }
 
 ssize_t compressionLz4CompressFeed(streamCompressor *compressor,

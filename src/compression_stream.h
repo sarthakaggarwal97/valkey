@@ -44,10 +44,9 @@ typedef int (*streamWriterEmitFn)(void *ctx, const uint8_t *data, size_t len);
 /* Returns >0 bytes read, 0 on EOF, -1 on error. Partial reads allowed. */
 typedef ssize_t (*streamReaderReadFn)(void *ctx, void *buf, size_t len);
 
-/* Default reader compressed-input/decompressed-output buffer size. Tiny caller
- * values are clamped up so the LZ4 decoder can always make forward progress
- * without growing internal state. */
-#define STREAM_READER_BUFFER_SIZE_DEFAULT (1024 * 1024)
+/* Compressed-input buffer size. Tiny caller values are clamped up so the
+ * decoder can make forward progress while keeping source reads bounded. */
+#define STREAM_READER_BUFFER_SIZE_DEFAULT (128 * 1024)
 #define STREAM_READER_BUFFER_SIZE_MIN (128 * 1024)
 
 typedef struct {
@@ -73,6 +72,25 @@ typedef struct {
 } streamReaderInfo;
 
 typedef enum {
+    STREAM_PROBE_NEED_INPUT = 0,
+    STREAM_PROBE_PASSTHROUGH = 1,
+    STREAM_PROBE_COMPRESSED = 2,
+    STREAM_PROBE_ERROR = 3,
+} streamProbeResult;
+
+/* Incremental VCS envelope classifier shared by blocking and non-blocking
+ * stream adapters. Bytes consumed before a passthrough decision remain in
+ * header so the caller can replay them exactly once. */
+typedef struct {
+    uint8_t header[VCS_ENVELOPE_SIZE];
+    size_t header_len;
+    uint8_t expected_stream_kind;
+    streamReaderInfo info;
+    bool allow_passthrough;
+    bool ready;
+} streamProbe;
+
+typedef enum {
     STREAM_READER_ERROR_NONE = 0,
     STREAM_READER_ERROR_IO = 1,
     STREAM_READER_ERROR_INCOMPATIBLE = 2,
@@ -96,19 +114,7 @@ typedef struct streamReader {
     streamReaderReadFn read_cb;
     void *read_ctx;
 
-    struct {
-        bool allow_passthrough;
-        uint8_t expected_stream_kind;
-    } probe_cfg;
-    struct {
-        uint8_t header[VCS_ENVELOPE_SIZE];
-        uint8_t stream_kind;
-        size_t header_len;
-        compressionAlgo algo;
-        bool ready;
-        bool compressed;
-        bool codec_checksum_enabled;
-    } probe;
+    streamProbe probe;
     size_t probe_replay_pos; /* Passthrough bytes left to replay from probe. */
     size_t buffer_size;
     bool errored;
@@ -120,10 +126,6 @@ typedef struct streamReader {
     uint8_t *compressed_buf;
     size_t compressed_buf_pos;
     size_t compressed_buf_len;
-
-    uint8_t *decompressed_buf;
-    size_t decompressed_buf_pos;
-    size_t decompressed_buf_len;
 } streamReader;
 
 /* The writer pushes compressed bytes to a streamWriterEmitFn sink; the reader
@@ -147,16 +149,26 @@ int streamReadEnvelopeInfo(const uint8_t *buf,
                            uint8_t expected_stream_kind,
                            streamReaderInfo *info);
 
+void streamProbeInit(streamProbe *probe, uint8_t expected_stream_kind, bool allow_passthrough);
+size_t streamProbeBytesNeeded(const streamProbe *probe);
+streamProbeResult streamProbeFeed(streamProbe *probe,
+                                  const uint8_t *src,
+                                  size_t src_len,
+                                  bool input_eof,
+                                  size_t *src_consumed);
+
 int streamReaderInit(streamReader *reader, streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx);
 
-/* Full or fail: returns len on success, 0 on EOF, -1 on error. */
+/* Returns up to len bytes, 0 at a clean EOF/frame end, or -1 on error. It
+ * normally fills len, but may return partial bytes before EOF or while latching
+ * an error. */
 ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len);
 int streamReaderGetInfo(streamReader *reader, streamReaderInfo *info);
 int streamReaderValidateEnd(streamReader *reader);
 void streamReaderFree(streamReader *reader);
 
-/* Approximate scratch/codec memory held by the writer, for client-output-buffer
- * accounting. */
+/* Approximate scratch memory held by the writer, for client-output-buffer
+ * accounting. Codec-owned allocations are omitted. */
 size_t streamWriterMemUsage(const streamWriter *writer);
 
 #endif /* COMPRESSION_STREAM_H */

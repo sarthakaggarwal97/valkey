@@ -2493,6 +2493,12 @@ static void postWriteToReplica(client *c) {
     incrementalTrimReplicationBacklog(REPL_BACKLOG_TRIM_BLOCKS_PER_CALL);
 }
 
+static void setReplicaCompressionError(client *c) {
+    atomic_store_explicit(&c->repl_data->compression_error, 1, memory_order_release);
+    atomic_fetch_add_explicit(&c->repl_data->repl_compression_errors, 1, memory_order_relaxed);
+    c->write_flags |= WRITE_FLAGS_WRITE_ERROR;
+}
+
 /* Compressed write path for replicas on either the IO thread or the main thread. */
 static void writeToReplicaCompressed(client *c) {
     replCompressor *compressor = c->repl_data->repl_compressor;
@@ -2515,9 +2521,6 @@ static void writeToReplicaCompressed(client *c) {
          * drains. Worst-case trim delay is one batch (REPL_COMPRESSION_BATCH_LIMIT). */
         return;
     }
-
-    /* Reset compressed buffer for new batch */
-    replCompressorResetBatch(compressor);
 
     listNode *last_node;
     size_t bufpos;
@@ -2552,11 +2555,8 @@ static void writeToReplicaCompressed(client *c) {
         /* Cap this write at the remaining batch budget; the cursor resumes mid-block next cycle. */
         size_t remaining = REPL_COMPRESSION_BATCH_LIMIT - total_raw;
         if (len > remaining) len = remaining;
-        ssize_t rc = replCompressorWrite(compressor, block->buf + start, len);
-        if (rc < 0) {
-            atomic_store_explicit(&c->repl_data->compression_error, 1, memory_order_release);
-            atomic_fetch_add_explicit(&c->repl_data->repl_compression_errors, 1, memory_order_relaxed);
-            c->write_flags |= WRITE_FLAGS_WRITE_ERROR;
+        if (replCompressorWrite(compressor, block->buf + start, len) != 0) {
+            setReplicaCompressionError(c);
             return;
         }
         total_raw += len;
@@ -2569,9 +2569,7 @@ static void writeToReplicaCompressed(client *c) {
     /* Step 3: Flush the compressor to materialize compressed bytes into
      * out_buf via the emit callback. */
     if (replCompressorFlush(compressor) != 0) {
-        atomic_store_explicit(&c->repl_data->compression_error, 1, memory_order_release);
-        atomic_fetch_add_explicit(&c->repl_data->repl_compression_errors, 1, memory_order_relaxed);
-        c->write_flags |= WRITE_FLAGS_WRITE_ERROR;
+        setReplicaCompressionError(c);
         return;
     }
 
@@ -2589,9 +2587,7 @@ static void writeToReplicaCompressed(client *c) {
         if (total_raw > 0) {
             /* Compressor produced no output despite non-zero input: treat as error
              * to prevent infinite re-compression of the same data. */
-            atomic_store_explicit(&c->repl_data->compression_error, 1, memory_order_release);
-            atomic_fetch_add_explicit(&c->repl_data->repl_compression_errors, 1, memory_order_relaxed);
-            c->write_flags |= WRITE_FLAGS_WRITE_ERROR;
+            setReplicaCompressionError(c);
         }
         return;
     }
@@ -4499,36 +4495,40 @@ int replDecompressQueryBuf(client *c, size_t new_data_start) {
     replDecodeResult dr = replDecompressorDecode(server.repl_decompressor,
                                                  c->querybuf + new_data_start, raw_input_len,
                                                  REPL_STREAM_DECODER_OUTPUT_MAX, &decompressed_len);
-    if (dr != REPL_DECODE_OK) {
+    if (dr < 0) {
         if (dr == REPL_DECODE_FRAME_DONE)
             serverLog(LL_WARNING, "Primary closed compressed replication frame unexpectedly");
         server.repl_decompression_errors++;
         return C_ERR;
     }
 
-    sds decode_buf = replDecompressorBuf(server.repl_decompressor);
-
-    if (new_data_start == 0) {
-        sdsclear(c->querybuf);
+    if (dr == REPL_DECODE_PASSTHROUGH) {
+        /* The bytes are already in querybuf and transport offsets are logical
+         * offsets for plaintext, so no buffer or offset adjustment is needed. */
     } else {
-        sdsrange(c->querybuf, 0, new_data_start - 1);
-    }
+        sds decode_buf = replDecompressorBuf(server.repl_decompressor);
 
-    /* sdscatlen may reallocate c->querybuf. If this client is still on the
-     * thread-local shared query buffer, give it ownership of the current buffer
-     * first so the shared pointer is not left dangling for later readers. */
-    if (c->querybuf == thread_shared_qb && sdsavail(c->querybuf) < decompressed_len) {
-        initSharedQueryBuf();
-    }
-    c->querybuf = sdscatlen(c->querybuf, decode_buf, decompressed_len);
-    if (c->querybuf_peak < sdslen(c->querybuf)) c->querybuf_peak = sdslen(c->querybuf);
+        if (new_data_start == 0) {
+            /* Transfer decoded storage directly to the client. The old query
+             * buffer becomes the decoder's cleared scratch allocation. */
+            if (c->querybuf == thread_shared_qb) initSharedQueryBuf();
+            c->querybuf = replDecompressorTakeBuf(server.repl_decompressor, c->querybuf);
+        } else {
+            sdsrange(c->querybuf, 0, new_data_start - 1);
+            /* sdscatlen may reallocate c->querybuf. If this client is still on
+             * the thread-local shared query buffer, give it ownership first. */
+            if (c->querybuf == thread_shared_qb && sdsavail(c->querybuf) < decompressed_len) {
+                initSharedQueryBuf();
+            }
+            c->querybuf = sdscatlen(c->querybuf, decode_buf, decompressed_len);
+        }
+        if (c->querybuf_peak < sdslen(c->querybuf)) c->querybuf_peak = sdslen(c->querybuf);
 
-    /* Convert the transport bytes already counted in handleReadResult() into
-     * logical replication bytes before processInputBuffer() observes the stream.
-     * If the reader buffered a partial compressed frame and emitted 0 bytes,
-     * the logical offset stays unchanged until a later read produces output. */
-    c->repl_data->read_reploff -= (long long)raw_input_len;
-    c->repl_data->read_reploff += (long long)decompressed_len;
+        /* Convert the transport bytes already counted in handleReadResult()
+         * into logical replication bytes before command processing. */
+        c->repl_data->read_reploff -= (long long)raw_input_len;
+        c->repl_data->read_reploff += (long long)decompressed_len;
+    }
 
     server.repl_decompression_cpu_usec += getMonotonicUs() - decompress_start;
     server.repl_decompressed_bytes_total += decompressed_len;

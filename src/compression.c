@@ -86,10 +86,12 @@ void streamDecompressorFree(streamDecompressor *decompressor) {
     }
 }
 
-size_t streamCompressorOutputBound(streamCompressor *compressor, size_t input_len) {
+size_t streamCompressorOutputBound(streamCompressor *compressor,
+                                   size_t input_len,
+                                   compressFlushMode flush_mode) {
     switch (compressor->algo) {
     case ALGO_LZ4:
-        return compressionLz4OutputBound(input_len);
+        return compressionLz4OutputBound(input_len, flush_mode);
     default:
         assert(0);
         return 0;

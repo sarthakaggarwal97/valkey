@@ -206,7 +206,7 @@ TEST_F(CompressionTest, streamCompressorDecompressorRoundTrip) {
     streamCompressor sc;
     ASSERT_EQ(streamCompressorInit(&sc, ALGO_LZ4, 0), 0);
 
-    size_t bound = streamCompressorOutputBound(&sc, input_len);
+    size_t bound = streamCompressorOutputBound(&sc, input_len, FLUSH_END);
     ASSERT_GT(bound, 0u) << "bound should be > 0";
 
     uint8_t *compressed = (uint8_t *)zmalloc(bound);
@@ -242,27 +242,54 @@ TEST_F(CompressionTest, streamCompressorOutputBound) {
     ASSERT_EQ(streamCompressorInit(&sc, ALGO_LZ4, 0), 0);
 
     /* Basic: bound for 1KB input should be > 0 */
-    size_t b1 = streamCompressorOutputBound(&sc, 1024);
+    size_t b1 = streamCompressorOutputBound(&sc, 1024, FLUSH_CONTINUE);
     ASSERT_GT(b1, 0u) << "bound for 1KB should be > 0";
 
     /* Bound is always conservative (includes frame header + flush overhead),
      * so it should be stable regardless of frame state. */
-    size_t b_before = streamCompressorOutputBound(&sc, 1024);
+    size_t b_before = streamCompressorOutputBound(&sc, 1024, FLUSH_CONTINUE);
     uint8_t *seed_buf = (uint8_t *)zmalloc(b_before);
     ASSERT_NE(seed_buf, nullptr);
     ASSERT_GE(streamCompressorFeed(&sc, seed_buf, b_before,
                                    (const uint8_t *)"x", 1, FLUSH_CONTINUE),
               0)
         << "seed write should start the frame";
-    size_t b_after = streamCompressorOutputBound(&sc, 1024);
+    size_t b_after = streamCompressorOutputBound(&sc, 1024, FLUSH_CONTINUE);
     ASSERT_EQ(b_before, b_after) << "bound should be the same before and after frame start";
 
     /* Zero input should still return > 0 (frame header + flush overhead) */
-    size_t b_zero = streamCompressorOutputBound(&sc, 0);
+    size_t b_zero = streamCompressorOutputBound(&sc, 0, FLUSH_END);
     ASSERT_GT(b_zero, 0u) << "zero input bound should be > 0";
 
     zfree(seed_buf);
     streamCompressorFree(&sc);
+}
+
+TEST_F(CompressionTest, streamCompressorOutputBoundCoversAllFlushModes) {
+    const size_t input_len = 70 * 1024;
+    std::string input(input_len, '\0');
+    uint32_t state = 0x9e3779b9;
+    for (size_t i = 0; i < input.size(); i++) {
+        state = state * 1664525u + 1013904223u;
+        input[i] = (char)(state >> 24);
+    }
+
+    for (compressFlushMode mode : {FLUSH_CONTINUE, FLUSH_SYNC, FLUSH_END}) {
+        streamCompressor compressor;
+        ASSERT_EQ(streamCompressorInit(&compressor, ALGO_LZ4, 0), 0);
+
+        size_t bound = streamCompressorOutputBound(&compressor, input_len, mode);
+        ASSERT_GT(bound, 0u);
+        uint8_t *output = (uint8_t *)zmalloc(bound);
+        ASSERT_NE(output, nullptr);
+        EXPECT_GE(streamCompressorFeed(&compressor, output, bound,
+                                       (const uint8_t *)input.data(), input_len, mode),
+                  0)
+            << "flush mode " << mode;
+
+        zfree(output);
+        streamCompressorFree(&compressor);
+    }
 }
 
 /* --- Test: corrupt compressed input is a sticky decompressor error. --- */
@@ -282,7 +309,7 @@ TEST_F(CompressionTest, streamDecompressorFeedCorruptInputSetsStickyError) {
     /* Once errored, all subsequent feeds fail immediately. */
     streamCompressor sc;
     ASSERT_EQ(streamCompressorInit(&sc, ALGO_LZ4, 0), 0);
-    size_t bound = streamCompressorOutputBound(&sc, strlen(payload));
+    size_t bound = streamCompressorOutputBound(&sc, strlen(payload), FLUSH_END);
     uint8_t *compressed = (uint8_t *)zmalloc(bound);
     ASSERT_NE(compressed, nullptr);
     ssize_t compressed_len = streamCompressorFeed(&sc, compressed, bound,
@@ -315,7 +342,7 @@ TEST_F(CompressionTest, streamCompressorFeedErrorRecovery) {
     ASSERT_EQ(sc.stream_started, false) << "stream_started should still be false";
 
     /* Retry with a proper buffer — should succeed */
-    size_t bound = streamCompressorOutputBound(&sc, 9);
+    size_t bound = streamCompressorOutputBound(&sc, 9, FLUSH_END);
     uint8_t *buf = (uint8_t *)zmalloc(bound);
     ssize_t ret2 = streamCompressorFeed(&sc, buf, bound,
                                         (const uint8_t *)"test data", 9, FLUSH_END);
@@ -327,7 +354,7 @@ TEST_F(CompressionTest, streamCompressorFeedErrorRecovery) {
     streamCompressor sc2;
     ASSERT_EQ(streamCompressorInit(&sc2, ALGO_LZ4, 0), 0);
 
-    size_t bound2 = streamCompressorOutputBound(&sc2, 5);
+    size_t bound2 = streamCompressorOutputBound(&sc2, 5, FLUSH_CONTINUE);
     uint8_t *buf2 = (uint8_t *)zmalloc(bound2);
     ssize_t ret3 = streamCompressorFeed(&sc2, buf2, bound2,
                                         (const uint8_t *)"hello", 5, FLUSH_CONTINUE);
@@ -830,8 +857,7 @@ TEST_F(CompressionTest, streamWriterLargeSingleWrite) {
     dynamicBufFree(&db);
 }
 
-/* --- Test: small caller reads should still drain a compressed stream
- * correctly. This exercises the buffered decompressed window path. --- */
+/* --- Test: small caller buffers should drain a compressed stream directly. --- */
 TEST_F(CompressionTest, streamReaderSmallReadsRoundTrip) {
     const size_t payload_len = 256 * 1024;
     uint8_t *payload = (uint8_t *)zmalloc(payload_len);

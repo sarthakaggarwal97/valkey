@@ -62,15 +62,17 @@ int streamDecompressorInit(streamDecompressor *decompressor, compressionAlgo alg
 /* Releases resources owned by an initialized decompressor. */
 void streamDecompressorFree(streamDecompressor *decompressor);
 
-/* Conservative bound covering header + data + flush/end overhead, so the
- * caller can size one scratch buffer for all flush modes. */
-size_t streamCompressorOutputBound(streamCompressor *compressor, size_t input_len);
+/* Conservative bound covering the frame header, input, and the requested
+ * flush/end overhead. */
+size_t streamCompressorOutputBound(streamCompressor *compressor,
+                                   size_t input_len,
+                                   compressFlushMode flush_mode);
 
 /* Feeds input into the compressor and writes compressed bytes to output.
  * Called repeatedly to build one frame: FLUSH_CONTINUE keeps buffering,
  * FLUSH_SYNC drains buffered bytes but leaves the frame open, FLUSH_END
- * closes it. output must be at least streamCompressorOutputBound(input_len)
- * bytes. Returns bytes written, or -1 on error. */
+ * closes it. output must be at least streamCompressorOutputBound(input_len,
+ * flush_mode) bytes. Returns bytes written, or -1 on error. */
 ssize_t streamCompressorFeed(streamCompressor *compressor,
                              uint8_t *output,
                              size_t output_capacity,
