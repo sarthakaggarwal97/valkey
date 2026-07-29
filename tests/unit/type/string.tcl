@@ -239,6 +239,31 @@ start_server {tags {"string"}} {
         r mget foo{t} baazz{t} bar{t} myset{t}
     } {BAR {} FOO {}}
 
+    test {MGET with a mixed response spanning reply chunks} {
+        r flushdb
+        set keys {}
+        set expected {}
+        for {set i 0} {$i < 40} {incr i} {
+            set key "mget:$i{t}"
+            set value "[string repeat x 512]:$i"
+            r set $key $value
+            lappend keys $key
+            lappend expected $value
+        }
+
+        set large_value [string repeat y 2048]
+        r set mget:large{t} $large_value
+        r sadd mget:set{t} member
+        lappend keys mget:missing{t} mget:set{t} mget:large{t}
+        lappend expected {} {} $large_value
+        assert_equal $expected [r mget {*}$keys]
+
+        set resp3 [valkey_client]
+        $resp3 hello 3
+        assert_equal $expected [$resp3 mget {*}$keys]
+        $resp3 close
+    }
+
     test {GETSET (set new value)} {
         r del foo
         list [r getset foo xyz] [r get foo]
