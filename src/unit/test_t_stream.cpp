@@ -14,6 +14,21 @@ extern "C" {
 
 class StreamIdTest : public ::testing::Test {};
 
+TEST(StreamConsumerTest, PendingEntriesAreAllocatedLazily) {
+    streamConsumer consumer = {};
+
+    ASSERT_EQ(consumer.pel, nullptr);
+    ASSERT_EQ(streamConsumerPendingCount(&consumer), 0u);
+
+    rax *pel = streamConsumerGetOrCreatePEL(&consumer);
+    ASSERT_NE(pel, nullptr);
+    ASSERT_EQ(consumer.pel, pel);
+    ASSERT_EQ(streamConsumerPendingCount(&consumer), 0u);
+    ASSERT_EQ(streamConsumerGetOrCreatePEL(&consumer), pel);
+
+    raxFree(pel);
+}
+
 TEST_F(StreamIdTest, TestStreamEncodeDecodeRoundtrip) {
     streamID id = {0x0102030405060708ULL, 0x090a0b0c0d0e0f10ULL};
     unsigned char buf[16];

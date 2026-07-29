@@ -1001,6 +1001,21 @@ start_server {
         assert_equal [lindex $consumer_info 1] "Alice" ;# consumer name
         set consumer_info [lindex $reply 1]
         assert_equal [lindex $consumer_info 1] "Bob" ;# consumer name
+
+        # An idle consumer survives RDB serialization and allocates its PEL
+        # when it receives its first pending entry.
+        assert_equal {} [r XPENDING mystream mygroup - + 10 Bob]
+        set dump [r DUMP mystream]
+        r DEL mystream
+        r RESTORE mystream 0 $dump
+        set consumer_info [lindex [r XINFO CONSUMERS mystream mygroup] 1]
+        assert_equal [dict get $consumer_info name] "Bob"
+        assert_equal [dict get $consumer_info pending] 0
+        assert_equal {} [r XPENDING mystream mygroup - + 10 Bob]
+        r XADD mystream * f v2
+        r XREADGROUP GROUP mygroup Bob COUNT 1 STREAMS mystream >
+        set consumer_info [lindex [r XINFO CONSUMERS mystream mygroup] 1]
+        assert_equal [dict get $consumer_info pending] 1
     }
 
     test {XGROUP CREATECONSUMER: group must exist} {

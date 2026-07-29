@@ -779,8 +779,9 @@ ssize_t rdbSaveStreamPEL(rio *rdb, rax *pel, int nacks) {
     ssize_t n, nwritten = 0;
 
     /* Number of entries in the PEL. */
-    if ((n = rdbSaveLen(rdb, raxSize(pel))) == -1) return -1;
+    if ((n = rdbSaveLen(rdb, pel ? raxSize(pel) : 0)) == -1) return -1;
     nwritten += n;
+    if (!pel) return nwritten;
 
     /* Save each entry. */
     raxIterator ri;
@@ -2853,6 +2854,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error, int rd
                     decrRefCount(o);
                     return NULL;
                 }
+                rax *consumer_pel = pel_size ? streamConsumerGetOrCreatePEL(consumer) : NULL;
                 while (pel_size--) {
                     unsigned char rawid[sizeof(streamID)];
                     if (rioRead(rdb, rawid, sizeof(rawid)) == 0) {
@@ -2873,7 +2875,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error, int rd
                      * loading the global PEL. Then set the same shared
                      * NACK structure also in the consumer-specific PEL. */
                     nack->consumer = consumer;
-                    if (!raxTryInsert(consumer->pel, rawid, sizeof(rawid), nack, NULL)) {
+                    if (!raxTryInsert(consumer_pel, rawid, sizeof(rawid), nack, NULL)) {
                         rdbReportCorruptRDB("Duplicated consumer PEL entry "
                                             " loading a stream consumer "
                                             "group");

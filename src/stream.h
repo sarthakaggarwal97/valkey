@@ -79,7 +79,8 @@ typedef struct streamConsumer {
     sds name;             /* Consumer name. This is how the consumer
                              will be identified in the consumer group
                              protocol. Case sensitive. */
-    rax *pel;             /* Consumer specific pending entries list: all
+    rax *pel;             /* Consumer specific pending entries list, allocated
+                             when the first pending entry is added. Contains all
                              the pending messages delivered to this
                              consumer not yet acknowledged. Keys are
                              big endian message IDs, while values are
@@ -87,6 +88,15 @@ typedef struct streamConsumer {
                              in the "pel" of the consumer group structure
                              itself, so the value is shared. */
 } streamConsumer;
+
+static inline uint64_t streamConsumerPendingCount(const streamConsumer *consumer) {
+    return consumer->pel ? raxSize(consumer->pel) : 0;
+}
+
+static inline rax *streamConsumerGetOrCreatePEL(streamConsumer *consumer) {
+    if (!consumer->pel) consumer->pel = raxNew();
+    return consumer->pel;
+}
 
 /* Pending (yet not acknowledged) message in a consumer group. */
 typedef struct streamNACK {

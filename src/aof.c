@@ -2275,7 +2275,7 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
             while (raxNext(&ri_cons)) {
                 streamConsumer *consumer = ri_cons.data;
                 /* If there are no pending entries, just emit XGROUP CREATECONSUMER */
-                if (raxSize(consumer->pel) == 0) {
+                if (streamConsumerPendingCount(consumer) == 0) {
                     if (rioWriteStreamEmptyConsumer(r, key, (char *)ri.key, ri.key_len, consumer) == 0) {
                         raxStop(&ri_cons);
                         raxStop(&ri);

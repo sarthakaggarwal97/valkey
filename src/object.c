@@ -1336,7 +1336,7 @@ size_t objectComputeSize(robj *key, robj *o, size_t sample_size, int dbid) {
                     streamConsumer *consumer = cri.data;
                     inner_elesize += sizeof(*consumer);
                     inner_elesize += sdslen(consumer->name);
-                    inner_elesize += raxAllocSize(consumer->pel);
+                    if (consumer->pel) inner_elesize += raxAllocSize(consumer->pel);
                     /* Don't count NACKs again, they are shared with the
                      * consumer group PEL. */
                     inner_samples++;
