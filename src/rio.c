@@ -240,6 +240,8 @@ static size_t rioConnWrite(rio *r, const void *buf, size_t len) {
 
 /* Fill the conn read buffer until at least min_read bytes are available.
  * When strict_limit is set, returns -1 if the request exceeds read_limit.
+ * A read_limit accounting violation (consumed or buffered bytes beyond the
+ * limit) also fails, independent of strict_limit.
  * Returns 1 on success, 0 on EOF, -1 on error. */
 static int rioConnFillBuffer(rio *r, size_t min_read, bool strict_limit) {
     size_t avail = sdslen(r->io.conn.buf) - r->io.conn.pos;

@@ -1582,6 +1582,8 @@ TEST(CompressionTest, streamReaderFinishStopsAtFrameEndBeforeTrailingBytes) {
     MemReader mr = {};
     mr.data = (const uint8_t *)input;
     mr.len = sdslen(input);
+    /* Unbounded source reads: only the codec's input hint stops the reader at
+     * the frame boundary, which is exactly the property asserted below. */
     mr.max_chunk = 0;
     streamReaderConfig rcfg = makeReaderConfig(false, STREAM_READER_BUFFER_SIZE_MIN, false);
     streamReader r;
