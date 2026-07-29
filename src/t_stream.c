@@ -1823,12 +1823,13 @@ size_t streamReplyWithRangeFromConsumerPEL(client *c,
     streamEncodeID(startkey, start);
     if (end) streamEncodeID(endkey, end);
 
-    size_t arraylen = 0;
-    void *arraylen_ptr = addReplyDeferredLen(c);
     if (!consumer->pel) {
-        setDeferredArrayLen(c, arraylen_ptr, 0);
+        addReplyArrayLen(c, 0);
         return 0;
     }
+
+    size_t arraylen = 0;
+    void *arraylen_ptr = addReplyDeferredLen(c);
     raxStart(&ri, consumer->pel);
     raxSeek(&ri, ">=", startkey, sizeof(startkey));
     while (raxNext(&ri) && (!count || arraylen < count)) {
