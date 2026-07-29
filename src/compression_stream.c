@@ -101,13 +101,15 @@ static int streamWriterEnsureEnvelope(streamWriter *writer) {
 static int streamWriterFeedAndWrite(streamWriter *writer,
                                     const uint8_t *input,
                                     size_t input_len,
+                                    bool input_stable,
                                     compressFlushMode flush_mode) {
     if (streamWriterEnsureScratch(writer) != 0 || input_len > writer->in_buf_size) return -1;
 
     const ssize_t compressed = streamCompressorFeed(&writer->compressor, writer->out_buf,
                                                     writer->out_buf_size,
-                                                    input, input_len, flush_mode);
-    if (compressed < 0) {
+                                                    input, input_len, input_stable,
+                                                    flush_mode);
+    if (compressed < 0 || (size_t)compressed > writer->out_buf_size) {
         writer->state = STREAM_WRITER_STATE_ERROR;
         return -1;
     }
@@ -123,14 +125,14 @@ static int streamWriterFeedAndWrite(streamWriter *writer,
 static int streamWriterStart(streamWriter *writer) {
     if (streamWriterEnsureEnvelope(writer) != 0) return -1;
     if (writer->compressor.stream_started) return 0;
-    return streamWriterFeedAndWrite(writer, NULL, 0, COMPRESS_FLUSH_CONTINUE);
+    return streamWriterFeedAndWrite(writer, NULL, 0, false, COMPRESS_FLUSH_CONTINUE);
 }
 
-static int streamWriterDrainInput(streamWriter *writer, compressFlushMode flush_mode) {
+static int streamWriterDrainInput(streamWriter *writer, bool input_stable, compressFlushMode flush_mode) {
     const uint8_t *input = writer->in_buf_len ? writer->in_buf : NULL;
     size_t input_len = writer->in_buf_len;
 
-    if (streamWriterFeedAndWrite(writer, input, input_len, flush_mode) != 0) return -1;
+    if (streamWriterFeedAndWrite(writer, input, input_len, input_stable, flush_mode) != 0) return -1;
     writer->in_buf_len = 0;
     return 0;
 }
@@ -153,13 +155,15 @@ int streamWriterWrite(streamWriter *writer, const void *buf, size_t len) {
         src += to_copy;
         remaining -= to_copy;
         if (writer->in_buf_len == writer->in_buf_size &&
-            streamWriterDrainInput(writer, COMPRESS_FLUSH_CONTINUE) != 0)
+            streamWriterDrainInput(writer, remaining >= writer->in_buf_size,
+                                   COMPRESS_FLUSH_CONTINUE) != 0)
             return -1;
     }
 
     while (remaining >= writer->in_buf_size) {
+        bool input_stable = remaining - writer->in_buf_size >= writer->in_buf_size;
         if (streamWriterFeedAndWrite(writer, src, writer->in_buf_size,
-                                     COMPRESS_FLUSH_CONTINUE) != 0)
+                                     input_stable, COMPRESS_FLUSH_CONTINUE) != 0)
             return -1;
         src += writer->in_buf_size;
         remaining -= writer->in_buf_size;
@@ -178,7 +182,7 @@ int streamWriterFlush(streamWriter *writer) {
     if (writer->state == STREAM_WRITER_STATE_FINISHED) return 0;
 
     if (writer->state == STREAM_WRITER_STATE_INITIAL) return 0;
-    return streamWriterDrainInput(writer, COMPRESS_FLUSH_SYNC);
+    return streamWriterDrainInput(writer, false, COMPRESS_FLUSH_SYNC);
 }
 
 int streamWriterFinish(streamWriter *writer) {
@@ -188,7 +192,7 @@ int streamWriterFinish(streamWriter *writer) {
     /* Even an empty stream produces a valid envelope + empty frame so the
      * loader sees a well-formed file. */
     if (streamWriterEnsureEnvelope(writer) != 0) return -1;
-    if (streamWriterDrainInput(writer, COMPRESS_FLUSH_END) != 0) return -1;
+    if (streamWriterDrainInput(writer, false, COMPRESS_FLUSH_END) != 0) return -1;
     writer->state = STREAM_WRITER_STATE_FINISHED;
     return 0;
 }

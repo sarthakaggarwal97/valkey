@@ -69,12 +69,11 @@ static LZ4F_preferences_t compressionLz4Preferences(const streamCompressor *comp
 static size_t compressionLz4OutputBound(const streamCompressor *compressor, size_t input_len) {
     LZ4F_preferences_t prefs = compressionLz4Preferences(compressor);
     size_t update_bound = LZ4F_compressBound(input_len, &prefs);
-    size_t end_bound = LZ4F_compressBound(0, &prefs);
 
-    if (update_bound > SIZE_MAX - LZ4F_HEADER_SIZE_MAX ||
-        update_bound + LZ4F_HEADER_SIZE_MAX > SIZE_MAX - end_bound)
-        return 0;
-    return update_bound + LZ4F_HEADER_SIZE_MAX + end_bound;
+    /* With autoFlush, compressBound includes the frame-footer allowance needed
+     * by a following flush or end operation. */
+    if (update_bound > SIZE_MAX - LZ4F_HEADER_SIZE_MAX) return 0;
+    return update_bound + LZ4F_HEADER_SIZE_MAX;
 }
 
 static ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
@@ -82,6 +81,7 @@ static ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
                                           size_t output_capacity,
                                           const uint8_t *input,
                                           size_t input_len,
+                                          bool input_stable,
                                           compressFlushMode flush_mode) {
     assert(compressor->ctx != NULL);
 
@@ -97,8 +97,12 @@ static ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
     }
 
     if (input_len > 0) {
+        LZ4F_compressOptions_t options = {
+            .stableSrc = input_stable,
+        };
         if (offset >= output_capacity) return -1;
-        size_t r = LZ4F_compressUpdate(cctx, output + offset, output_capacity - offset, input, input_len, NULL);
+        size_t r = LZ4F_compressUpdate(cctx, output + offset, output_capacity - offset,
+                                       input, input_len, &options);
         if (LZ4F_isError(r)) return -1;
         offset += r;
     }

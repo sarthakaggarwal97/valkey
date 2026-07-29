@@ -48,6 +48,7 @@ typedef struct compressionCodec {
                                size_t output_capacity,
                                const uint8_t *input,
                                size_t input_len,
+                               bool input_stable,
                                compressFlushMode flush_mode);
     void (*compressor_free)(streamCompressor *compressor);
 
@@ -82,11 +83,14 @@ struct streamCompressor {
 int streamCompressorInit(streamCompressor *compressor, compressionAlgo algo, int level, bool codec_checksum);
 size_t streamCompressorChunkSize(const streamCompressor *compressor);
 size_t streamCompressorOutputBound(const streamCompressor *compressor, size_t input_len);
+/* input_stable is valid only for CONTINUE and promises that input remains
+ * unchanged through the next feed call. */
 ssize_t streamCompressorFeed(streamCompressor *compressor,
                              uint8_t *output,
                              size_t output_capacity,
                              const uint8_t *input,
                              size_t input_len,
+                             bool input_stable,
                              compressFlushMode flush_mode);
 void streamCompressorFree(streamCompressor *compressor);
 

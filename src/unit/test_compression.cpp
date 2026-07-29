@@ -222,7 +222,7 @@ TEST(CompressionTest, streamCompressorDecompressorRoundTrip) {
     ASSERT_TRUE(compressed != NULL);
     ssize_t compressed_len = streamCompressorFeed(&sc, compressed, bound,
                                                   (const uint8_t *)input, input_len,
-                                                  COMPRESS_FLUSH_END);
+                                                  false, COMPRESS_FLUSH_END);
     ASSERT_GT(compressed_len, 0) << "compress should succeed";
     EXPECT_EQ(sc.stream_started, false) << "frame should be closed after end flush";
     streamCompressorFree(&sc);
@@ -257,7 +257,8 @@ TEST(CompressionTest, streamCompressorOutputBound) {
     uint8_t *seed_buf = (uint8_t *)zmalloc(b_before);
     ASSERT_TRUE(seed_buf != NULL);
     ASSERT_GE(streamCompressorFeed(&sc, seed_buf, b_before,
-                                   (const uint8_t *)"x", 1, COMPRESS_FLUSH_CONTINUE),
+                                   (const uint8_t *)"x", 1, false,
+                                   COMPRESS_FLUSH_CONTINUE),
               0)
         << "seed write should start the frame";
     size_t b_after = streamCompressorOutputBound(&sc, 1024);
@@ -777,12 +778,30 @@ TEST(CompressionTest, streamWriterRoundTrip) {
 }
 
 /* A single write larger than one codec block exercises the writer's bounded
- * scratch-buffer path. */
+ * scratch buffer and linked-dictionary fast path. */
 TEST(CompressionTest, streamWriterLargeSingleWrite) {
     const size_t payload_len = (1024 * 1024) + 4096;
     uint8_t *payload = (uint8_t *)zmalloc(payload_len);
-    for (size_t i = 0; i < payload_len; i++) {
-        payload[i] = (uint8_t)((i * 17 + 11) % 251);
+    uint32_t x = 0x12345678u;
+    for (size_t i = 0; i < 64 * 1024; i++) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        payload[i] = (uint8_t)(x & 0xFF);
+    }
+    for (size_t offset = 64 * 1024; offset < payload_len; offset += 64 * 1024) {
+        size_t copy_len = payload_len - offset;
+        if (copy_len > 32 * 1024) copy_len = 32 * 1024;
+        memcpy(payload + offset, payload + offset - 32 * 1024, copy_len);
+
+        size_t block_len = payload_len - offset;
+        if (block_len > 64 * 1024) block_len = 64 * 1024;
+        for (size_t i = copy_len; i < block_len; i++) {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            payload[offset + i] = (uint8_t)(x & 0xFF);
+        }
     }
 
     DynamicBuf db;
@@ -797,6 +816,8 @@ TEST(CompressionTest, streamWriterLargeSingleWrite) {
     ASSERT_EQ(t.in_buf_size, (size_t)(64 * 1024));
     ASSERT_LE(t.out_buf_size, t.in_buf_size + 128);
     ASSERT_EQ(t.out_buf, t.scratch + t.in_buf_size);
+    ASSERT_LT(sdslen((const char *)db.data), payload_len * 3 / 4)
+        << "linked blocks should reuse the preceding block tail";
     streamWriterFree(&t);
 
     MemReader mr = {};

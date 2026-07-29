@@ -71,10 +71,12 @@ ssize_t streamCompressorFeed(streamCompressor *compressor,
                              size_t output_capacity,
                              const uint8_t *input,
                              size_t input_len,
+                             bool input_stable,
                              compressFlushMode flush_mode) {
     assert(compressor->codec != NULL);
+    assert(!input_stable || flush_mode == COMPRESS_FLUSH_CONTINUE);
     return compressor->codec->compressor_feed(compressor, output, output_capacity,
-                                              input, input_len, flush_mode);
+                                              input, input_len, input_stable, flush_mode);
 }
 
 void streamCompressorFree(streamCompressor *compressor) {
