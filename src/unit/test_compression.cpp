@@ -1570,6 +1570,48 @@ TEST(CompressionTest, streamReaderRejectsTruncatedFrameTrailer) {
     dynamicBufFree(&db);
 }
 
+/* A truncation error latched while decoded bytes are still buffered must not
+ * hide those bytes from later read calls: the parser consumes the complete
+ * logical payload first and the corruption surfaces on the read past it. */
+TEST(CompressionTest, streamReaderTruncatedTrailerKeepsBufferedBytesReadable) {
+    const size_t payload_len = 256;
+    uint8_t payload[payload_len];
+    for (size_t i = 0; i < payload_len; i++) {
+        payload[i] = (uint8_t)(i & 0xFF);
+    }
+
+    DynamicBuf db;
+    dynamicBufInit(&db);
+
+    streamWriterConfig cfg = makeWriterConfig(ALGO_LZ4, 0, false);
+    streamWriter w;
+    ASSERT_EQ(streamWriterInit(&w, &cfg, emitToDynamicBuf, &db), 0);
+    ASSERT_EQ(streamWriterWrite(&w, payload, payload_len), 0);
+    ASSERT_EQ(streamWriterFinish(&w), 0);
+    streamWriterFree(&w);
+
+    MemReader mr = {};
+    mr.data = db.data;
+    mr.len = sdslen((const char *)db.data) - 1;
+    mr.max_chunk = 0;
+    streamReaderConfig rcfg = makeReaderConfig(false, STREAM_READER_BUFFER_SIZE_MIN, false);
+    streamReader r;
+    ASSERT_EQ(streamReaderInit(&r, &rcfg, memReaderRead, &mr, NULL), 0);
+
+    /* Small reads: the first fill decodes the whole payload and latches the
+     * truncation error before the parser has drained the buffered window. */
+    uint8_t out[payload_len];
+    ASSERT_EQ(streamReaderRead(&r, out, 100), 100);
+    ASSERT_EQ(streamReaderRead(&r, out + 100, payload_len - 100), (ssize_t)(payload_len - 100));
+    EXPECT_EQ(memcmp(out, payload, payload_len), 0);
+    ASSERT_LT(streamReaderRead(&r, out, 1), 0) << "error must surface once the buffered bytes are drained";
+    ASSERT_EQ(r.error_kind, STREAM_READER_ERROR_CORRUPT);
+    ASSERT_EQ(streamReaderFinish(&r), -1);
+
+    streamReaderFree(&r);
+    dynamicBufFree(&db);
+}
+
 TEST(CompressionTest, streamWriterWriteAfterFinish) {
     DynamicBuf db;
     dynamicBufInit(&db);

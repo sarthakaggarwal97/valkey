@@ -103,7 +103,11 @@ static int streamWriterFeedAndWrite(streamWriter *writer,
                                     size_t input_len,
                                     bool input_stable,
                                     compressFlushMode flush_mode) {
-    if (streamWriterEnsureScratch(writer) != 0 || input_len > writer->in_buf_size) return -1;
+    if (streamWriterEnsureScratch(writer) != 0) return -1;
+    if (input_len > writer->in_buf_size) {
+        writer->state = STREAM_WRITER_STATE_ERROR;
+        return -1;
+    }
 
     const ssize_t compressed = streamCompressorFeed(&writer->compressor, writer->out_buf,
                                                     writer->out_buf_size,
@@ -154,6 +158,13 @@ int streamWriterWrite(streamWriter *writer, const void *buf, size_t len) {
         writer->in_buf_len += to_copy;
         src += to_copy;
         remaining -= to_copy;
+        /* Stable input lets a linked-block codec keep referencing the fed
+         * buffer as its dictionary window instead of copying it aside. The
+         * promise only requires the buffer to survive until the next feed, so
+         * it may be given exactly when a full-block feed follows within this
+         * call: in_buf is not rewritten before the loop below runs, and the
+         * loop's final iteration always passes false so no codec reference to
+         * caller memory outlives this call. */
         if (writer->in_buf_len == writer->in_buf_size &&
             streamWriterDrainInput(writer, remaining >= writer->in_buf_size,
                                    COMPRESS_FLUSH_CONTINUE) != 0)
@@ -374,7 +385,14 @@ static int streamReaderFillDecompressedBuf(streamReader *reader) {
 }
 
 ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len) {
-    if (reader->error_kind != STREAM_READER_ERROR_NONE) return -1;
+    /* Filling decodes eagerly, so an error may be latched while decoded bytes
+     * the parser has not requested yet sit in the buffer. Those bytes stay
+     * readable: a parser can consume a complete logical payload from a frame
+     * whose trailer is truncated, with the sticky error reported by the first
+     * read past the buffered output, or by finish. */
+    if (reader->error_kind != STREAM_READER_ERROR_NONE &&
+        reader->decompressed_buf_pos >= reader->decompressed_buf_len)
+        return -1;
     if (reader->state == STREAM_READER_STATE_FINISHED) return 0;
     if (len == 0) return 0;
     if (len > (size_t)SSIZE_MAX) return -1;
