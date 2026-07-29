@@ -6,6 +6,7 @@
 
 #include "generated_wrappers.hpp"
 
+#include <errno.h>
 #include <limits.h>
 #include <string.h>
 
@@ -55,6 +56,18 @@ typedef struct {
     int calls;
     int overread_on_call;
 } OverreadReader;
+
+typedef struct {
+    rio base;
+    size_t requested;
+    ssize_t result;
+    int calls;
+} PartialReadRio;
+
+typedef struct {
+    connection base;
+    int read_calls;
+} ReadTrackingConnection;
 
 static streamReaderConfig makeReaderConfig(bool allow_passthrough,
                                            size_t buffer_size,
@@ -162,6 +175,22 @@ static ssize_t overreadReaderRead(void *ctx, void *buf, size_t len) {
     memcpy(buf, r->data + r->pos, n);
     r->pos += n;
     return (ssize_t)n;
+}
+
+static ssize_t partialRioReadSome(rio *r, void *buf, size_t len) {
+    PartialReadRio *partial = (PartialReadRio *)r;
+    (void)buf;
+    partial->requested = len;
+    partial->calls++;
+    return partial->result;
+}
+
+static int trackingConnectionRead(connection *conn, void *buf, size_t len) {
+    ReadTrackingConnection *tracking = (ReadTrackingConnection *)conn;
+    (void)buf;
+    (void)len;
+    tracking->read_calls++;
+    return 0;
 }
 
 static size_t discardRioWrite(rio *r, const void *buf, size_t len) {
@@ -1215,6 +1244,45 @@ TEST(CompressionTest, rioCompressionWriterFinishFailureSetsWriteError) {
     freeCompressionWriter(&inner, &writer);
 }
 
+TEST(CompressionTest, rioReadRawPartialEnforcesBackendContract) {
+    PartialReadRio partial = {};
+    partial.base.read_some = partialRioReadSome;
+    uint8_t byte = 0;
+
+    size_t oversized = (size_t)SSIZE_MAX + 1;
+    ASSERT_EQ(rioReadRawPartial(&partial.base, &byte, oversized), 0);
+    ASSERT_EQ(partial.requested, (size_t)SSIZE_MAX);
+    ASSERT_EQ(partial.calls, 1);
+
+    partial.result = 2;
+    ASSERT_EQ(rioReadRawPartial(&partial.base, &byte, 1), -1);
+    ASSERT_TRUE(partial.base.flags & RIO_FLAG_READ_ERROR);
+    ASSERT_EQ(partial.base.backend_processed_bytes, 0u);
+    ASSERT_EQ(partial.calls, 2);
+
+    ASSERT_EQ(rioReadRawPartial(&partial.base, &byte, 1), -1);
+    ASSERT_EQ(partial.calls, 2) << "read errors must remain sticky";
+}
+
+TEST(CompressionTest, rioConnectionReadLimitRejectsOverflow) {
+    ConnectionType connection_type = {};
+    connection_type.read = trackingConnectionRead;
+    ReadTrackingConnection connection = {};
+    connection.base.type = &connection_type;
+
+    rio r;
+    rioInitWithConn(&r, &connection.base, SIZE_MAX);
+    r.io.conn.read_so_far = SIZE_MAX - 4;
+
+    uint8_t buf[8];
+    errno = 0;
+    EXPECT_EQ(rioRead(&r, buf, sizeof(buf)), 0u);
+    EXPECT_EQ(errno, EOVERFLOW);
+    EXPECT_EQ(connection.read_calls, 0);
+
+    rioFreeConn(&r, NULL);
+}
+
 TEST(CompressionTest, rioStreamReaderRoundTrip) {
     DynamicBuf db;
     dynamicBufInit(&db);
@@ -1514,7 +1582,7 @@ TEST(CompressionTest, streamReaderFinishStopsAtFrameEndBeforeTrailingBytes) {
     MemReader mr = {};
     mr.data = (const uint8_t *)input;
     mr.len = sdslen(input);
-    mr.max_chunk = 3;
+    mr.max_chunk = 0;
     streamReaderConfig rcfg = makeReaderConfig(false, STREAM_READER_BUFFER_SIZE_MIN, false);
     streamReader r;
     ASSERT_EQ(streamReaderInit(&r, &rcfg, memReaderRead, &mr, NULL), 0);

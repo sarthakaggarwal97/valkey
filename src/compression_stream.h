@@ -36,7 +36,7 @@
 #define VCS_STREAM_RDB 0x01
 
 typedef int (*streamWriterWriteFn)(void *ctx, const uint8_t *data, size_t len);
-/* Returns >0 bytes read, 0 on EOF, -1 on error. Partial reads allowed. */
+/* Returns at most len bytes, 0 on EOF, or -1 on error. Partial reads allowed. */
 typedef ssize_t (*streamReaderReadFn)(void *ctx, void *buf, size_t len);
 
 /* ===== Writer ===== */

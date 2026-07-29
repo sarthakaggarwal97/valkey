@@ -83,8 +83,9 @@ struct streamCompressor {
 int streamCompressorInit(streamCompressor *compressor, compressionAlgo algo, int level, bool codec_checksum);
 size_t streamCompressorChunkSize(const streamCompressor *compressor);
 size_t streamCompressorOutputBound(const streamCompressor *compressor, size_t input_len);
-/* input_stable is valid only for CONTINUE and promises that input remains
- * unchanged through the next feed call. */
+/* input_stable is valid only for CONTINUE and lets the codec retain references
+ * to input. The bytes must remain unchanged until a later nonempty feed with
+ * input_stable false returns, or until the frame ends. */
 ssize_t streamCompressorFeed(streamCompressor *compressor,
                              uint8_t *output,
                              size_t output_capacity,

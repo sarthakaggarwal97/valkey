@@ -158,13 +158,11 @@ int streamWriterWrite(streamWriter *writer, const void *buf, size_t len) {
         writer->in_buf_len += to_copy;
         src += to_copy;
         remaining -= to_copy;
-        /* Stable input lets a linked-block codec keep referencing the fed
-         * buffer as its dictionary window instead of copying it aside. The
-         * promise only requires the buffer to survive until the next feed, so
-         * it may be given exactly when a full-block feed follows within this
-         * call: in_buf is not rewritten before the loop below runs, and the
-         * loop's final iteration always passes false so no codec reference to
-         * caller memory outlives this call. */
+        /* Stable input lets a linked-block codec keep referencing fed buffers
+         * as its dictionary window instead of copying them aside. Stable feeds
+         * are used only for full blocks followed within this call: in_buf and
+         * caller input remain valid for the chain, and its final feed is
+         * unstable so no codec reference outlives the call. */
         if (writer->in_buf_len == writer->in_buf_size &&
             streamWriterDrainInput(writer, remaining >= writer->in_buf_size,
                                    COMPRESS_FLUSH_CONTINUE) != 0)

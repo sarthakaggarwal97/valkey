@@ -47,6 +47,7 @@
 
 #include "fmacros.h"
 #include "fpconv_dtoa.h"
+#include <limits.h>
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -242,11 +243,18 @@ static size_t rioConnWrite(rio *r, const void *buf, size_t len) {
  * Returns 1 on success, 0 on EOF, -1 on error. */
 static int rioConnFillBuffer(rio *r, size_t min_read, bool strict_limit) {
     size_t avail = sdslen(r->io.conn.buf) - r->io.conn.pos;
+    size_t remaining = 0;
 
-    if (strict_limit && r->io.conn.read_limit != 0 &&
-        r->io.conn.read_limit < r->io.conn.read_so_far + min_read) {
-        errno = EOVERFLOW;
-        return -1;
+    if (r->io.conn.read_limit != 0) {
+        if (r->io.conn.read_so_far > r->io.conn.read_limit) {
+            errno = EOVERFLOW;
+            return -1;
+        }
+        remaining = r->io.conn.read_limit - r->io.conn.read_so_far;
+        if (avail > remaining || (strict_limit && min_read > remaining)) {
+            errno = EOVERFLOW;
+            return -1;
+        }
     }
 
     /* If the buffer is too small for the entire request: realloc. */
@@ -266,10 +274,8 @@ static int rioConnFillBuffer(rio *r, size_t min_read, bool strict_limit) {
          * the two. */
         size_t toread = needs < PROTO_IOBUF_LEN ? PROTO_IOBUF_LEN : needs;
         if (toread > sdsavail(r->io.conn.buf)) toread = sdsavail(r->io.conn.buf);
-        if (r->io.conn.read_limit != 0 &&
-            r->io.conn.read_so_far + avail + toread > r->io.conn.read_limit) {
-            toread = r->io.conn.read_limit - r->io.conn.read_so_far - avail;
-        }
+        if (r->io.conn.read_limit != 0 && toread > remaining - avail)
+            toread = remaining - avail;
         if (toread == 0) return 0;
 
         int retval = connRead(r->io.conn.conn, (char *)r->io.conn.buf + sdslen(r->io.conn.buf), toread);
@@ -559,9 +565,15 @@ ssize_t rioReadRawPartial(rio *r, void *buf, size_t len) {
 
     size_t bytes_to_read =
         (r->max_processing_chunk && r->max_processing_chunk < len) ? r->max_processing_chunk : len;
+    if (bytes_to_read > (size_t)SSIZE_MAX) bytes_to_read = (size_t)SSIZE_MAX;
     ssize_t got = r->read_some(r, buf, bytes_to_read);
 
     if (got < 0) {
+        r->flags |= RIO_FLAG_READ_ERROR;
+        return -1;
+    }
+    if ((size_t)got > bytes_to_read) {
+        errno = EIO;
         r->flags |= RIO_FLAG_READ_ERROR;
         return -1;
     }
