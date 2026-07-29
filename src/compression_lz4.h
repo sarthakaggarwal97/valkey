@@ -26,7 +26,9 @@ int compressionLz4DecompressorInit(streamDecompressor *decompressor);
 void compressionLz4DecompressorFree(streamDecompressor *decompressor);
 
 /* Returns a conservative upper bound for the requested flush mode. */
-size_t compressionLz4OutputBound(size_t input_len, compressFlushMode flush_mode);
+size_t compressionLz4OutputBound(const streamCompressor *compressor,
+                                 size_t input_len,
+                                 compressFlushMode flush_mode);
 
 /* Compresses input into output. input may be NULL when input_len is zero. */
 ssize_t compressionLz4CompressFeed(streamCompressor *compressor,

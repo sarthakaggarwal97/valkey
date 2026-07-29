@@ -187,9 +187,12 @@ streamProbeResult streamProbeFeed(streamProbe *probe,
 /* ===== Streaming writer ===== */
 
 #define STREAM_WRITER_INPUT_CHUNK_SIZE (1024 * 1024)
-#define STREAM_WRITER_SINK_INPUT_CHUNK_SIZE (64 * 1024)
+#define STREAM_WRITER_SINK_INPUT_CHUNK_SIZE (128 * 1024)
 
-int streamWriterInit(streamWriter *writer, streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx) {
+int streamWriterInit(streamWriter *writer,
+                     const streamWriterConfig *cfg,
+                     streamWriterEmitFn emit_fn,
+                     void *emit_ctx) {
     memset(writer, 0, sizeof(*writer));
     writer->emit_fn = emit_fn;
     writer->emit_ctx = emit_ctx;
@@ -259,7 +262,10 @@ static int streamWriterFeedToSink(streamWriter *writer,
         writer->errored = true;
         return -1;
     }
-    *writer->sink = sdsMakeRoomFor(*writer->sink, bound);
+    if (!writer->compressor.stream_started)
+        *writer->sink = sdsMakeRoomForNonGreedy(*writer->sink, bound);
+    else
+        *writer->sink = sdsMakeRoomFor(*writer->sink, bound);
     ssize_t compressed = streamCompressorFeed(&writer->compressor,
                                               (uint8_t *)(*writer->sink) + sdslen(*writer->sink),
                                               sdsavail(*writer->sink), input, input_len, flush_mode);
@@ -380,7 +386,10 @@ static void streamReaderResetCompressedState(streamReader *reader) {
     reader->compressed_buf_len = 0;
 }
 
-int streamReaderInit(streamReader *reader, streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx) {
+int streamReaderInit(streamReader *reader,
+                     const streamReaderConfig *cfg,
+                     streamReaderReadFn read_cb,
+                     void *read_ctx) {
     assert(cfg->buffer_size != 0);
 
     memset(reader, 0, sizeof(*reader));

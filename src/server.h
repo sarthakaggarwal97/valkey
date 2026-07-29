@@ -36,7 +36,6 @@
 #include "rio.h"
 #include "commands.h"
 #include "allocator_defrag.h"
-#include "compression.h"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -29,8 +29,10 @@ typedef struct {
     compressionAlgo algo;
     int level; /* 0 selects the codec default. */
     void *ctx;
+    size_t input_buffered; /* Input retained by the codec until a block or flush. */
     bool stream_started;
     bool codec_checksum;
+    bool errored;
 } streamCompressor;
 
 typedef struct {
@@ -62,9 +64,9 @@ int streamDecompressorInit(streamDecompressor *decompressor, compressionAlgo alg
 /* Releases resources owned by an initialized decompressor. */
 void streamDecompressorFree(streamDecompressor *decompressor);
 
-/* Conservative bound covering the frame header, input, and the requested
- * flush/end overhead. */
-size_t streamCompressorOutputBound(streamCompressor *compressor,
+/* Conservative bound covering any pending frame header, input, and the
+ * requested flush/end overhead. */
+size_t streamCompressorOutputBound(const streamCompressor *compressor,
                                    size_t input_len,
                                    compressFlushMode flush_mode);
 

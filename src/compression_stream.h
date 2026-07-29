@@ -133,7 +133,10 @@ typedef struct streamReader {
  * freeing, since it emits the frame end; a writer freed without it is
  * truncated. The reader probes the envelope on the first read; callers that
  * need to classify the stream up front can use streamReaderGetInfo. */
-int streamWriterInit(streamWriter *writer, streamWriterConfig *cfg, streamWriterEmitFn emit_fn, void *emit_ctx);
+int streamWriterInit(streamWriter *writer,
+                     const streamWriterConfig *cfg,
+                     streamWriterEmitFn emit_fn,
+                     void *emit_ctx);
 
 /* Redirect compressed output (envelope + frames) straight into *sink, bypassing
  * the internal scratch buffer and emit callback. */
@@ -157,7 +160,10 @@ streamProbeResult streamProbeFeed(streamProbe *probe,
                                   bool input_eof,
                                   size_t *src_consumed);
 
-int streamReaderInit(streamReader *reader, streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx);
+int streamReaderInit(streamReader *reader,
+                     const streamReaderConfig *cfg,
+                     streamReaderReadFn read_cb,
+                     void *read_ctx);
 
 /* Returns up to len bytes, 0 at a clean EOF/frame end, or -1 on error. It
  * normally fills len, but may return partial bytes before EOF or while latching

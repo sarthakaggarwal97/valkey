@@ -54,9 +54,7 @@ void replCompressorDestroy(replCompressor *rc) {
 }
 
 int replCompressorWrite(replCompressor *rc, const void *buf, size_t len) {
-    int result = streamWriterWrite(&rc->writer, buf, len);
-    replCompressorUpdateMemUsage(rc);
-    return result;
+    return streamWriterWrite(&rc->writer, buf, len);
 }
 
 int replCompressorFlush(replCompressor *rc) {

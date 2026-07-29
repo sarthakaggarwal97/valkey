@@ -42,7 +42,6 @@
 #include "module.h"
 #include "cluster_migrateslots.h"
 #include "io_threads.h"
-#include "compression_stream.h"
 #include "compression_repl.h"
 
 #include <memory.h>

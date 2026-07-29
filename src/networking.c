@@ -37,7 +37,6 @@
 #include "fpconv_dtoa.h"
 #include "fmtargs.h"
 #include "io_threads.h"
-#include "compression_stream.h"
 #include "compression_repl.h"
 #include "monotonic.h"
 #include "module.h"
