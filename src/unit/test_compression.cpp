@@ -776,8 +776,8 @@ TEST(CompressionTest, streamWriterRoundTrip) {
     dynamicBufFree(&db);
 }
 
-/* A single write larger than STREAM_WRITER_INPUT_CHUNK_SIZE exercises the
- * writer's bounded scratch-buffer path. */
+/* A single write larger than one codec block exercises the writer's bounded
+ * scratch-buffer path. */
 TEST(CompressionTest, streamWriterLargeSingleWrite) {
     const size_t payload_len = (1024 * 1024) + 4096;
     uint8_t *payload = (uint8_t *)zmalloc(payload_len);
@@ -793,6 +793,10 @@ TEST(CompressionTest, streamWriterLargeSingleWrite) {
     ASSERT_EQ(streamWriterInit(&t, &cfg, emitToDynamicBuf, &db), 0);
     ASSERT_EQ(streamWriterWrite(&t, payload, payload_len), 0);
     ASSERT_EQ(streamWriterFinish(&t), 0);
+    ASSERT_TRUE(t.scratch != NULL);
+    ASSERT_EQ(t.in_buf_size, (size_t)(64 * 1024));
+    ASSERT_LE(t.out_buf_size, t.in_buf_size + 128);
+    ASSERT_EQ(t.out_buf, t.scratch + t.in_buf_size);
     streamWriterFree(&t);
 
     MemReader mr = {};
@@ -802,6 +806,9 @@ TEST(CompressionTest, streamWriterLargeSingleWrite) {
     streamReaderConfig rcfg = makeReaderConfig(false, STREAM_READER_BUFFER_SIZE_MIN, false);
     streamReader r;
     ASSERT_EQ(streamReaderInit(&r, &rcfg, memReaderRead, &mr, NULL), 0);
+    ASSERT_EQ(r.buffer_size, (size_t)STREAM_READER_BUFFER_SIZE_MIN);
+    ASSERT_EQ(r.compressed_buf_size, r.buffer_size + 64);
+    ASSERT_EQ(r.decompressed_buf, r.compressed_buf + r.compressed_buf_size);
 
     uint8_t *out = (uint8_t *)zmalloc(payload_len);
     size_t total = 0;
@@ -1298,6 +1305,9 @@ TEST(CompressionTest, rioStreamReaderClassifiesInput) {
         compressionAlgo algo = ALGO_NONE;
         ASSERT_EQ(rdbInitStreamReader(&buffer_rio, &reader, false, &algo), RDB_STREAM_READER_INIT_OK);
         ASSERT_EQ(algo, ALGO_NONE) << "passthrough stream should not be compressed";
+        ASSERT_TRUE(buffer_rio.stream_reader == NULL);
+        ASSERT_EQ(buffer_rio.io.buffer.pos, 0);
+        ASSERT_EQ(buffer_rio.backend_processed_bytes, 0u);
 
         char result[64];
         memset(result, 0, sizeof(result));

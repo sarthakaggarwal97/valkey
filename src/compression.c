@@ -9,17 +9,36 @@
 #include "serverassert.h"
 #include <string.h>
 
+static const compressionCodec *const stream_codecs[] = {
+    &compressionLz4Codec,
+};
+
+const compressionCodec *compressionCodecByAlgo(compressionAlgo algo) {
+    for (size_t i = 0; i < sizeof(stream_codecs) / sizeof(stream_codecs[0]); i++) {
+        if (stream_codecs[i]->algo == algo) return stream_codecs[i];
+    }
+    return NULL;
+}
+
+const compressionCodec *compressionCodecByVcsId(uint8_t vcs_id) {
+    for (size_t i = 0; i < sizeof(stream_codecs) / sizeof(stream_codecs[0]); i++) {
+        if (stream_codecs[i]->vcs_id == vcs_id) return stream_codecs[i];
+    }
+    return NULL;
+}
+
 const char *compressionAlgoName(compressionAlgo algo) {
     switch (algo) {
     case ALGO_NONE:
         return "none";
     case ALGO_LZF:
         return "lzf";
-    case ALGO_LZ4:
-        return "lz4";
     default:
-        return "unknown";
+        break;
     }
+
+    const compressionCodec *codec = compressionCodecByAlgo(algo);
+    return codec ? codec->name : "unknown";
 }
 
 /* ===== Compressor ===== */
@@ -29,26 +48,22 @@ int streamCompressorInit(streamCompressor *compressor,
                          int level,
                          bool codec_checksum) {
     memset(compressor, 0, sizeof(*compressor));
-    compressor->algo = algo;
+    compressor->codec = compressionCodecByAlgo(algo);
     compressor->level = level;
     compressor->codec_checksum = codec_checksum;
 
-    switch (algo) {
-    case ALGO_LZ4:
-        compressionLz4CompressorInit(compressor);
-        return 0;
-    default:
-        return -1;
-    }
+    if (!compressor->codec) return -1;
+    return compressor->codec->compressor_init(compressor);
+}
+
+size_t streamCompressorChunkSize(const streamCompressor *compressor) {
+    assert(compressor->codec != NULL);
+    return compressor->codec->chunk_size;
 }
 
 size_t streamCompressorOutputBound(const streamCompressor *compressor, size_t input_len) {
-    switch (compressor->algo) {
-    case ALGO_LZ4:
-        return compressionLz4OutputBound(input_len);
-    default:
-        panic("Unsupported stream compression algorithm: %d", compressor->algo);
-    }
+    assert(compressor->codec != NULL);
+    return compressor->codec->compressor_output_bound(compressor, input_len);
 }
 
 ssize_t streamCompressorFeed(streamCompressor *compressor,
@@ -57,22 +72,13 @@ ssize_t streamCompressorFeed(streamCompressor *compressor,
                              const uint8_t *input,
                              size_t input_len,
                              compressFlushMode flush_mode) {
-    switch (compressor->algo) {
-    case ALGO_LZ4:
-        return compressionLz4CompressFeed(compressor, output, output_capacity, input, input_len, flush_mode);
-    default:
-        panic("Unsupported stream compression algorithm: %d", compressor->algo);
-    }
+    assert(compressor->codec != NULL);
+    return compressor->codec->compressor_feed(compressor, output, output_capacity,
+                                              input, input_len, flush_mode);
 }
 
 void streamCompressorFree(streamCompressor *compressor) {
-    switch (compressor->algo) {
-    case ALGO_LZ4:
-        compressionLz4CompressorFree(compressor);
-        break;
-    default:
-        break;
-    }
+    if (compressor->codec) compressor->codec->compressor_free(compressor);
 }
 
 /* ===== Decompressor ===== */
@@ -81,16 +87,11 @@ int streamDecompressorInit(streamDecompressor *decompressor,
                            compressionAlgo algo,
                            bool skip_codec_checksum_validation) {
     memset(decompressor, 0, sizeof(*decompressor));
-    decompressor->algo = algo;
+    decompressor->codec = compressionCodecByAlgo(algo);
     decompressor->skip_codec_checksum_validation = skip_codec_checksum_validation;
 
-    switch (algo) {
-    case ALGO_LZ4:
-        compressionLz4DecompressorInit(decompressor);
-        return 0;
-    default:
-        return -1;
-    }
+    if (!decompressor->codec) return -1;
+    return decompressor->codec->decompressor_init(decompressor);
 }
 
 ssize_t streamDecompressorFeed(streamDecompressor *decompressor,
@@ -102,21 +103,11 @@ ssize_t streamDecompressorFeed(streamDecompressor *decompressor,
     *input_consumed = 0;
     if (decompressor->frame_done) return 0;
 
-    switch (decompressor->algo) {
-    case ALGO_LZ4:
-        return compressionLz4DecompressFeed(decompressor, output, output_capacity,
-                                            input, input_len, input_consumed);
-    default:
-        panic("Unsupported stream decompression algorithm: %d", decompressor->algo);
-    }
+    assert(decompressor->codec != NULL);
+    return decompressor->codec->decompressor_feed(decompressor, output, output_capacity,
+                                                  input, input_len, input_consumed);
 }
 
 void streamDecompressorFree(streamDecompressor *decompressor) {
-    switch (decompressor->algo) {
-    case ALGO_LZ4:
-        compressionLz4DecompressorFree(decompressor);
-        break;
-    default:
-        break;
-    }
+    if (decompressor->codec) decompressor->codec->decompressor_free(decompressor);
 }

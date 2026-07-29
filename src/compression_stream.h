@@ -32,9 +32,6 @@
 #define VCS_OFFSET_RESERVED 5
 #define VCS_OFFSET_STREAM_KIND 6
 
-/* Stable wire codec identifier. */
-#define VCS_CODEC_LZ4 0x01
-
 /* Identifies an RDB payload in the envelope. */
 #define VCS_STREAM_RDB 0x01
 
@@ -59,6 +56,10 @@ typedef enum {
 
 typedef struct streamWriter {
     streamCompressor compressor;
+    uint8_t *scratch;
+    uint8_t *in_buf;
+    size_t in_buf_len;
+    size_t in_buf_size;
     uint8_t *out_buf;
     size_t out_buf_size;
     streamWriterWriteFn write_cb;
@@ -80,11 +81,11 @@ void streamWriterFree(streamWriter *writer);
 
 /* ===== Reader ===== */
 
-/* Default reader compressed-input/decompressed-output buffer size. Tiny caller
- * values are clamped up so the decoder can always make forward progress
- * without growing internal state. */
-#define STREAM_READER_BUFFER_SIZE_DEFAULT (1024 * 1024)
-#define STREAM_READER_BUFFER_SIZE_MIN (128 * 1024)
+/* One codec block keeps small RDB reads amortized while allowing LZ4 to decode
+ * directly into the output window. Tiny caller values are clamped to avoid
+ * pathological source-read and decoder call counts. */
+#define STREAM_READER_BUFFER_SIZE_DEFAULT (64 * 1024)
+#define STREAM_READER_BUFFER_SIZE_MIN (16 * 1024)
 
 /* When allow_passthrough is set, non-VCS input is forwarded as raw bytes;
  * otherwise it is rejected. */
@@ -121,7 +122,9 @@ typedef struct streamReader {
 
     streamDecompressor decompressor;
 
+    uint8_t *scratch;
     uint8_t *compressed_buf;
+    size_t compressed_buf_size;
     size_t compressed_buf_pos;
     size_t compressed_buf_len;
 

@@ -9,29 +9,7 @@
 
 #include "compression.h"
 
-/* Compressor lifecycle. OutputBound includes enough space for frame start and
- * any requested flush mode. Feed returns -1 on codec failure; input may be
- * NULL when input_len is zero. */
-void compressionLz4CompressorInit(streamCompressor *compressor);
-size_t compressionLz4OutputBound(size_t input_len);
-ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
-                                   uint8_t *output,
-                                   size_t output_capacity,
-                                   const uint8_t *input,
-                                   size_t input_len,
-                                   compressFlushMode flush_mode);
-void compressionLz4CompressorFree(streamCompressor *compressor);
-
-/* Decompressor lifecycle. Feed returns produced bytes or -1 and reports
- * consumed compressed bytes through input_consumed. A zero return does not by
- * itself mean frame end; callers inspect decompressor->frame_done. */
-void compressionLz4DecompressorInit(streamDecompressor *decompressor);
-ssize_t compressionLz4DecompressFeed(streamDecompressor *decompressor,
-                                     uint8_t *output,
-                                     size_t output_capacity,
-                                     const uint8_t *input,
-                                     size_t input_len,
-                                     size_t *input_consumed);
-void compressionLz4DecompressorFree(streamDecompressor *decompressor);
+/* LZ4 exports only its descriptor; codec operations stay private. */
+extern const compressionCodec compressionLz4Codec;
 
 #endif /* COMPRESSION_LZ4_H */

@@ -571,6 +571,36 @@ ssize_t rioReadRawPartial(rio *r, void *buf, size_t len) {
     return got;
 }
 
+/* Rewind a probe performed through rioReadRawPartial so a classified plain
+ * stream can return to the native rio path. Connection probe bytes are still
+ * present in its read buffer, so moving its cursors back is sufficient. */
+int rioRewind(rio *r, size_t len) {
+    if (len == 0) return 1;
+    if (r->stream_reader || r->stream_writer || len > r->backend_processed_bytes)
+        return 0;
+
+    if (rioCheckType(r) == RIO_TYPE_FILE) {
+        off_t offset = (off_t)len;
+        if (offset < 0 || (size_t)offset != len ||
+            fseeko(r->io.file.fp, -offset, SEEK_CUR) != 0)
+            return 0;
+    } else if (rioCheckType(r) == RIO_TYPE_BUFFER) {
+        if (r->io.buffer.pos < 0 || (size_t)r->io.buffer.pos < len) return 0;
+        r->io.buffer.pos -= (off_t)len;
+    } else if (rioCheckType(r) == RIO_TYPE_CONN) {
+        if (r->io.conn.pos < 0 || (size_t)r->io.conn.pos < len ||
+            r->io.conn.read_so_far < len)
+            return 0;
+        r->io.conn.pos -= (off_t)len;
+        r->io.conn.read_so_far -= len;
+    } else {
+        return 0;
+    }
+
+    r->backend_processed_bytes -= len;
+    return 1;
+}
+
 /* Set the file-based rio object to auto-fsync every 'bytes' file written.
  * By default this is set to zero that means no automatic file sync is
  * performed.

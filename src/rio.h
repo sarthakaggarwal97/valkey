@@ -270,6 +270,8 @@ int rioWriteBulkObject(rio *r, struct serverObject *obj);
 
 void rioGenericUpdateChecksum(rio *r, const void *buf, size_t len);
 ssize_t rioReadRawPartial(rio *r, void *buf, size_t len);
+/* Rewind bytes consumed through rioReadRawPartial. Returns 1 on success. */
+int rioRewind(rio *r, size_t len);
 void rioSetAutoSync(rio *r, off_t bytes);
 void rioSetReclaimCache(rio *r, int enabled);
 uint8_t rioCheckType(rio *r);

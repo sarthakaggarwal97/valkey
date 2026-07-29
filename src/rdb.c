@@ -3204,8 +3204,13 @@ rdbStreamReaderInitResult rdbInitStreamReader(rio *rdb,
                    : RDB_STREAM_READER_INIT_ERROR;
     }
 
-    rioAttachStreamReader(rdb, reader);
-    if (detected_algo != ALGO_NONE) {
+    if (detected_algo == ALGO_NONE) {
+        /* Seekable and buffered backends can replay the probe natively. This
+         * keeps the common plain-RDB path free of decoder dispatch overhead. */
+        if (!rioRewind(rdb, reader->probe.header_len))
+            rioAttachStreamReader(rdb, reader);
+    } else {
+        rioAttachStreamReader(rdb, reader);
         rdb->flags |= RIO_FLAG_STREAMING_COMPRESSION | RIO_FLAG_SKIP_RDB_CHECKSUM;
         if (algo) *algo = detected_algo;
     }
@@ -3792,14 +3797,13 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     startLoadingFile(sb.st_size, filename, rdbflags);
     rioInitWithFile(&rdb, fp);
 
-    /* Always attach the probing reader to an on-disk RDB:
+    /* Probe every on-disk RDB:
      *
-     *   plain file: rdbLoadRio -> streamReader pass through -> rdb(file backend)
+     *   plain file: rewind probe, then rdbLoadRio -> rdb(file backend)
      *   VCS file:   rdbLoadRio -> streamReader LZ4 decode  -> rdb(file backend)
      *
-     * The probe bytes are replayed for plain input, so rdbLoadRio sees the
-     * original RDB header. For VCS input it sees the header produced by the
-     * decoder. The parser and the concrete backend remain the same rio. */
+     * Non-rewindable plain sources retain the streamReader passthrough path.
+     * For VCS input the parser sees the header produced by the decoder. */
     bool skip_codec_checksum_validation = !server.rdb_checksum || server.skip_checksum_validation;
     rdbStreamReaderInitResult init_rc =
         rdbInitStreamReader(&rdb, &stream_reader, skip_codec_checksum_validation, &streaming_algo);
