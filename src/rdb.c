@@ -515,8 +515,9 @@ ssize_t rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
     /* Try LZF compression. Values under 20 bytes don't compress, skip those.
      * Skip per-string LZF when the rio has whole-stream compression so we
      * don't compress twice; standalone rios (DUMP, AOF rewrite, diskless)
-     * still hit this path. */
-    if (server.rdb_compression && len > 20 && !rdb->stream_writer) {
+     * still hit this path. rdb may be NULL when rdbSavedObjectLen() calculates
+     * the encoded length without writing the object. */
+    if (server.rdb_compression && len > 20 && !(rdb && rdb->stream_writer)) {
         n = rdbSaveLzfStringObject(rdb, s, len);
         if (n == -1) return -1;
         if (n > 0) return n;
