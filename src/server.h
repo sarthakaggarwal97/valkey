@@ -452,9 +452,11 @@ typedef enum {
 #define REPLICA_CAPA_PSYNC2 (1 << 1)            /* Supports PSYNC2 protocol. */
 #define REPLICA_CAPA_DUAL_CHANNEL (1 << 2)      /* Supports dual channel replication sync */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM (1 << 3) /* Supports skipping RDB checksum for sync requests. */
+#define REPLICA_CAPA_COMPRESS_SYNC (1 << 4)     /* Can decode a compressed full-sync RDB payload. */
 
 /* Replica capability strings */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR "skip-rdb-checksum" /* Supports skipping RDB checksum for sync requests. */
+#define REPLICA_CAPA_COMPRESS_SYNC_STR "compress-sync"         /* Can decode a compressed full-sync RDB payload. */
 
 /* Replica requirements */
 #define REPLICA_REQ_NONE 0
@@ -609,6 +611,11 @@ typedef enum {
     RDB_COMPRESSION_LZF,    /* Pin legacy per-string LZF compression. */
     RDB_COMPRESSION_LZ4     /* Pin whole-stream LZ4 compression. */
 } rdb_compression_mode;
+
+typedef enum {
+    REPL_COMPRESS_SYNC_NO = 0,
+    REPL_COMPRESS_SYNC_LZ4
+} repl_compress_sync_mode;
 
 /* Structure representing a non-owning view of a buffer.
  * A stringRef struct does not manage the underlying memory, so its destruction
@@ -1617,6 +1624,12 @@ typedef enum {
     PROPAGATION_ERR_BEHAVIOR_PANIC_ON_REPLICAS
 } replicationErrorBehavior;
 
+typedef enum {
+    RDB_LOAD_FORMAT_UNKNOWN = 0,
+    RDB_LOAD_FORMAT_PLAIN,
+    RDB_LOAD_FORMAT_VCS,
+} rdbLoadFormat;
+
 /* This structure can be optionally passed to RDB save/load functions in
  * order to implement additional functionalities, by storing and loading
  * metadata to the RDB file.
@@ -1633,9 +1646,10 @@ typedef struct rdbSaveInfo {
     int repl_id_is_set;                   /* True if repl_id field is set. */
     char repl_id[CONFIG_RUN_ID_SIZE + 1]; /* Replication ID. */
     long long repl_offset;                /* Replication offset. */
+    rdbLoadFormat loaded_format;          /* Physical format classified by rdbLoad(). */
 } rdbSaveInfo;
 
-#define RDB_SAVE_INFO_INIT {-1, 0, "0000000000000000000000000000000000000000", -1}
+#define RDB_SAVE_INFO_INIT {-1, 0, "0000000000000000000000000000000000000000", -1, RDB_LOAD_FORMAT_UNKNOWN}
 
 struct malloc_stats {
     size_t zmalloc_used;
@@ -2072,6 +2086,7 @@ struct valkeyServer {
     time_t rdb_save_time_start;           /* Current RDB save start time. */
     int rdb_bgsave_scheduled;             /* BGSAVE when possible if true. */
     int rdb_child_type;                   /* Type of save by active child. */
+    int rdb_child_compress_sync;          /* Active disk child writes a compress-sync snapshot. */
     int lastbgsave_status;                /* C_OK or C_ERR */
     int stop_writes_on_bgsave_err;        /* Don't allow writes if can't BGSAVE */
     int rdb_pipe_read;                    /* RDB pipe used to transfer the rdb data */
@@ -2143,6 +2158,7 @@ struct valkeyServer {
                                                  * delay (start sooner if they all connect). */
     int dual_channel_replication;               /* Config used to determine if the replica should
                                                  * use dual channel replication for full syncs. */
+    int repl_compress_sync;                     /* Replication compression mode */
     _Atomic(int) replica_bio_disk_save_state;   /* Flag set by the bio thread to indicate that the
                                                  * RDB save to disk has completed, or failed */
     _Atomic(bool) replica_bio_abort_save;       /* Flag set by main thread, used to signal to replica's
@@ -3317,7 +3333,7 @@ int rewriteAppendOnlyFileBackground(void);
 int loadAppendOnlyFiles(aofManifest *am);
 void stopAppendOnly(void);
 int startAppendOnly(void);
-int restartAOFWithSyncRdb(void);
+int restartAOFWithSyncRdb(rdbLoadFormat loaded_format);
 void backgroundRewriteDoneHandler(int exitcode, int bysignal);
 void killAppendOnlyChild(void);
 void restartAOFAfterSYNC(void);

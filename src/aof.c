@@ -1010,7 +1010,7 @@ int startAppendOnly(void) {
  * as the new BASE file (RDB preamble mode), avoiding a redundant AOFRW.
  * Returns C_OK on success; on C_ERR caller should fallback to
  * restartAOFAfterSYNC(). */
-int restartAOFWithSyncRdb(void) {
+int restartAOFWithSyncRdb(rdbLoadFormat loaded_format) {
     serverAssert(server.aof_state == AOF_OFF);
 
     int ret = C_ERR;
@@ -1020,6 +1020,14 @@ int restartAOFWithSyncRdb(void) {
     sds new_incr_filename = NULL;
     sds new_incr_filepath = NULL;
     aofManifest *temp_am = NULL;
+
+    if (loaded_format != RDB_LOAD_FORMAT_PLAIN) {
+        serverLog(LL_NOTICE,
+                  "Sync RDB file %s has %s physical format, falling back to BGREWRITEAOF instead of reusing it as an AOF base",
+                  server.rdb_filename,
+                  loaded_format == RDB_LOAD_FORMAT_VCS ? "VCS" : "unknown");
+        goto cleanup;
+    }
 
     if (dirCreateIfMissing(server.aof_dirname) == -1) {
         serverLog(LL_WARNING, "Can't open or create append-only dir %s: %s", server.aof_dirname, strerror(errno));

@@ -82,6 +82,10 @@ struct _rio {
      * differs from processed_bytes when a stream transforms data. */
     size_t stream_processed_bytes;
 
+    /* Wire bytes already counted toward replication net-input stats, so the load
+     * progress callback adds only the per-call encoded delta on decoded reads. */
+    size_t stream_reported_input_bytes;
+
     /* Maximum size of one backend operation, not a total byte limit. Zero
      * means unlimited. rioRead/rioWrite split larger requests into chunks. */
     size_t max_processing_chunk;
@@ -132,6 +136,7 @@ struct _rio {
             int numconns;
             off_t pos;
             sds buf;
+            size_t net_output_bytes; /* Total bytes written across all connections. */
         } connset;
     } io;
 };
