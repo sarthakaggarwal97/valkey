@@ -836,7 +836,7 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
 
 eoferr: /* unexpected end of file is handled here with a fatal exit */
     if (rdbstate.error_set) {
-        rdbCheckError(rdbstate.error);
+        rdbCheckError("%s", rdbstate.error);
     } else {
         rdbCheckError("Unexpected EOF reading RDB file");
     }
