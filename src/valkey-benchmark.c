@@ -39,6 +39,7 @@
 #include <sys/time.h>
 #include <signal.h>
 #include <assert.h>
+#include <limits.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -2425,7 +2426,17 @@ int main(int argc, char **argv) {
         for (i = 0; i <= argc; i++) {
             if (i < argc && i == start && sds_args[i][0] >= '1' && sds_args[i][0] <= '9') {
                 /* Command prefixed by number means repeat command N times. */
-                repeat = atoi(sds_args[i]);
+                char *endptr;
+                errno = 0;
+                long long parsed_repeat = strtoll(sds_args[i], &endptr, 10);
+                if (errno == ERANGE || endptr == sds_args[i] || *endptr != '\0' ||
+                    parsed_repeat < 1 || parsed_repeat > INT_MAX) {
+                    fprintf(stderr,
+                            "Invalid command sequence: repeat count '%s' must be an integer between 1 and %d.\n",
+                            sds_args[i], INT_MAX);
+                    return 1;
+                }
+                repeat = (int)parsed_repeat;
                 has_repeat = 1;
                 start++;
             } else if (i == argc || strcmp(";", sds_args[i]) == 0) {

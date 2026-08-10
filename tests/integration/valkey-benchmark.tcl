@@ -143,6 +143,25 @@ tags {"benchmark network external:skip logreqres:skip"} {
             assert_match {*calls=4,*} [cmdstat incr]
         }
 
+        test {benchmark: invalid repeat count errors out cleanly} {
+            # Repeat counts are validated before connecting, so the closed port
+            # must fail the same way as a live server.
+            set closed_port [find_available_port [expr {$::baseport - 64}] 32]
+            foreach args {"10junk INCR foo" "2147483648 INCR foo" \
+                          "999999999999999999999999 INCR foo"} {
+                foreach {desc host port} [list "live server" $master_host $master_port \
+                                               "closed port" 127.0.0.1 $closed_port] {
+                    set cmd [valkeybenchmark $host $port $args]
+                    set code [catch { exec {*}$cmd 2>@1 } output opt]
+                    assert_equal 1 $code "$desc: $args"
+                    set errcode [dict get $opt -errorcode]
+                    assert_equal CHILDSTATUS [lindex $errcode 0] "$desc: $args"
+                    assert_equal 1 [lindex $errcode 2] "$desc: $args"
+                    assert_match "*Invalid command sequence: repeat count*" $output "$desc: $args"
+                }
+            }
+        }
+
         test {benchmark: arbitrary command with data placeholder} {
             set cmd [valkeybenchmark $master_host $master_port "-n 1 -d 42 -- set k value:__data__"]
             common_bench_setup $cmd
