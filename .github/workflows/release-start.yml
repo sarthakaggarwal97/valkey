@@ -14,7 +14,7 @@
 # the release team before doing anything, so this relay adds no authority
 # of its own.
 name: Start Release
-run-name: "Start Release on ${{ inputs.branch }} (relay)"
+run-name: "Start Release on ${{ inputs.branch }}"
 
 on:
   workflow_dispatch:
