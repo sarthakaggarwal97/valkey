@@ -20,15 +20,15 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Release branch (a policy-configured line, e.g. 9.1)"
+        description: "Release line to start, e.g. 9.1 (must be a policy-configured line)"
         required: true
         type: string
       intent:
         description: >-
-          Release intent. rc/ga only before the line's initial release; patch
-          after. 'security' is refused by the controller before any public
-          artifact exists; use the manual break-glass process for embargoed
-          fixes.
+          What to release: rc/ga only before the line's initial release;
+          patch after. 'security' is the embargoed path: the controller
+          refuses it BEFORE any public artifact exists; run the manual
+          break-glass process instead.
         required: true
         type: choice
         options:
@@ -37,7 +37,11 @@ on:
           - patch
           - security
       urgency:
-        description: "Upgrade urgency for the release notes"
+        description: >-
+          How urgently users should upgrade (passed to the release-notes
+          cut). SECURITY is for already-disclosed fixes only; an embargoed
+          fix must use intent 'security', which refuses before creating
+          anything public.
         required: true
         type: choice
         options:
@@ -47,7 +51,7 @@ on:
           - CRITICAL
           - SECURITY
       dry_run:
-        description: "Authorize and derive without creating the issue or cutting notes"
+        description: "Preview only: authorize and show the derived version without creating anything. Uncheck to actually start the release."
         required: false
         type: boolean
         default: true
