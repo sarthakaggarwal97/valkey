@@ -452,9 +452,11 @@ typedef enum {
 #define REPLICA_CAPA_PSYNC2 (1 << 1)            /* Supports PSYNC2 protocol. */
 #define REPLICA_CAPA_DUAL_CHANNEL (1 << 2)      /* Supports dual channel replication sync */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM (1 << 3) /* Supports skipping RDB checksum for sync requests. */
+#define REPLICA_CAPA_COMPRESSION (1 << 4)       /* Supports replication compression. */
 
 /* Replica capability strings */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR "skip-rdb-checksum" /* Supports skipping RDB checksum for sync requests. */
+#define REPLICA_CAPA_COMPRESSION_STR "compression"             /* Supports replication compression. */
 
 /* Replica requirements */
 #define REPLICA_REQ_NONE 0
@@ -609,6 +611,12 @@ typedef enum {
     RDB_COMPRESSION_LZF,    /* Pin legacy per-string LZF compression. */
     RDB_COMPRESSION_LZ4     /* Pin whole-stream LZ4 compression. */
 } rdb_compression_mode;
+
+typedef enum {
+    REPL_COMPRESSION_NO = 0, /* Disable replication compression. */
+    REPL_COMPRESSION_YES,    /* Use the default compression algorithm. */
+    REPL_COMPRESSION_LZ4     /* Pin whole-stream LZ4 compression. */
+} repl_compression_mode;
 
 /* Structure representing a non-owning view of a buffer.
  * A stringRef struct does not manage the underlying memory, so its destruction
@@ -1226,6 +1234,9 @@ typedef struct ClientPubSubData {
                                       context of client side caching. */
 } ClientPubSubData;
 
+typedef struct replCompressor replCompressor;
+typedef struct replDecompressor replDecompressor;
+
 typedef struct ClientReplicationData {
     int repl_state;                      /* Replication state if this is a replica. */
     int repl_start_cmd_stream_on_ack;    /* Install replica write handler on first ACK. */
@@ -1257,6 +1268,16 @@ typedef struct ClientReplicationData {
     size_t ref_block_pos;                /* Access position of referenced buffer block,
                                            i.e. the next offset to send. */
     sds replica_nodeid;                  /* Node id in cluster mode. */
+    /* Incremental replication compression state (primary side, per replica). */
+    replCompressor *repl_compressor;           /* Per-replica replication compressor (NULL if uncompressed). */
+    _Atomic(int) compression_error;            /* Set by the IO thread on compression failure,
+                                                * read by the main thread in postWriteToReplica. */
+    unsigned int repl_compression_decided : 1; /* Compression decision frozen when the command stream
+                                                * started; put-online must not re-make it. */
+    /* Compression metrics (primary side, per replica). */
+    long long repl_compressed_bytes_total;         /* Total compressed bytes sent (main thread only). */
+    long long repl_uncompressed_bytes_total;       /* Total raw bytes before compression (main thread only). */
+    _Atomic(long long) repl_compression_time_usec; /* Cumulative wall-clock usec in the compression path. */
 } ClientReplicationData;
 
 typedef struct ClientModuleData {
@@ -2063,6 +2084,10 @@ struct valkeyServer {
     int saveparamslen;                    /* Number of saving points */
     char *rdb_filename;                   /* Name of RDB file */
     int rdb_compression;                  /* RDB compression mode */
+    int repl_compression;                 /* Replication compression mode */
+    int repl_provisional_compression;     /* Replica: compression advertised on the current upstream
+                                           * handshake. Gates decompressor setup (not the live config),
+                                           * so a mid-handshake config flip cannot desync the link. */
     int rdb_checksum;                     /* Use RDB checksum? */
     int rdb_del_sync_files;               /* Remove RDB files used only for SYNC if
                                              the instance does not use persistence. */
@@ -2204,6 +2229,13 @@ struct valkeyServer {
                                            * when it receives an error on the replication stream */
     int repl_ignore_disk_write_error;     /* Configures whether replicas panic when unable to
                                            * persist writes to AOF. */
+    /* Replica-side replication decompression state and metrics. */
+    replDecompressor *repl_decompressor;
+    long long repl_decompression_errors;
+    long long repl_decompression_time_usec;
+    long long repl_decompressed_bytes_total;
+    /* Compression failures across all replicas; written from IO threads. */
+    _Atomic(long long) repl_compression_errors;
 
     /* The following two fields is where we store primary PSYNC replid/offset
      * while the PSYNC is in progress. At the end we'll copy the fields into
@@ -3028,6 +3060,9 @@ int getClientTypeByName(char *name);
 char *getClientTypeName(int client_class);
 void flushReplicasOutputBuffers(void);
 void disconnectReplicas(void);
+void reconcileReplicaCompression(void);
+void replDestroyCompression(client *c);
+int replDecompressQueryBuf(client *c, size_t new_data_start, size_t *decoded);
 void evictClients(void);
 int listenToPort(connListener *fds);
 void pauseActions(pause_purpose purpose, mstime_t end, uint32_t actions);
@@ -3056,6 +3091,7 @@ void protectClient(client *c);
 void unprotectClient(client *c);
 void initSharedQueryBuf(void);
 void freeSharedQueryBuf(void);
+void clientUnshareQuerybufIfNeeded(client *c, size_t addlen);
 client *lookupClientByID(uint64_t id);
 int authRequired(client *c);
 void clientSetUser(client *c, user *u, int authenticated);
