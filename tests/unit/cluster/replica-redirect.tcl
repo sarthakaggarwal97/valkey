@@ -35,6 +35,7 @@ start_cluster 1 1 {tags {external:skip cluster}} {
         } else {
             fail "The failover does not happen"
         }
+        wait_for_cluster_propagation
 
         # Check that the client blocking on the old primary was MOVED to the new primary.
         assert_error "MOVED *" {$rd0 read}
