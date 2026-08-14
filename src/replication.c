@@ -1019,7 +1019,7 @@ need_full_resync:
 int startBgsaveForReplication(int mincapa, int req, int rdbver) {
     int retval;
     int socket_target = 0;
-    bool round_compressed = false;
+    compressionAlgo round_sync_algo = ALGO_NONE;
     listIter li;
     listNode *ln;
 
@@ -1049,15 +1049,16 @@ int startBgsaveForReplication(int mincapa, int req, int rdbver) {
         if (socket_target)
             retval = rdbSaveToReplicasSockets(req, rdbver, rsiptr);
         else {
-            int save_flags = RDBFLAGS_REPLICATION | RDBFLAGS_KEEP_CACHE;
             /* mincapa is the trigger's own mask on the eager path but the group AND on the cron path, so a mixed group downgrades to plain. */
-            round_compressed = (mincapa & REPLICA_CAPA_COMPRESS_SYNC) && replCompressSyncAlgo() != ALGO_NONE;
-            if (round_compressed) {
-                save_flags |= RDBFLAGS_COMPRESS_SYNC;
-                serverLog(LL_NOTICE, "Disk-based full sync with compression: %s", compressionAlgoName(replCompressSyncAlgo()));
-            }
+            round_sync_algo = replSelectSyncAlgo(mincapa);
+            if (round_sync_algo != ALGO_NONE)
+                serverLog(LL_NOTICE, "Disk-based full sync with compression: %s", compressionAlgoName(round_sync_algo));
             /* Keep the page cache since it'll get used soon */
-            retval = rdbSaveBackground(req, server.rdb_filename, rsiptr, save_flags);
+            retval = rdbSaveBackgroundForReplication(req,
+                                                     server.rdb_filename,
+                                                     rsiptr,
+                                                     RDBFLAGS_REPLICATION | RDBFLAGS_KEEP_CACHE,
+                                                     round_sync_algo);
         }
         if (server.debug_pause_after_fork) debugPauseProcess();
     } else {
@@ -1096,7 +1097,6 @@ int startBgsaveForReplication(int mincapa, int req, int rdbver) {
     /* If the target is socket, rdbSaveToReplicasSockets() already setup
      * the replicas for a full resync. Otherwise, for disk target do it now.*/
     if (!socket_target) {
-        int mismatched = 0;
         listRewind(server.replicas, &li);
         while ((ln = listNext(&li))) {
             client *replica = ln->value;
@@ -1108,15 +1108,10 @@ int startBgsaveForReplication(int mincapa, int req, int rdbver) {
                 /* A non-capable waiter must not receive a compressed sync; it
                  * stays parked and the next cron round, whose AND includes it,
                  * is plain. A capable waiter may still join a plain round. */
-                if (round_compressed && !(replica->repl_data->replica_capa & REPLICA_CAPA_COMPRESS_SYNC)) {
-                    mismatched++;
-                    continue;
-                }
+                if (!replCapaSupportsSyncAlgo(replica->repl_data->replica_capa, round_sync_algo)) continue;
                 replicationSetupReplicaForFullResync(replica, getPsyncInitialOffset());
             }
         }
-        if (mismatched)
-            serverLog(LL_NOTICE, "Full sync format mismatch: %d replica(s) waiting for a separate round", mismatched);
     }
 
     return retval;
@@ -1288,7 +1283,7 @@ void syncCommand(client *c) {
         int trigger_capa = ln ? (replica->repl_data->replica_capa & ~REPLICA_CAPA_COMPRESS_SYNC) : 0;
         if (ln && ((c->repl_data->replica_capa & trigger_capa) == trigger_capa) &&
             c->repl_data->replica_req == replica->repl_data->replica_req &&
-            (!server.rdb_child_compress_sync || (c->repl_data->replica_capa & REPLICA_CAPA_COMPRESS_SYNC))) {
+            replCapaSupportsSyncAlgo(c->repl_data->replica_capa, server.rdb_child_sync_algo)) {
             /* Perfect, the server is already registering differences for
              * another replica. Set the right state, and copy the buffer.
              * We don't copy buffer if clients don't want. */
@@ -2477,11 +2472,17 @@ void replicaAfterLoadPrimaryRDB(connection *conn, rdbSaveInfo *rsi, int disk_bas
      * directly, avoiding a redundant bgrewriteaof. Otherwise (diskless
      * sync or rdb-preamble disabled), fall back to bgrewriteaof. */
     if (server.aof_enabled) {
-        if (disk_based_sync && server.aof_use_rdb_preamble) {
-            if (restartAOFWithSyncRdb(rsi->loaded_format) == C_ERR) {
+        if (disk_based_sync && server.aof_use_rdb_preamble && rsi->loaded_format == RDB_LOAD_FORMAT_PLAIN) {
+            if (restartAOFWithSyncRdb() == C_ERR) {
                 restartAOFAfterSYNC();
             }
         } else {
+            if (disk_based_sync && server.aof_use_rdb_preamble) {
+                serverLog(LL_NOTICE,
+                          "Sync RDB file %s has %s physical format, falling back to BGREWRITEAOF instead of reusing it as an AOF base",
+                          server.rdb_filename,
+                          rsi->loaded_format == RDB_LOAD_FORMAT_VCS ? "VCS" : "unknown");
+            }
             restartAOFAfterSYNC();
         }
     }
@@ -3213,8 +3214,8 @@ static int dualChannelReplHandleHandshake(connection *conn, sds *err) {
                       "listening-port", portstr, "version", VALKEY_VERSION};
     size_t lens[13] = {8, 4, 3, 8, 1, 11, 1, 14, sdslen(portstr), 7, strlen(VALKEY_VERSION)};
     int argc = 11;
-    /* Advertise compress-sync when enabled; replconfCommand scans pairs independently, so trailing position is fine. */
-    if (server.repl_compress_sync == REPL_COMPRESS_SYNC_LZ4) {
+    /* Advertise compressed full-sync support when enabled; replconfCommand scans pairs independently, so trailing position is fine. */
+    if (server.repl_compress_sync != REPL_COMPRESS_SYNC_NO) {
         argv[argc] = "capa";
         lens[argc] = strlen("capa");
         argc++;
@@ -4046,8 +4047,8 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
         lens[argc] = strlen("dual-channel");
         argc++;
     }
-    /* Advertise compress-sync when this replica has repl-compress-sync enabled. */
-    if (server.repl_compress_sync == REPL_COMPRESS_SYNC_LZ4) {
+    /* Advertise compressed full-sync support when this replica has repl-compress-sync enabled. */
+    if (server.repl_compress_sync != REPL_COMPRESS_SYNC_NO) {
         argv[argc] = "capa";
         lens[argc] = strlen("capa");
         argc++;

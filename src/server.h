@@ -32,6 +32,7 @@
 
 #include "fmacros.h"
 #include "config.h"
+#include "compression.h"
 #include "solarisfixes.h"
 #include "rio.h"
 #include "commands.h"
@@ -2086,7 +2087,7 @@ struct valkeyServer {
     time_t rdb_save_time_start;           /* Current RDB save start time. */
     int rdb_bgsave_scheduled;             /* BGSAVE when possible if true. */
     int rdb_child_type;                   /* Type of save by active child. */
-    int rdb_child_compress_sync;          /* Active disk child writes a compress-sync snapshot. */
+    compressionAlgo rdb_child_sync_algo;  /* Streaming compression used by the active replication disk child. */
     int lastbgsave_status;                /* C_OK or C_ERR */
     int stop_writes_on_bgsave_err;        /* Don't allow writes if can't BGSAVE */
     int rdb_pipe_read;                    /* RDB pipe used to transfer the rdb data */
@@ -3333,7 +3334,7 @@ int rewriteAppendOnlyFileBackground(void);
 int loadAppendOnlyFiles(aofManifest *am);
 void stopAppendOnly(void);
 int startAppendOnly(void);
-int restartAOFWithSyncRdb(rdbLoadFormat loaded_format);
+int restartAOFWithSyncRdb(void);
 void backgroundRewriteDoneHandler(int exitcode, int bysignal);
 void killAppendOnlyChild(void);
 void restartAOFAfterSYNC(void);

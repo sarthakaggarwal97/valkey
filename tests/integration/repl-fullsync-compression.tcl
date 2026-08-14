@@ -267,10 +267,9 @@ start_server {tags {"repl rdb-compression external:skip needs:debug"} overrides 
 
                 # AND-rule result: the shared grouped RDB is plaintext, so the
                 # capable replica was downgraded alongside the non-capable one.
-                # Nobody is skipped in a plain round, so no mismatch NOTICE fires.
+                # Nobody is skipped in a plain round.
                 assert_equal 0 [fsc_rdb_is_compressed $primary]
                 verify_no_log_message -2 "*Disk-based full sync with compression: lz4*" $primary_loglines
-                verify_no_log_message -2 "*Full sync format mismatch*" $primary_loglines
 
                 $noncap replicaof no one
                 $capable replicaof no one
