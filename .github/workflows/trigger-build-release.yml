@@ -25,20 +25,31 @@ jobs:
     steps:
       - name: Determine version and environment
         id: determine-vars
+        # Untrusted values (a release tag name, manual inputs) enter only
+        # through env, never interpolated into shell source, and the
+        # version is validated before anything downstream consumes it.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "release" ]]; then
             echo "Triggered by a release event."
-            VERSION=${{ github.event.release.tag_name }}
+            VERSION="${RELEASE_TAG}"
             ENVIRONMENT="prod"
           else
             echo "Triggered manually (workflow_dispatch)."
-            VERSION=${{ inputs.version }}
-            ENVIRONMENT=${{ inputs.environment }}
+            VERSION="${INPUT_VERSION}"
+            ENVIRONMENT="${INPUT_ENVIRONMENT}"
           fi
-
-          # Set the outputs for version and environment
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ && "${VERSION}" != "unstable" ]]; then
+            echo "::error::Invalid version: ${VERSION}"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "environment=${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
 
       - name: Generate token
         id: generate-token

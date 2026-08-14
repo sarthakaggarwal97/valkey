@@ -357,6 +357,6 @@ jobs:
         run: |
           echo "ERROR: YAML file is not formatted properly. Here is the diff: "
           # Decode the Base64 diff to display it
-          echo "${{ steps.clang-format.outputs.diff }}" | base64 --decode
+          echo "${{ steps.yamlfmt.outputs.diff }}" | base64 --decode
           exit 1
         shell: bash
