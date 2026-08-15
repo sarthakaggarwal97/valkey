@@ -61,6 +61,10 @@ permissions: {}
 jobs:
   relay:
     name: "Relay to the release controller"
+    # Only the default branch's relay may run: a dispatch that selects a
+    # side ref would execute that ref's modified copy of this workflow,
+    # so the gate keeps the forwarded-actor trust anchor on reviewed code.
+    if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -94,6 +98,10 @@ jobs:
           # the original dispatcher, so forwarding it would let a
           # repo-write user replay an authorized user's dispatch.
           ACTOR: ${{ github.triggering_actor }}
+          # Forwarded so the controller can later verify this exact run
+          # via the Actions API (an authenticated source-run receipt);
+          # currently recorded, not yet enforced.
+          SOURCE_RUN: ${{ github.run_id }}
         run: |
           set -euo pipefail
           if [[ -z "${GH_TOKEN}" ]]; then
@@ -106,10 +114,11 @@ jobs:
             --arg urgency "${URGENCY}" \
             --arg actor "${ACTOR}" \
             --argjson dry_run "${DRY_RUN}" \
+            --arg source_run "${SOURCE_RUN}" \
             '{event_type: "release-start",
               client_payload: {branch: $branch, intent: $intent,
                                urgency: $urgency, actor: $actor,
-                               dry_run: $dry_run}}' \
+                               dry_run: $dry_run, source_run: $source_run}}' \
           | gh api "repos/${TARGET}/dispatches" --input -
           echo "Relayed: branch=${BRANCH} intent=${INTENT} dry_run=${DRY_RUN} actor=${ACTOR}" >> "$GITHUB_STEP_SUMMARY"
           echo "Watch the controller run: https://github.com/${TARGET}/actions/workflows/release-start.yml" >> "$GITHUB_STEP_SUMMARY"
