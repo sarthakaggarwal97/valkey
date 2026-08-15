@@ -1,18 +1,3 @@
-# Start a release from the valkey repository.
-#
-# This is a thin trampoline: it carries no release logic and no authority.
-# It relays the dispatch to the release controller in valkey-ci-agent, which
-# performs the live team-membership check on the forwarding actor, derives
-# the version, opens the tracking issue in this repository, and cuts the
-# release-notes PR. Maintainers get the entry point where releases happen;
-# the controller code, credentials, and authorization stay in the agent
-# repository.
-#
-# The forwarded actor is trustworthy because this workflow runs from the
-# default branch and populates it from github.triggering_actor, which a
-# dispatcher cannot forge. The controller re-verifies that person against
-# the release team before doing anything, so this relay adds no authority
-# of its own.
 name: Start Release
 run-name: "Start Release on ${{ inputs.branch }}"
 
@@ -20,96 +5,57 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Release line to start, e.g. 9.1 (must be a policy-configured line)"
+        description: "Release branch, for example 9.1"
         required: true
         type: string
       intent:
-        description: >-
-          What to release: rc/ga only before the line's initial release;
-          patch after. 'security' is the embargoed path: the controller
-          refuses it BEFORE any public artifact exists; run the manual
-          break-glass process instead.
+        description: "Release intent"
         required: true
         type: choice
-        options:
-          - rc
-          - ga
-          - patch
-          - security
+        options: [rc, ga, patch]
       urgency:
-        description: >-
-          How urgently users should upgrade (passed to the release-notes
-          cut). SECURITY is for already-disclosed fixes only; an embargoed
-          fix must use intent 'security', which refuses before creating
-          anything public.
+        description: "Release-note urgency"
         required: true
         type: choice
-        options:
-          - LOW
-          - MODERATE
-          - HIGH
-          - CRITICAL
-          - SECURITY
-      dry_run:
-        description: "Preview only: authorize and show the derived version without creating anything. Uncheck to actually start the release."
-        required: false
-        type: boolean
-        default: true
+        options: [LOW, MODERATE, HIGH, CRITICAL, SECURITY]
 
 permissions: {}
 
 jobs:
   relay:
-    name: "Relay to the release controller"
+    if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    environment: release-start
+    permissions:
+      contents: read
     steps:
-      - name: Generate GitHub App token
-        id: generate-token
-        # Fork operation falls back to AUTOMATION_PAT below, mirroring the
-        # convention in this repository's other automation workflows.
-        continue-on-error: ${{ github.repository_owner != 'valkey-io' }}
+      - name: Mint relay-only token
+        id: token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.VALKEYRIE_BOT_APP_ID }}
-          private-key: ${{ secrets.VALKEYRIE_BOT_PRIVATE_KEY }}
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          # Scope to exactly the repository this relay dispatches.
           repositories: valkey-ci-agent
-          # repository_dispatch requires contents:write on the target.
           permission-contents: write
           permission-metadata: read
-
-      - name: Relay the start request
-        shell: bash
+      - name: Relay trusted source-run receipt
         env:
-          GH_TOKEN: ${{ steps.generate-token.outputs.token || (github.repository_owner != 'valkey-io' && secrets.AUTOMATION_PAT) || '' }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           TARGET: ${{ github.repository_owner }}/valkey-ci-agent
+          SOURCE_RUN: ${{ github.run_id }}
           BRANCH: ${{ inputs.branch }}
           INTENT: ${{ inputs.intent }}
           URGENCY: ${{ inputs.urgency }}
-          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
-          # triggering_actor, not actor: on a re-run github.actor remains
-          # the original dispatcher, so forwarding it would let a
-          # repo-write user replay an authorized user's dispatch.
-          ACTOR: ${{ github.triggering_actor }}
         run: |
           set -euo pipefail
-          if [[ -z "${GH_TOKEN}" ]]; then
-            echo "::error::No dispatch credential available (App secrets or AUTOMATION_PAT)."
-            exit 1
-          fi
           jq -n \
-            --arg branch "${BRANCH}" \
-            --arg intent "${INTENT}" \
-            --arg urgency "${URGENCY}" \
-            --arg actor "${ACTOR}" \
-            --argjson dry_run "${DRY_RUN}" \
-            '{event_type: "release-start",
-              client_payload: {branch: $branch, intent: $intent,
-                               urgency: $urgency, actor: $actor,
-                               dry_run: $dry_run}}' \
-          | gh api "repos/${TARGET}/dispatches" --input -
-          echo "Relayed: branch=${BRANCH} intent=${INTENT} dry_run=${DRY_RUN} actor=${ACTOR}" >> "$GITHUB_STEP_SUMMARY"
-          echo "Watch the controller run: https://github.com/${TARGET}/actions/workflows/release-start.yml" >> "$GITHUB_STEP_SUMMARY"
+            --arg source_run "$SOURCE_RUN" \
+            --arg branch "$BRANCH" \
+            --arg intent "$INTENT" \
+            --arg urgency "$URGENCY" \
+            '{event_type:"release-start",client_payload:{
+              source_run:$source_run,branch:$branch,
+              intent:$intent,urgency:$urgency}}' |
+            gh api "repos/$TARGET/dispatches" --input -
