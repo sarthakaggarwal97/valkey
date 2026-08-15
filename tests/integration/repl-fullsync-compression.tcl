@@ -451,6 +451,23 @@ start_server {overrides {save "" rdbcompression lz4 repl-diskless-sync yes repl-
         }
     }
 
+    test {Dual-channel full sync is plaintext when the replica does not advertise compression} {
+        set primary_loglines [count_log_lines 0]
+        fsc_populate $primary "dc-plain"
+
+        start_server {overrides {save "" rdbcompression yes rdb-del-sync-files no repl-diskless-load disabled dual-channel-replication-enabled yes}} {
+            set replica [srv 0 client]
+            $replica replicaof $primary_host $primary_port
+
+            fsc_assert_synced $primary $replica "(dual-channel plaintext fallback)"
+            wait_for_log_messages -1 {"*using: dual-channel*"} $primary_loglines 50 100
+            assert_equal 0 [fsc_rdb_is_compressed $replica]
+            verify_no_log_message -1 "*Diskless full sync with compression:*" $primary_loglines
+
+            $replica replicaof no one
+        }
+    }
+
     # Aggregate output accounting across all dual-channel sockets: one BGSAVE that
     # serves TWO dual-channel replicas writes the compressed payload to both
     # sockets from a single connset. The primary must count the bytes sent to
@@ -786,6 +803,29 @@ start_server {overrides {save "" rdbcompression lz4}} {
     $src save
     set src_dump [fsc_dump_path $src]
     set fsc_payload [read_binary_file $src_dump]
+}
+
+test {Direct compressed socket load honors receiver checksum bypass} {
+    set checksum_offset [expr {[string length $fsc_payload] - 1}]
+    binary scan [string index $fsc_payload $checksum_offset] c checksum_byte
+    set checksum_mutated [string replace $fsc_payload $checksum_offset $checksum_offset \
+                              [binary format c [expr {$checksum_byte ^ 0xff}]]]
+
+    start_server {overrides {save "" rdbcompression lz4 rdbchecksum no repl-diskless-load swapdb}} {
+        set replica [srv 0 client]
+        lassign [fsc_start_fake_primary $checksum_mutated [string length $checksum_mutated]] fake_pid fake_port
+
+        $replica replicaof 127.0.0.1 $fake_port
+        wait_for_condition 100 100 {
+            [$replica dbsize] == 32
+        } else {
+            fail "replica did not load the checksum-mutated payload with checksum validation disabled"
+        }
+        assert_equal [string repeat "srcval:7 " 8] [$replica get src:key:7]
+
+        $replica replicaof no one
+        catch {exec kill $fake_pid}
+    }
 }
 
 # Fake-primary survivor cases (10 + 12 + 14) share ONE replica: each is a

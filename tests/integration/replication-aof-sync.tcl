@@ -177,9 +177,10 @@ tags {"repl external:skip"} {
                 $primary set "rcomp-key:$i" "value:$i"
             }
 
-            start_server {overrides {appendonly yes aof-use-rdb-preamble yes repl-diskless-sync no rdbcompression lz4 save ""}} {
+            start_server {overrides {appendonly yes aof-use-rdb-preamble yes repl-diskless-sync no rdbcompression lz4 rdb-del-sync-files yes save ""}} {
                 set replica [srv 0 client]
                 set replica_log [srv 0 stdout]
+                set replica_rdb [file join [lindex [$replica config get dir] 1] [lindex [$replica config get dbfilename] 1]]
 
                 $replica replicaof $primary_host $primary_port
                 wait_for_sync $replica
@@ -200,7 +201,15 @@ tags {"repl external:skip"} {
                 set base_name [get_cur_base_aof_name $manifest_path]
                 assert {$base_name ne ""}
 
-                # Data correct at runtime (loaded from the compressed socket stream).
+                # The compressed sync RDB cannot be reused as the AOF base and
+                # rdb-del-sync-files requests that such temporary files be removed.
+                wait_for_condition 50 100 {
+                    ![file exists $replica_rdb]
+                } else {
+                    fail "Compressed sync RDB was retained after AOF fallback"
+                }
+
+                # Data is correct at runtime after loading the compressed sync RDB from disk.
                 assert_equal 40 [$replica dbsize]
                 for {set i 0} {$i < 40} {incr i} {
                     assert_equal "value:$i" [$replica get "rcomp-key:$i"]

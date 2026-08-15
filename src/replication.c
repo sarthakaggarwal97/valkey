@@ -2544,7 +2544,8 @@ int replicaLoadPrimaryRDBFromSocket(connection *conn, char *buf, char *eofmark, 
     int loadingFailed = 0;
     int retval = RDB_FAILED;
     /* Always attach a stream reader that probes the envelope: decode a compressed RDB, or pass through plaintext. */
-    bool skip_codec_checksum = (rdb.flags & RIO_FLAG_SKIP_RDB_CHECKSUM) != 0;
+    bool skip_codec_checksum = !server.rdb_checksum || server.skip_checksum_validation ||
+                               (rdb.flags & RIO_FLAG_SKIP_RDB_CHECKSUM);
     rdbStreamReaderInitResult init_rc =
         rdbInitStreamReader(&rdb, &stream_reader, skip_codec_checksum, &compression_algo);
     if (init_rc == RDB_STREAM_READER_INIT_INCOMPATIBLE) {
@@ -2753,7 +2754,7 @@ int replicaLoadPrimaryRDBFromDisk(rdbSaveInfo *rsi) {
     /* Cleanup. When aof-use-rdb-preamble is enabled and AOF is on, keep the
      * RDB file so it can be reused as the AOF base file, avoiding a redundant
      * bgrewriteaof that would produce an almost identical snapshot. */
-    if (!(server.aof_enabled && server.aof_use_rdb_preamble) &&
+    if (!(server.aof_enabled && server.aof_use_rdb_preamble && !rsi->loaded_compressed) &&
         server.rdb_del_sync_files && allPersistenceDisabled()) {
         serverLog(LL_NOTICE, "Removing the RDB file obtained from "
                              "the primary. This replica has persistence "

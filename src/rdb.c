@@ -1582,7 +1582,8 @@ static int rdbSaveRioWithEOFMark(int req, int rdbver, rio *rdb, int *error, rdbS
     /* Compress only the RDB body; the $EOF prefix/suffix stay plaintext. The
      * VCS frame owns checksum policy, so drop the outer RDB CRC64. */
     if (compression_algo != ALGO_NONE) {
-        if (rdbCompressionInit(rdb, &compression_writer, compression_algo, server.rdb_checksum) == C_ERR) {
+        if (rdbCompressionInit(rdb, &compression_writer, compression_algo,
+                               server.rdb_checksum && !(rdb->flags & RIO_FLAG_SKIP_RDB_CHECKSUM)) == C_ERR) {
             if (error && *error == 0) *error = EIO;
             goto werr;
         }
@@ -1633,8 +1634,7 @@ static void rdbCompressionFree(rio *rdb, streamWriter *writer) {
     streamWriterFree(writer);
 }
 
-/* A single compress-sync capability covers every streaming codec, so adding a
- * new codec does not require a new capability bit. */
+/* compress-sync represents the VCS v1 codec set. */
 bool replicaCanUseFullSyncFormat(int replica_capa, compressionAlgo compression_algo) {
     return compression_algo == ALGO_NONE || (replica_capa & REPLICA_CAPA_COMPRESS_SYNC);
 }
