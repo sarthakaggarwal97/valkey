@@ -1816,11 +1816,11 @@ int rdbSave(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
     return C_OK;
 }
 
-static int rdbSaveBackgroundWithCompression(int req,
-                                            char *filename,
-                                            rdbSaveInfo *rsi,
-                                            int rdbflags,
-                                            compressionAlgo compression_algo) {
+int rdbSaveBackgroundForReplication(int req,
+                                    char *filename,
+                                    rdbSaveInfo *rsi,
+                                    int rdbflags,
+                                    compressionAlgo compression_algo) {
     pid_t childpid;
 
     if (hasActiveChildProcess()) return C_ERR;
@@ -1862,16 +1862,7 @@ static int rdbSaveBackgroundWithCompression(int req,
 }
 
 int rdbSaveBackground(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
-    return rdbSaveBackgroundWithCompression(req, filename, rsi, rdbflags, ALGO_NONE);
-}
-
-int rdbSaveBackgroundForReplication(int req,
-                                    char *filename,
-                                    rdbSaveInfo *rsi,
-                                    int rdbflags,
-                                    compressionAlgo compression_algo) {
-    serverAssert(rdbflags & RDBFLAGS_REPLICATION);
-    return rdbSaveBackgroundWithCompression(req, filename, rsi, rdbflags, compression_algo);
+    return rdbSaveBackgroundForReplication(req, filename, rsi, rdbflags, ALGO_NONE);
 }
 
 /* Note that we may call this function in signal handle 'sigShutdownHandler',
