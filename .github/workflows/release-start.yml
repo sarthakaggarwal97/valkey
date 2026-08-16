@@ -86,6 +86,7 @@ jobs:
           permission-metadata: read
 
       - name: Relay the start request
+        id: relay
         shell: bash
         env:
           GH_TOKEN: ${{ steps.generate-token.outputs.token || (github.repository_owner != 'valkey-io' && secrets.AUTOMATION_PAT) || '' }}
@@ -108,6 +109,9 @@ jobs:
             echo "::error::No dispatch credential available (App secrets or AUTOMATION_PAT)."
             exit 1
           fi
+          # Recorded before the dispatch so the pickup check below can
+          # filter controller runs to ones created after this moment.
+          DISPATCHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           jq -n \
             --arg branch "${BRANCH}" \
             --arg intent "${INTENT}" \
@@ -120,5 +124,42 @@ jobs:
                                urgency: $urgency, actor: $actor,
                                dry_run: $dry_run, source_run: $source_run}}' \
           | gh api "repos/${TARGET}/dispatches" --input -
+          echo "dispatched_at=${DISPATCHED_AT}" >> "$GITHUB_OUTPUT"
           echo "Relayed: branch=${BRANCH} intent=${INTENT} dry_run=${DRY_RUN} actor=${ACTOR}" >> "$GITHUB_STEP_SUMMARY"
           echo "Watch the controller run: https://github.com/${TARGET}/actions/workflows/release-start.yml" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check that the controller picked up the dispatch
+        shell: bash
+        # repository_dispatch returns no run handle, and this relay would
+        # otherwise exit green even when the controller never starts.
+        # Correlate by creation time instead: poll briefly for a
+        # release-start.yml run on the controller created after the
+        # dispatch. Absence after the window is a WARNING, not a failure:
+        # run listing is eventually consistent and the controller may
+        # simply be slow to schedule.
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token || (github.repository_owner != 'valkey-io' && secrets.AUTOMATION_PAT) || '' }}
+          TARGET: ${{ github.repository_owner }}/valkey-ci-agent
+          DISPATCHED_AT: ${{ steps.relay.outputs.dispatched_at }}
+        run: |
+          set -euo pipefail
+          FOUND_URL=""
+          for attempt in 1 2 3 4 5 6; do
+            sleep 10
+            FOUND_URL=$(gh run list --repo "$TARGET" \
+              --workflow release-start.yml --limit 10 \
+              --json createdAt,url \
+              | jq -r --arg since "$DISPATCHED_AT" \
+                  '[.[] | select(.createdAt >= $since)] | first | .url // empty' \
+              ) || FOUND_URL=""
+            if [[ -n "$FOUND_URL" ]]; then
+              break
+            fi
+            echo "No controller run yet (attempt ${attempt}/6)."
+          done
+          if [[ -n "$FOUND_URL" ]]; then
+            echo "Controller picked up the dispatch: ${FOUND_URL}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::No release-start.yml run appeared on ${TARGET} within the ~60s polling window. The dispatch may still be processing (run listing is eventually consistent); check the controller Actions page: https://github.com/${TARGET}/actions/workflows/release-start.yml"
+            echo "No controller run observed within the polling window; check https://github.com/${TARGET}/actions/workflows/release-start.yml" >> "$GITHUB_STEP_SUMMARY"
+          fi

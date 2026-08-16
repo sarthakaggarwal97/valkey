@@ -51,6 +51,70 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "environment=${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve version tag to its commit
+        id: resolve-sha
+        # The build pipeline pins its checkout to source_sha instead of
+        # trusting the moving tag at build time, so resolve the tag to the
+        # exact commit it points at. Annotated tags are peeled via the
+        # object.type check to the underlying commit SHA. Untrusted values
+        # enter only through env, never interpolated into shell source.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.determine-vars.outputs.version }}
+        run: |
+          set -euo pipefail
+          resolve_tag() {
+            local tag="$1" ref_json obj_json obj_type obj_sha
+            ref_json=$(gh api "repos/${REPO}/git/ref/tags/${tag}") || return 1
+            obj_type=$(jq -r '.object.type' <<< "$ref_json")
+            obj_sha=$(jq -r '.object.sha' <<< "$ref_json")
+            if [[ "$obj_type" == "tag" ]]; then
+              # Annotated tag: peel to the commit it points at.
+              obj_json=$(gh api "repos/${REPO}/git/tags/${obj_sha}") || return 1
+              obj_type=$(jq -r '.object.type' <<< "$obj_json")
+              obj_sha=$(jq -r '.object.sha' <<< "$obj_json")
+            fi
+            if [[ "$obj_type" != "commit" ]]; then
+              echo "::error::Tag ${tag} does not peel to a commit (got object type '${obj_type}')." >&2
+              return 1
+            fi
+            printf '%s' "$obj_sha"
+          }
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            # A published release ALWAYS has a resolvable tag, so any API
+            # failure here is a real fault: fail closed rather than
+            # dispatching an unpinned build.
+            SOURCE_SHA=$(resolve_tag "$VERSION")
+          else
+            # Manual dispatch: the version may not be tagged (yet), or may
+            # be 'unstable'. Resolve when the tag exists, else send empty.
+            SOURCE_SHA=$(resolve_tag "$VERSION") || SOURCE_SHA=""
+          fi
+          if [[ -n "$SOURCE_SHA" && ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Resolved source_sha is not a full lowercase 40-hex commit: ${SOURCE_SHA}"
+            exit 1
+          fi
+          echo "source_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Compose dispatch payload
+        id: compose-payload
+        # jq builds the JSON so every value is properly quoted; nothing is
+        # spliced into a JSON literal by expression interpolation.
+        env:
+          VERSION: ${{ steps.determine-vars.outputs.version }}
+          ENVIRONMENT: ${{ steps.determine-vars.outputs.environment }}
+          SOURCE_SHA: ${{ steps.resolve-sha.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          PAYLOAD=$(jq -cn \
+            --arg version "$VERSION" \
+            --arg environment "$ENVIRONMENT" \
+            --arg source_sha "$SOURCE_SHA" \
+            '{version: $version, environment: $environment, source_sha: $source_sha}')
+          echo "payload=${PAYLOAD}" >> "$GITHUB_OUTPUT"
+
       - name: Generate token
         id: generate-token
         if: github.repository_owner == 'valkey-io'
@@ -68,8 +132,4 @@ jobs:
           token: ${{ github.repository_owner == 'valkey-io' && steps.generate-token.outputs.token || secrets.AUTOMATION_PAT }}
           repository: ${{ github.repository_owner }}/valkey-release-automation
           event-type: build-release
-          client-payload: >
-            {
-              "version": "${{ steps.determine-vars.outputs.version }}",
-              "environment": "${{ steps.determine-vars.outputs.environment }}"
-            }
+          client-payload: ${{ steps.compose-payload.outputs.payload }}
