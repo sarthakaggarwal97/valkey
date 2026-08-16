@@ -132,15 +132,19 @@ jobs:
         shell: bash
         # repository_dispatch returns no run handle, and this relay would
         # otherwise exit green even when the controller never starts.
-        # Correlate by creation time instead: poll briefly for a
+        # Correlate by creation time AND branch instead: poll briefly for a
         # release-start.yml run on the controller created after the
-        # dispatch. Absence after the window is a WARNING, not a failure:
-        # run listing is eventually consistent and the controller may
+        # dispatch whose display title carries this dispatch's branch.
+        # Absence after the window is a WARNING, not a failure: run
+        # listing is eventually consistent and the controller may
         # simply be slow to schedule.
+        # Runner-vs-GitHub clock skew can shift the createdAt cutoff, which is tolerable because the outcome here is only a warning.
+        # This poll relies on the controller repo being public: the relay token lacks actions:read, so on a private fork the listing fails and a phantom warning appears even when the controller ran.
         env:
           GH_TOKEN: ${{ steps.generate-token.outputs.token || (github.repository_owner != 'valkey-io' && secrets.AUTOMATION_PAT) || '' }}
           TARGET: ${{ github.repository_owner }}/valkey-ci-agent
           DISPATCHED_AT: ${{ steps.relay.outputs.dispatched_at }}
+          BRANCH: ${{ inputs.branch }}
         run: |
           set -euo pipefail
           FOUND_URL=""
@@ -148,9 +152,11 @@ jobs:
             sleep 10
             FOUND_URL=$(gh run list --repo "$TARGET" \
               --workflow release-start.yml --limit 10 \
-              --json createdAt,url \
+              --json createdAt,displayTitle,url \
               | jq -r --arg since "$DISPATCHED_AT" \
-                  '[.[] | select(.createdAt >= $since)] | first | .url // empty' \
+                  --arg title "Start Release on ${BRANCH}" \
+                  '[.[] | select(.createdAt >= $since)
+                        | select(.displayTitle | contains($title))] | first | .url // empty' \
               ) || FOUND_URL=""
             if [[ -n "$FOUND_URL" ]]; then
               break

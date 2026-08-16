@@ -1,3 +1,6 @@
+# Do NOT add a run-name to this workflow: the release controller correlates
+# the release-event run by its default display title (the bare tag), and a
+# custom run-name would make release runs invisible to the controller.
 name: Trigger Build Release
 
 permissions:
@@ -63,10 +66,11 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           VERSION: ${{ steps.determine-vars.outputs.version }}
+          ENVIRONMENT: ${{ steps.determine-vars.outputs.environment }}
         run: |
           set -euo pipefail
           resolve_tag() {
-            local tag="$1" ref_json obj_json obj_type obj_sha
+            local tag="$1" level="$2" ref_json obj_json obj_type obj_sha
             ref_json=$(gh api "repos/${REPO}/git/ref/tags/${tag}") || return 1
             obj_type=$(jq -r '.object.type' <<< "$ref_json")
             obj_sha=$(jq -r '.object.sha' <<< "$ref_json")
@@ -77,7 +81,7 @@ jobs:
               obj_sha=$(jq -r '.object.sha' <<< "$obj_json")
             fi
             if [[ "$obj_type" != "commit" ]]; then
-              echo "::error::Tag ${tag} does not peel to a commit (got object type '${obj_type}')." >&2
+              echo "::${level}::Tag ${tag} does not peel to a commit (got object type '${obj_type}')." >&2
               return 1
             fi
             printf '%s' "$obj_sha"
@@ -86,11 +90,22 @@ jobs:
             # A published release ALWAYS has a resolvable tag, so any API
             # failure here is a real fault: fail closed rather than
             # dispatching an unpinned build.
-            SOURCE_SHA=$(resolve_tag "$VERSION")
+            SOURCE_SHA=$(resolve_tag "$VERSION" error)
+          elif [[ "$ENVIRONMENT" == "prod" ]]; then
+            # A prod dispatch must build a pinned, existing tag. ANY
+            # resolve failure (including a 404: a prod dispatch for a
+            # nonexistent tag is an operator error) fails the job rather
+            # than silently reintroducing the moving-tag build.
+            if ! SOURCE_SHA=$(resolve_tag "$VERSION" error); then
+              echo "::error::Could not resolve tag ${VERSION} to a commit; a prod dispatch requires an existing, resolvable tag."
+              exit 1
+            fi
           else
-            # Manual dispatch: the version may not be tagged (yet), or may
-            # be 'unstable'. Resolve when the tag exists, else send empty.
-            SOURCE_SHA=$(resolve_tag "$VERSION") || SOURCE_SHA=""
+            # Dev dispatch: the version may not be tagged (yet), or may
+            # be 'unstable'. Resolve when the tag exists, else send empty;
+            # anything resolve_tag reports on this tolerated path is a
+            # warning, not an error.
+            SOURCE_SHA=$(resolve_tag "$VERSION" warning) || SOURCE_SHA=""
           fi
           if [[ -n "$SOURCE_SHA" && ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::Resolved source_sha is not a full lowercase 40-hex commit: ${SOURCE_SHA}"
@@ -118,7 +133,7 @@ jobs:
       - name: Generate token
         id: generate-token
         if: github.repository_owner == 'valkey-io'
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.VALKEYRIE_BOT_APP_ID }}
           private-key: ${{ secrets.VALKEYRIE_BOT_PRIVATE_KEY }}
