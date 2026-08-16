@@ -872,10 +872,6 @@ static dict *matchPatternsToConfigs(robj **patterns, int pattern_count) {
  * CONFIG SET implementation
  *----------------------------------------------------------------------------*/
 
-/* Set by the repl-compression apply callback. Reconnects are irreversible, so
- * reconciliation is deferred until the whole CONFIG SET commits. */
-static int repl_compression_reconcile_pending = 0;
-
 void configSetCommand(client *c) {
     const char *errstr = NULL;
     const char *invalid_arg_name = NULL;
@@ -889,6 +885,7 @@ void configSetCommand(client *c) {
     int config_count, i, j;
     int invalid_args = 0, deny_loading_error = 0;
     int *config_map_fns;
+    int repl_compression_changed_before = server.repl_compression_changed;
 
     /* Make sure we have an even number of arguments: conf-val pairs */
     if (c->argc & 1) {
@@ -993,10 +990,6 @@ void configSetCommand(client *c) {
         }
     }
 
-    /* Reset deferred side-effect state before applies run; apply callbacks set
-     * it, and it is consumed only on a successful commit below. */
-    repl_compression_reconcile_pending = 0;
-
     /* Apply all configs after being set */
     for (i = 0; i < config_count && apply_fns[i] != NULL; i++) {
         if (!apply_fns[i](&errstr)) {
@@ -1019,14 +1012,12 @@ void configSetCommand(client *c) {
     ValkeyModuleConfigChangeV1 cc = {.num_changes = config_count, .config_names = config_names};
     moduleFireServerEvent(VALKEYMODULE_EVENT_CONFIG, VALKEYMODULE_SUBEVENT_CONFIG_CHANGE, &cc);
     addReply(c, shared.ok);
-    /* CONFIG SET committed: now safe to run deferred irreversible side effects. */
-    if (repl_compression_reconcile_pending) {
-        repl_compression_reconcile_pending = 0;
-        reconcileReplicaCompression();
-    }
     goto end;
 
 err:
+    /* Apply callbacks may schedule deferred side effects. A failed transaction
+     * restores configuration values, so restore the pending state as well. */
+    server.repl_compression_changed = repl_compression_changed_before;
     if (deny_loading_error) {
         /* We give the loading error precedence because it may be handled by clients differently, unlike a plain -ERR. */
         addReplyErrorObject(c, shared.loadingerr);
@@ -2679,9 +2670,10 @@ static int updateJemallocBgThread(const char **err) {
 
 static int updateReplCompression(const char **err) {
     UNUSED(err);
-    /* Record intent only; configSetCommand reconciles after the command commits,
-     * so a rolled-back CONFIG SET disconnects nothing. */
-    repl_compression_reconcile_pending = 1;
+    /* Reconnects are irreversible, so replicationCron reconciles live links
+     * after CONFIG SET returns. configSetCommand restores this flag if the
+     * transaction rolls back. */
+    server.repl_compression_changed = 1;
     return 1;
 }
 

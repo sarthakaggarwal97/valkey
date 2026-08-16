@@ -49,7 +49,6 @@
 #include "fmtargs.h"
 #include "io_threads.h"
 #include "compression.h"
-#include "compression_repl.h"
 #include "tls.h"
 #include "sds.h"
 #include "module.h"
@@ -2862,10 +2861,8 @@ void resetServerStats(void) {
     server.stat_sync_full = 0;
     server.stat_sync_partial_ok = 0;
     server.stat_sync_partial_err = 0;
-    atomic_store_explicit(&server.repl_compression_errors, 0, memory_order_relaxed);
     server.repl_decompression_errors = 0;
-    server.repl_decompression_time_usec = 0;
-    server.repl_decompressed_bytes_total = 0;
+    server.total_repl_decompressed_bytes = 0;
     server.stat_io_reads_processed = 0;
     server.stat_total_reads_processed = 0;
     server.stat_io_writes_processed = 0;
@@ -6681,17 +6678,10 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
                     "replica_announced:%d\r\n", server.replica_announced));
             info = sdscatfmt(info,
                              "repl_decompression_errors:%I\r\n"
-                             "repl_decompression_time_usec:%I\r\n"
-                             "repl_decompressed_bytes_total:%I\r\n",
+                             "total_repl_decompressed_bytes:%I\r\n",
                              server.repl_decompression_errors,
-                             server.repl_decompression_time_usec,
-                             server.repl_decompressed_bytes_total);
+                             server.total_repl_decompressed_bytes);
         }
-
-        /* Aggregated across replicas; survives disconnects. */
-        long long repl_compression_errors =
-            (long long)atomic_load_explicit(&server.repl_compression_errors, memory_order_relaxed);
-        info = sdscatfmt(info, "repl_compression_errors:%I\r\n", repl_compression_errors);
 
         info = sdscatprintf(info, "connected_slaves:%lu\r\n", listLength(server.replicas));
 
@@ -6733,18 +6723,10 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
                     info = sdscatprintf(info,
                                         ",compression=%s"
                                         ",compressed_bytes=%lld"
-                                        ",uncompressed_bytes=%lld"
-                                        ",compression_ratio=%.2f"
-                                        ",compression_time_usec=%lld",
-                                        compressionAlgoName(replCompressorAlgo(replica->repl_data->repl_compressor)),
+                                        ",uncompressed_bytes=%lld",
+                                        compressionAlgoName(replica->repl_data->repl_compressor->stream.algo),
                                         replica->repl_data->repl_compressed_bytes_total,
-                                        replica->repl_data->repl_uncompressed_bytes_total,
-                                        replica->repl_data->repl_uncompressed_bytes_total > 0
-                                            ? (double)replica->repl_data->repl_compressed_bytes_total /
-                                                  (double)replica->repl_data->repl_uncompressed_bytes_total
-                                            : 0.0,
-                                        atomic_load_explicit(&replica->repl_data->repl_compression_time_usec,
-                                                             memory_order_relaxed));
+                                        replica->repl_data->repl_uncompressed_bytes_total);
                 }
                 info = sdscat(info, "\r\n");
                 replica_id++;

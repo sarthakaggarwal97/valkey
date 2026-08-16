@@ -42,7 +42,6 @@
 #include "module.h"
 #include "cluster_migrateslots.h"
 #include "io_threads.h"
-#include "compression_repl.h"
 
 #include <memory.h>
 #include <sys/time.h>
@@ -87,217 +86,200 @@ ConnectionType *connTypeOfReplication(void) {
  * IP address and its listening port which is more clear for the user, for
  * example: "Closing connection with replica 10.1.2.3:6380". */
 
-/* Reconcile replica transports after a runtime repl-compression change; a live
- * link cannot switch mid-stream. Disabled: drop online replicas on a compressed
- * stream. Enabled: drop online replicas that are capable but still plaintext.
- * Still-syncing replicas keep the frozen decision; the put-online convergence
- * check reconnects them via partial resync. Async disconnect keeps the
- * iteration safe. */
-void reconcileReplicaCompression(void) {
+/* True when the replica's live transport no longer matches what the current
+ * config would negotiate for it (a compressor's existence implies the replica
+ * advertised the capability). Shared by the cron reconcile scan and the
+ * put-online convergence check so the two can never drift. */
+static int replicaCompressionMismatch(client *replica) {
+    int want = server.repl_compression && (replica->repl_data->replica_capa & REPLICA_CAPA_COMPRESS_STREAM);
+    return want != (replica->repl_data->repl_compressor != NULL);
+}
+
+/* Runtime repl-compression changes converge by reconnect, since a live link
+ * cannot switch between plaintext and compressed mid-stream; the reconnects
+ * renegotiate via partial resync, so no snapshot is retransferred. Both
+ * reconcile steps run from replicationCron: that is always after the CONFIG
+ * SET that requested them has finished, and they pause during a failover so
+ * a transport change never disconnects the failover target. */
+
+/* Disconnect at most one online replica whose transport mismatches the
+ * current setting. Stateless and idempotent, called every cron tick: at most
+ * one link converges per tick, so a config change never disconnects the
+ * whole fleet at once. Still-syncing replicas keep their frozen decision;
+ * the put-online convergence check reconnects them. */
+static void reconcileReplicaCompression(void) {
     listIter li;
     listNode *ln;
-    int disconnected = 0;
 
     listRewind(server.replicas, &li);
     while ((ln = listNext(&li))) {
         client *replica = ln->value;
-        if (!replica->repl_data) continue;
         if (replica->repl_data->repl_state != REPLICA_STATE_ONLINE) continue;
-
-        int has_compressor = replica->repl_data->repl_compressor != NULL;
-        int mismatch;
-        if (server.repl_compression != REPL_COMPRESSION_NO) {
-            mismatch = (replica->repl_data->replica_capa & REPLICA_CAPA_COMPRESSION) && !has_compressor;
-        } else {
-            mismatch = has_compressor;
-        }
-        if (!mismatch) continue;
+        if (!replicaCompressionMismatch(replica)) continue;
 
         serverLog(LL_NOTICE, "Disconnecting replica %s to renegotiate replication compression (now %s)",
                   replicationGetReplicaName(replica), server.repl_compression != REPL_COMPRESSION_NO ? "enabled" : "disabled");
         freeClientAsync(replica);
-        disconnected++;
-    }
-
-    if (disconnected > 0) {
-        serverLog(LL_NOTICE, "Disconnected %d replicas to reconcile replication compression", disconnected);
-    }
-
-    /* Capability with the upstream primary was negotiated at handshake; drop the
-     * link so the reconnect re-advertises with the new setting. */
-    if (server.primary_host) {
-        if (server.primary) {
-            serverLog(LL_NOTICE, "Disconnecting from primary to renegotiate replication compression (now %s)",
-                      server.repl_compression != REPL_COMPRESSION_NO ? "enabled" : "disabled");
-            freeClientAsync(server.primary);
-        } else if (cancelReplicationHandshake(1)) {
-            serverLog(LL_NOTICE, "Restarting sync with primary to renegotiate replication compression (now %s)",
-                      server.repl_compression != REPL_COMPRESSION_NO ? "enabled" : "disabled");
-        }
+        return;
     }
 }
 
-static bool shouldEnableReplicaCompression(client *c) {
-    if (server.repl_compression == REPL_COMPRESSION_NO || !c || !c->repl_data) return false;
-    return (c->repl_data->replica_capa & REPLICA_CAPA_COMPRESSION) != 0;
+/* Drop the upstream primary link so the reconnect re-advertises the
+ * capability with the current setting. Edge-triggered (runs once per config
+ * change): what this node advertised at handshake is not stored, so the drop
+ * cannot be re-derived from live state the way the replica scan is. */
+static void reconcileUpstreamCompression(void) {
+    if (!server.primary_host) return;
+    if (server.primary) {
+        serverLog(LL_NOTICE, "Disconnecting from primary to renegotiate replication compression (now %s)",
+                  server.repl_compression ? "enabled" : "disabled");
+        freeClientAsync(server.primary);
+    } else if (cancelReplicationHandshake(1)) {
+        serverLog(LL_NOTICE, "Restarting sync with primary to renegotiate replication compression (now %s)",
+                  server.repl_compression ? "enabled" : "disabled");
+    }
 }
 
-static int replInitCompression(client *c, compressionAlgo algo) {
-    if (!c || !c->repl_data) return C_ERR;
+/* Enable framed transport compression for a replica at PSYNC completion when
+ * both sides opted in: repl-compression is enabled here and the replica
+ * advertised the capability. The write path emits the VCS envelope with the
+ * first compressed batch. No-ops when the link stays plaintext or is already
+ * compressed (dual-channel reaches both the +CONTINUE and put-online paths).
+ * Returns C_ERR when initialization failed; the caller drops the link. */
+static int replicaEnableCompressionIfNegotiated(client *c) {
+    if (!server.repl_compression || !(c->repl_data->replica_capa & REPLICA_CAPA_COMPRESS_STREAM)) return C_OK;
+    if (c->repl_data->repl_compressor) return C_OK;
 
-    replDestroyCompression(c);
+    serverAssert(c->io_write_state == CLIENT_IDLE);
 
-    c->repl_data->repl_compressor = replCompressorCreate(algo);
-    if (!c->repl_data->repl_compressor) return C_ERR;
+    /* Resolve the configured mode to a codec, mirroring the RDB path: an
+     * unknown mode fails loudly instead of silently picking a default. */
+    compressionAlgo algo;
+    switch ((repl_compression_mode)server.repl_compression) {
+    case REPL_COMPRESSION_YES:
+    case REPL_COMPRESSION_LZ4: algo = ALGO_LZ4; break;
+    default: serverPanic("Unknown repl compression mode: %d", server.repl_compression);
+    }
 
-    atomic_store_explicit(&c->repl_data->compression_error, 0, memory_order_relaxed);
+    replicaCompressState *compressor = zcalloc(sizeof(*compressor));
+    if (streamCompressorInit(&compressor->stream, algo, 0, true) != C_OK) {
+        zfree(compressor);
+        serverLog(LL_WARNING, "Failed to initialize compression for replica %s", replicationGetReplicaName(c));
+        return C_ERR;
+    }
+    /* Per-block checksums (codec_checksum above) are the frame's integrity
+     * check. The whole-content checksum is off: a repl frame never ends, so
+     * it would be computed on every byte yet never emitted or validated. */
+    compressor->stream.content_checksum = false;
+    compressor->out_buf = sdsempty();
 
+    c->repl_data->repl_compressor = compressor;
+
+    serverLog(LL_NOTICE, "Replication compression enabled for replica %s (algo=%s)", replicationGetReplicaName(c),
+              compressionAlgoName(algo));
     return C_OK;
 }
 
 /* Destroy a replica's compression state and stats. Waits for any in-flight
  * IO write job first; the IO thread owns the compressor during a write. */
-void replDestroyCompression(client *c) {
-    if (!c || !c->repl_data) return;
+void replicaDestroyCompression(client *c) {
+    if (!c->repl_data) return;
 
     if (c->repl_data->repl_compressor) {
         waitForClientIO(c);
 
-        replCompressorDestroy(c->repl_data->repl_compressor);
+        replicaCompressState *compressor = c->repl_data->repl_compressor;
+        streamCompressorFree(&compressor->stream);
+        sdsfree(compressor->out_buf);
+        zfree(compressor);
         c->repl_data->repl_compressor = NULL;
     }
 
-    atomic_store_explicit(&c->repl_data->compression_error, 0, memory_order_relaxed);
     c->repl_data->repl_compressed_bytes_total = 0;
     c->repl_data->repl_uncompressed_bytes_total = 0;
-    atomic_store_explicit(&c->repl_data->repl_compression_time_usec, 0, memory_order_relaxed);
 }
 
-/* Derive the codec from the configured replication compression mode, mirroring
- * the RDB path (rdbCompressionAlgorithm). "yes" selects the current default
- * algorithm, while explicit algorithm names remain pinned. */
-static compressionAlgo replCompressionAlgo(void) {
-    switch (server.repl_compression) {
-    case REPL_COMPRESSION_NO:
-        return ALGO_NONE;
-    case REPL_COMPRESSION_YES:
-        return ALGO_LZ4;
-    case REPL_COMPRESSION_LZ4:
-        return ALGO_LZ4;
-    default:
-        serverPanic("Unknown replication compression mode: %d", server.repl_compression);
+static void replDestroyStreamReader(void) {
+    if (server.repl_stream_reader) {
+        streamPushReaderFree(server.repl_stream_reader);
+        zfree(server.repl_stream_reader);
+        server.repl_stream_reader = NULL;
     }
 }
 
-/* Initialize framed transport compression for a replica at PSYNC completion.
- * The stream writer emits the VCS envelope lazily on its first write. */
-static int replicaInitCompressionOnPsync(client *c) {
-    /* Dual-channel reaches both the +CONTINUE and put-online paths; the link
-     * is already compressed after the first init. */
-    if (c->repl_data->repl_compressor) return C_OK;
-
-    /* Derive the codec from the configured mode, mirroring the RDB path. */
-    compressionAlgo algo = replCompressionAlgo();
-
-    serverAssert(c->io_write_state == CLIENT_IDLE);
-    if (replInitCompression(c, algo) != C_OK) {
-        serverLog(LL_WARNING, "Failed to initialize compression for replica %s",
-                  replicationGetReplicaName(c));
-        return C_ERR;
-    }
-
-    serverLog(LL_NOTICE, "Replication compression enabled for replica %s (algo=%s)",
-              replicationGetReplicaName(c), compressionAlgoName(algo));
-    return C_OK;
+/* (Re)create the replica-side push reader for a fresh primary stream. The stream
+ * may be compressed (VCS envelope) or plaintext (the primary compresses only
+ * if its own config is enabled) and is classified from its leading bytes, so
+ * the reader never depends on what the handshake advertised. Classification
+ * is unambiguous: a plaintext replication stream is RESP, whose first byte is
+ * never 'V'. */
+static void replRefreshStreamReader(void) {
+    replDestroyStreamReader();
+    server.repl_stream_reader = zmalloc(sizeof(*server.repl_stream_reader));
+    streamPushReaderInit(server.repl_stream_reader, VCS_STREAM_REPL);
 }
 
-static void replDestroyDecompression(void) {
-    if (server.repl_decompressor) {
-        replDecompressorDestroy(server.repl_decompressor);
-        server.repl_decompressor = NULL;
-    }
-}
+/* Cap on decoded output per reader feed (decompression-bomb guard).
+ * replDecodeToQueryBuf slices its input so one feed never sees more than
+ * PROTO_IOBUF_LEN wire bytes: one socket read's worth. The cap must exceed
+ * the worst-case expansion any supported codec can legitimately produce from
+ * that much input; a codec whose per-block expansion can exceed it needs a
+ * resumable feed before it is onboarded. */
+#define REPL_DECODE_MAX_OUTPUT_PER_FEED (16 * 1024 * 1024)
 
-/* (Re)create the replica-side decompressor for a fresh stream. */
-static void replRefreshDecompression(void) {
-    replDestroyDecompression();
-    server.repl_decompressor = replDecompressorCreate();
-}
+/* Decode len wire bytes into c->querybuf, advancing read_reploff by the
+ * decoded byte count (wire bytes are never counted: handleReadResult skips
+ * read_reploff for a reader-active primary). Returns the decoded byte count
+ * (0 means a partial envelope or compressed block was buffered), or -1 when
+ * the stream is corrupt and the caller should disconnect the link. Once the
+ * probe classifies the stream as plaintext the reader retires itself: later
+ * reads take the regular read path (callers gate on server.repl_stream_reader)
+ * and may use IO threads. */
+ssize_t replDecodeToQueryBuf(client *c, const void *buf, size_t len) {
+    streamPushReader *pr = server.repl_stream_reader;
 
-/* Cap on decoded output per decode call. Both feed paths (socket reads and
- * dual-channel replay blocks) hand the decoder at most PROTO_IOBUF_LEN per
- * call, and LZ4 expansion is bounded at ~255x, so a valid call stays under
- * ~4MB. Exceeding this means corrupt or malicious framing; disconnect. */
-#define REPL_STREAM_DECODER_OUTPUT_MAX (16 * 1024 * 1024)
+    if (len == 0) return 0;
 
-/* Decompress newly-read replication stream data in the query buffer.
- * Replaces the raw compressed bytes (from new_data_start onward) with
- * decompressed output and adjusts the replica's read_reploff accordingly.
- * Reports the decoded byte count via 'decoded' when non-NULL. */
-int replDecompressQueryBuf(client *c, size_t new_data_start, size_t *decoded) {
-    size_t raw_input_len, decompressed_len;
+    /* Decoded output grows the query buffer, so it must be private. The
+     * reader path never assigns the thread-shared query buffer, so the
+     * buffer here is always private or NULL. */
+    if (c->querybuf == NULL) c->querybuf = sdsempty();
 
-    serverAssert(server.repl_decompressor != NULL);
-    serverAssert(c != NULL);
-    serverAssert(c->querybuf != NULL);
-    serverAssert(new_data_start <= sdslen(c->querybuf));
-
-    if (decoded) *decoded = 0;
-
-    raw_input_len = sdslen(c->querybuf) - new_data_start;
-    if (raw_input_len == 0) return C_OK;
-
-    monotime decompress_start = getMonotonicUs();
-
-    /* Feed transport bytes and drain decoded output through the adapter. */
-    replDecodeResult dr = replDecompressorDecode(server.repl_decompressor,
-                                                 c->querybuf + new_data_start, raw_input_len,
-                                                 REPL_STREAM_DECODER_OUTPUT_MAX, &decompressed_len);
-    if (dr != REPL_DECODE_OK) {
-        if (dr == REPL_DECODE_FRAME_DONE)
-            serverLog(LL_WARNING, "Primary closed compressed replication frame unexpectedly");
-        server.repl_decompression_errors++;
-        return C_ERR;
-    }
-
-    sds decode_buf = replDecompressorBuf(server.repl_decompressor);
-
-    if (new_data_start == 0) {
-        sdsclear(c->querybuf);
-    } else {
-        sdsrange(c->querybuf, 0, new_data_start - 1);
+    size_t before = sdslen(c->querybuf);
+    /* Feed in PROTO_IOBUF_LEN slices so one feed never sees more wire bytes
+     * than a socket read delivers, whatever the caller's buffer size: the
+     * per-feed output cap is calibrated to one read's worth of input, and
+     * slicing here keeps that assumption enforced locally instead of by the
+     * sizing math of every caller (dual-channel replay blocks are read-sized
+     * today, plus allocator rounding). */
+    for (size_t fed = 0; fed < len; fed += PROTO_IOBUF_LEN) {
+        size_t n = len - fed;
+        if (n > PROTO_IOBUF_LEN) n = PROTO_IOBUF_LEN;
+        streamPushReaderResult r =
+            streamPushReaderFeed(pr, (const uint8_t *)buf + fed, n, &c->querybuf, REPL_DECODE_MAX_OUTPUT_PER_FEED);
+        if (r != STREAM_PUSH_READER_OK) {
+            /* A long-lived replication stream must never reach a compressed
+             * frame end. If it does, the stream is corrupt or the primary
+             * sent an unexpected terminator. */
+            if (r == STREAM_PUSH_READER_FRAME_DONE)
+                serverLog(LL_WARNING, "Primary closed compressed replication frame unexpectedly");
+            server.repl_decompression_errors++;
+            return -1;
+        }
     }
 
-    /* sdscatlen may reallocate c->querybuf; a client still on the thread-shared
-     * query buffer must take ownership of a private copy first. */
-    clientUnshareQuerybufIfNeeded(c, decompressed_len);
-    c->querybuf = sdscatlen(c->querybuf, decode_buf, decompressed_len);
+    size_t produced = sdslen(c->querybuf) - before;
     if (c->querybuf_peak < sdslen(c->querybuf)) c->querybuf_peak = sdslen(c->querybuf);
 
-    /* Convert the transport bytes already counted in handleReadResult() into
-     * logical replication bytes before processInputBuffer() observes the stream.
-     * If the reader buffered a partial compressed frame and emitted 0 bytes,
-     * the logical offset stays unchanged until a later read produces output. */
-    c->repl_data->read_reploff -= (long long)raw_input_len;
-    c->repl_data->read_reploff += (long long)decompressed_len;
-
-    if (decoded) *decoded = decompressed_len;
+    c->repl_data->read_reploff += (long long)produced;
 
     /* Stats cover only streams classified compressed; probe and passthrough
      * bytes are not decompression work. */
-    if (replDecompressorIsCompressed(server.repl_decompressor)) {
-        server.repl_decompression_time_usec += getMonotonicUs() - decompress_start;
-        server.repl_decompressed_bytes_total += decompressed_len;
-    }
+    if (pr->state == STREAM_PUSH_READER_COMPRESSED) server.total_repl_decompressed_bytes += produced;
 
-    /* Plaintext stream confirmed: the decoder is pure overhead from here on.
-     * Drop it so later reads skip this path entirely (callers gate on
-     * server.repl_decompressor) and primary-link reads can use IO threads. */
-    if (replDecompressorIsPassthrough(server.repl_decompressor)) {
-        replDecompressorDestroy(server.repl_decompressor);
-        server.repl_decompressor = NULL;
-    }
-    return C_OK;
+    /* Plaintext stream confirmed: the reader is pure overhead from here on. */
+    if (pr->state == STREAM_PUSH_READER_PASSTHROUGH) replDestroyStreamReader();
+    return (ssize_t)produced;
 }
 
 char *replicationGetReplicaName(client *c) {
@@ -1189,17 +1171,14 @@ int primaryTryPartialResynchronization(client *c, long long psync_offset) {
     }
 
     /* Initialize compression after +CONTINUE (plaintext) and before
-     * addReplyReplicationBacklog so backlog data goes through the compressed path. */
-    if (shouldEnableReplicaCompression(c)) {
-        if (replicaInitCompressionOnPsync(c) != C_OK) {
-            freeClientAsync(c);
-            return C_OK;
-        }
+     * addReplyReplicationBacklog so backlog data goes through the compressed
+     * path. The command stream starts here; a dual-channel replica reaches
+     * put-online later in REPLICA_STATE_BG_RDB_LOAD, which tells put-online
+     * this decision is live and must not be re-made mid-stream. */
+    if (replicaEnableCompressionIfNegotiated(c) != C_OK) {
+        freeClientAsync(c);
+        return C_OK;
     }
-    /* The command stream starts here: freeze the link's compression decision.
-     * A dual-channel replica reaches put-online later; a config flip while it
-     * was loading must not re-make the decision mid-stream. */
-    c->repl_data->repl_compression_decided = 1;
 
     psync_len = addReplyReplicationBacklog(c, psync_offset);
     serverLog(
@@ -1621,13 +1600,14 @@ void freeClientReplicationData(client *c) {
  * the primary can accurately lists replicas and their listening ports in the
  * INFO output.
  *
- * - capa <eof|psync2|dual-channel|skip-rdb-checksum>
+ * - capa <eof|psync2|dual-channel|skip-rdb-checksum|compress-stream>
  * What is the capabilities of this instance.
  * eof: supports EOF-style RDB transfer for diskless replication.
  * psync2: supports PSYNC v2, so understands +CONTINUE <new repl ID>.
  * dual-channel: supports full sync using rdb channel.
  * skip-rdb-checksum: supports skipping RDB checksum calculations during diskless sync using
  *                    a connection that has integrity checks (such as TLS).
+ * compress-stream: can decode a compressed incremental replication stream.
  *
  * - ack <offset> [fack <aofofs>]
  * Replica informs the primary the amount of replication stream that it
@@ -1709,12 +1689,12 @@ void replconfCommand(client *c) {
                 }
             } else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR))
                 c->repl_data->replica_capa |= REPLICA_CAPA_SKIP_RDB_CHECKSUM;
-            /* "compression": the replica can decode a compressed incremental
-             * replication stream. The primary compresses only when both sides
-             * enable repl-compression; a primary that does not understand the
-             * capability ignores it. */
-            else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_COMPRESSION_STR))
-                c->repl_data->replica_capa |= REPLICA_CAPA_COMPRESSION;
+            /* "compress-stream": the replica can decode a compressed
+             * incremental replication stream. The primary compresses only
+             * when both sides enable repl-compression; a primary that does
+             * not understand the capability ignores it. */
+            else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_COMPRESS_STREAM_STR))
+                c->repl_data->replica_capa |= REPLICA_CAPA_COMPRESS_STREAM;
         } else if (!strcasecmp(objectGetVal(c->argv[j]), "ack")) {
             /* REPLCONF ACK is used by replica to inform the primary the amount
              * of replication stream that it processed so far. It is an
@@ -1860,24 +1840,22 @@ int replicaPutOnline(client *replica) {
                   replicationGetReplicaName(replica));
         return 0;
     }
+    /* A dual-channel command stream started at +CONTINUE while the RDB was
+     * loading; that decision is live and cannot switch mid-flight. Any other
+     * path reaches here with no command stream yet, so decide now. */
+    bool command_stream_started = replica->repl_data->repl_state == REPLICA_STATE_BG_RDB_LOAD;
     replica->repl_data->repl_state = REPLICA_STATE_ONLINE;
     replica->repl_data->repl_ack_time = server.unixtime; /* Prevent false timeout. */
 
-    /* Initialize compression for full-sync replicas going online. Skip when
-     * the decision was already frozen at +CONTINUE (dual-channel main channel):
-     * that stream is live and cannot switch mid-flight. */
-    if (!replica->repl_data->repl_compression_decided) {
-        if (shouldEnableReplicaCompression(replica)) {
-            if (replicaInitCompressionOnPsync(replica) != C_OK) {
-                freeClientAsync(replica);
-                return 0;
-            }
+    if (!command_stream_started) {
+        if (replicaEnableCompressionIfNegotiated(replica) != C_OK) {
+            freeClientAsync(replica);
+            return 0;
         }
-        replica->repl_data->repl_compression_decided = 1;
-    } else if (shouldEnableReplicaCompression(replica) != (replica->repl_data->repl_compressor != NULL)) {
-        /* Config changed while the sync was in flight; the frozen decision kept
-         * the stream consistent. Reconnect so the link renegotiates with the
-         * current config via a partial resync. */
+    } else if (replicaCompressionMismatch(replica)) {
+        /* repl-compression changed while the sync was in flight; the frozen
+         * decision kept the stream consistent. Reconnect so the link
+         * renegotiates with the current config via a partial resync. */
         serverLog(LL_NOTICE, "Reconnecting replica %s to renegotiate replication compression",
                   replicationGetReplicaName(replica));
         freeClientAsync(replica);
@@ -2688,7 +2666,7 @@ void replicaAfterLoadPrimaryRDB(connection *conn, rdbSaveInfo *rsi, int disk_bas
         /* Finalize full sync duration here for single channel replication.
          * Exclude backlog draining/streaming time for simplicity. */
         captureReplFullSyncCompleteDuration();
-        if (server.repl_provisional_compression != REPL_COMPRESSION_NO) replRefreshDecompression();
+        replRefreshStreamReader();
     }
 
     /* Fire the primary link modules event. */
@@ -3699,17 +3677,21 @@ int streamReplDataBufToDb(client *c) {
     listNode *cur = NULL;
     time_t last_progress_callback = mstime();
     while (server.pending_repl_data.blocks && (cur = listFirst(server.pending_repl_data.blocks))) {
-        /* Read and process repl data block */
+        /* Buffered blocks hold wire bytes: with the push reader active they
+         * decode straight into the query buffer (which also advances
+         * read_reploff by the decoded count); once the reader has retired to
+         * passthrough, blocks append as-is. */
         replDataBufBlock *o = listNodeValue(cur);
         used = o->used;
-        size_t qblen_before = sdslen(c->querybuf);
-        c->querybuf = sdscatlen(c->querybuf, o->buf, used);
-        c->repl_data->read_reploff += used;
-        if (server.repl_decompressor &&
-            replDecompressQueryBuf(c, qblen_before, NULL) == C_ERR) {
-            serverLog(LL_WARNING, "Dual-channel replication stream decompression failure");
-            blockingOperationEnds();
-            return C_ERR;
+        if (server.repl_stream_reader) {
+            if (replDecodeToQueryBuf(c, o->buf, used) < 0) {
+                serverLog(LL_WARNING, "Dual-channel replication stream decompression failure");
+                blockingOperationEnds();
+                return C_ERR;
+            }
+        } else {
+            c->querybuf = sdscatlen(c->querybuf, o->buf, used);
+            c->repl_data->read_reploff += used;
         }
         processInputBuffer(c);
         server.pending_repl_data.mem -= (used + sizeof(replDataBufBlock) + sizeof(listNode));
@@ -4075,7 +4057,7 @@ int dualChannelReplMainConnRecvPsyncReply(connection *conn, sds *err) {
             serverCommunicateSystemd("STATUS=PRIMARY <-> REPLICA sync: Partial Resynchronization accepted. Ready to "
                                      "accept connections in read-write mode.\n");
         }
-        if (server.repl_provisional_compression != REPL_COMPRESSION_NO) replRefreshDecompression();
+        replRefreshStreamReader();
         dualChannelSyncHandlePsync();
         return C_OK;
     }
@@ -4225,15 +4207,16 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
         lens[argc] = strlen("dual-channel");
         argc++;
     }
-    /* Capture the compression decision for this handshake so the decoder is
-     * set up from what was advertised, not a config that may change mid-stream. */
-    server.repl_provisional_compression = server.repl_compression;
-    if (server.repl_provisional_compression != REPL_COMPRESSION_NO) {
+    /* Advertise compression support only when repl-compression is enabled, so
+     * an operator can keep a specific replica plaintext. The reader does not
+     * depend on this: it classifies the incoming stream from its leading bytes,
+     * so a config change after the handshake cannot desync the link. */
+    if (server.repl_compression) {
         argv[argc] = "capa";
         lens[argc] = strlen("capa");
         argc++;
-        argv[argc] = REPLICA_CAPA_COMPRESSION_STR;
-        lens[argc] = strlen(REPLICA_CAPA_COMPRESSION_STR);
+        argv[argc] = REPLICA_CAPA_COMPRESS_STREAM_STR;
+        lens[argc] = strlen(REPLICA_CAPA_COMPRESS_STREAM_STR);
         argc++;
     }
     err = sendCommandArgv(conn, argc, argv, lens);
@@ -4613,7 +4596,7 @@ void syncWithPrimary(connection *conn) {
             serverCommunicateSystemd("STATUS=PRIMARY <-> REPLICA sync: Partial Resynchronization accepted. Ready to "
                                      "accept connections in read-write mode.\n");
         }
-        if (server.repl_provisional_compression != REPL_COMPRESSION_NO) replRefreshDecompression();
+        replRefreshStreamReader();
         return;
     }
 
@@ -4899,7 +4882,7 @@ void replicationUnsetPrimary(void) {
      * the replicas will be able to partially resync with us, so it will be
      * a very fast reconnection. */
     disconnectReplicas();
-    replDestroyDecompression();
+    replDestroyStreamReader();
     server.repl_state = REPL_STATE_NONE;
 
     /* We need to make sure the new primary will start the replication stream
@@ -4962,10 +4945,10 @@ void replicationHandlePrimaryDisconnection(void) {
     /* Any other repl_state means the state machine already moved on
      * (e.g. REPL_STATE_CONNECT, CONNECTING, NONE) — leave it untouched. */
 
-    /* Tear down the compressed replication decoder so a later (possibly
+    /* Tear down the replication stream reader so a later (possibly
      * uncompressed) primary stream isn't fed into stale frame state.
-     * Idempotent when no decoder exists. */
-    replDestroyDecompression();
+     * Idempotent when no reader exists. */
+    replDestroyStreamReader();
 
     /* We lost connection with our primary, don't disconnect replicas yet,
      * maybe we'll be able to PSYNC with our primary later. We'll disconnect
@@ -5646,8 +5629,23 @@ void handleBioThreadFinishedRDBDownload(void) {
 void replicationCron(void) {
     static long long replication_cron_loops = 0;
 
-    /* Check failover status first, to see if we need to start
-     * handling the failover. */
+    /* Converge replication transports to the current repl-compression
+     * setting (see the reconcile functions for the model). Paused during
+     * failover so a transport change never disconnects the failover target;
+     * the change flag stays set until the failover resolves. Runs before
+     * this tick's updateFailoverStatus, so a failover state transition made
+     * there is observed on the next tick, delaying convergence by at most
+     * one tick. */
+    if (server.failover_state == NO_FAILOVER) {
+        if (server.repl_compression_changed) {
+            server.repl_compression_changed = 0;
+            reconcileUpstreamCompression();
+        }
+        reconcileReplicaCompression();
+    }
+
+    /* Check failover status to see if we need to start handling the
+     * failover. */
     updateFailoverStatus();
 
     /* Non blocking connection timeout? */

@@ -21,8 +21,8 @@ typedef enum {
 
 typedef enum {
     COMPRESS_FLUSH_CONTINUE = 0, /* Buffer internally. */
-    COMPRESS_FLUSH_SYNC = 1,     /* Drain buffered bytes, keep frame open. */
-    COMPRESS_FLUSH_END = 2,      /* Finalize frame. */
+    COMPRESS_FLUSH_END = 1,      /* Finalize frame. */
+    COMPRESS_FLUSH_SYNC = 2,     /* Drain buffered bytes, keep frame open. */
 } compressFlushMode;
 
 /* Returns a static algorithm name for logs and config output. */
@@ -38,14 +38,14 @@ typedef struct {
     bool codec_checksum;
     bool content_checksum; /* Whole-frame checksum; defaults to codec_checksum. Off for
                             * streams that never end their frame (it would be computed
-                            * on every byte but never emitted or validated). */
+                            * on every byte but never emitted or validated). Written into
+                            * the frame header: must not change once stream_started. */
 } streamCompressor;
 
-/* Compressor lifecycle. Codec dispatch used by streamWriter; the writer owns
- * sticky error state while these functions manage only codec state. */
+/* Compressor lifecycle. Codec dispatch used by streamWriter and by the
+ * replication write path; callers own sticky error state while these
+ * functions manage only codec state. */
 int streamCompressorInit(streamCompressor *compressor, compressionAlgo algo, int level, bool codec_checksum);
-/* Override the frame content checksum. Must be called before the stream starts. */
-void streamCompressorSetContentChecksum(streamCompressor *compressor, bool enabled);
 size_t streamCompressorOutputBound(const streamCompressor *compressor, size_t input_len);
 /* Feeds raw input into the compressor and writes compressed bytes to output.
  * Called repeatedly to build a complete frame: COMPRESS_FLUSH_CONTINUE keeps

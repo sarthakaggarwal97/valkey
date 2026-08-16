@@ -43,13 +43,6 @@ int streamCompressorInit(streamCompressor *compressor,
     }
 }
 
-void streamCompressorSetContentChecksum(streamCompressor *compressor, bool enabled) {
-    /* The flag is written into the frame header, so it cannot change once the
-     * stream has started. */
-    assert(!compressor->stream_started);
-    compressor->content_checksum = enabled;
-}
-
 size_t streamCompressorOutputBound(const streamCompressor *compressor, size_t input_len) {
     switch (compressor->algo) {
     case ALGO_LZ4:
