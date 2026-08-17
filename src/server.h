@@ -1270,11 +1270,9 @@ typedef struct ClientReplicationData {
                                            i.e. the next offset to send. */
     sds replica_nodeid;                  /* Node id in cluster mode. */
     /* Incremental replication compression state (primary side, per replica). */
-    replCompressor *repl_compressor;           /* Per-replica replication compressor (NULL if uncompressed). */
-    _Atomic(int) compression_error;            /* Set by the IO thread on compression failure,
-                                                * read by the main thread in postWriteToReplica. */
-    unsigned int repl_compression_decided : 1; /* Compression decision frozen when the command stream
-                                                * started; put-online must not re-make it. */
+    replCompressor *repl_compressor; /* Per-replica replication compressor (NULL if uncompressed). */
+    _Atomic(int) compression_error;  /* Set by the IO thread on compression failure,
+                                      * read by the main thread in postWriteToReplica. */
     /* Compression metrics (primary side, per replica). */
     long long repl_compressed_bytes_total;         /* Total compressed bytes sent (main thread only). */
     long long repl_uncompressed_bytes_total;       /* Total raw bytes before compression (main thread only). */
@@ -3066,7 +3064,7 @@ void flushReplicasOutputBuffers(void);
 void disconnectReplicas(void);
 void reconcileReplicaCompression(void);
 void replDestroyCompression(client *c);
-int replDecompressQueryBuf(client *c, size_t new_data_start, size_t *decoded);
+ssize_t replDecompressQueryBuf(client *c, size_t new_data_start);
 void evictClients(void);
 int listenToPort(connListener *fds);
 void pauseActions(pause_purpose purpose, mstime_t end, uint32_t actions);

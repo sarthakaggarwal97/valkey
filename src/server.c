@@ -6695,7 +6695,7 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
                                         ",uncompressed_bytes=%lld"
                                         ",compression_ratio=%.2f"
                                         ",compression_time_usec=%lld",
-                                        compressionAlgoName(replCompressorAlgo(replica->repl_data->repl_compressor)),
+                                        compressionAlgoName(replica->repl_data->repl_compressor->stream.algo),
                                         replica->repl_data->repl_compressed_bytes_total,
                                         replica->repl_data->repl_uncompressed_bytes_total,
                                         replica->repl_data->repl_uncompressed_bytes_total > 0

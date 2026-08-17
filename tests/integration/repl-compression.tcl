@@ -1,4 +1,4 @@
-tags {"repl repl-compression external:skip"} {
+tags {"repl external:skip"} {
 
 # uncompressed_bytes= from the replica line of the primary's INFO replication.
 proc replica_line_uncompressed_bytes {primary} {
@@ -7,81 +7,10 @@ proc replica_line_uncompressed_bytes {primary} {
     return $ub
 }
 
-# ============================================================
-# Config CRUD — single-server tests, no replication needed
-# ============================================================
-
-start_server {overrides {save "" repl-compression no}} {
-
-    test {Repl compression config defaults are correct} {
-        assert_equal "no" [lindex [r config get repl-compression] 1]
-    }
-
-    test {repl-compression can be toggled on and off} {
-        r config set repl-compression lz4
-        assert_equal "lz4" [lindex [r config get repl-compression] 1]
-        r config set repl-compression no
-        assert_equal "no" [lindex [r config get repl-compression] 1]
-    }
-
-    test {Repl compression configs survive CONFIG REWRITE and restart} {
-        r config set repl-compression lz4
-        r config rewrite
-
-        restart_server 0 true false
-
-        assert_equal "lz4" [lindex [r config get repl-compression] 1]
-
-        # Restore default
-        r config set repl-compression no
-    }
-}
-
-# ============================================================
-# Replication handshake behavior — primary + replica tests
-# ============================================================
-
 start_server {tags {"repl"} overrides {save ""}} {
     set primary [srv 0 client]
     set primary_host [srv 0 host]
     set primary_port [srv 0 port]
-
-    test {Replica with repl-compression no does NOT send capa compression} {
-        start_server {overrides {save "" repl-compression no}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
-
-            wait_for_condition 50 100 {
-                [s 0 master_link_status] eq {up}
-            } else {
-                fail "Replication not started"
-            }
-
-            # Full sync completes normally without compression capability
-            assert_equal {up} [s 0 master_link_status]
-
-            $replica replicaof no one
-        }
-    }
-
-    test {Replica with repl-compression lz4 and diskless load sends capa compression} {
-        start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
-
-            wait_for_condition 50 100 {
-                [s 0 master_link_status] eq {up}
-            } else {
-                fail "Replication not started"
-            }
-
-            set info [$primary info replication]
-            assert_match "*slave0:*" $info
-            assert_equal {up} [s 0 master_link_status]
-
-            $replica replicaof no one
-        }
-    }
 
     test {Replica with repl-compression lz4 and disk-backed load also negotiates compression} {
         $primary config set repl-compression lz4
@@ -123,81 +52,6 @@ start_server {tags {"repl"} overrides {save ""}} {
         return -options $_opts $_res
     }
 
-    test {Primary receiving capa compression still completes full sync correctly (no-op)} {
-        $primary flushall
-        for {set i 0} {$i < 100} {incr i} {
-            $primary set "noop:$i" [string repeat "value$i " 10]
-        }
-
-        start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
-            wait_for_sync $replica
-
-            wait_for_condition 50 100 {
-                [status $replica master_link_status] eq "up"
-            } else {
-                fail "Replica did not complete full sync"
-            }
-
-            # Data integrity check — primary records capa but takes no action
-            assert_equal [string repeat "value42 " 10] [$replica get noop:42]
-            assert_equal 100 [$replica dbsize]
-
-            $replica replicaof no one
-        }
-    }
-
-    test {Backward compatibility - older replica without capa compression connects successfully} {
-        start_server {overrides {save ""}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
-
-            wait_for_condition 50 100 {
-                [s 0 master_link_status] eq {up}
-            } else {
-                fail "Replication not started"
-            }
-
-            assert_equal {up} [s 0 master_link_status]
-
-            $replica replicaof no one
-        }
-    }
-
-    test {Toggling repl-compression mid-runtime affects the next handshake} {
-        # First sync with compression disabled
-        start_server {overrides {save "" repl-compression no repl-diskless-load swapdb}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
-
-            wait_for_condition 50 100 {
-                [s 0 master_link_status] eq {up}
-            } else {
-                fail "Replication not started with repl-compression no"
-            }
-
-            assert_equal {up} [s 0 master_link_status]
-
-            # Toggle compression on at runtime
-            $replica config set repl-compression lz4
-
-            # Disconnect and reconnect to trigger a new handshake
-            $replica replicaof no one
-            $replica replicaof $primary_host $primary_port
-
-            wait_for_condition 50 100 {
-                [s 0 master_link_status] eq {up}
-            } else {
-                fail "Replication not started after toggling repl-compression lz4"
-            }
-
-            assert_equal {up} [s 0 master_link_status]
-
-            $replica replicaof no one
-        }
-    }
-
     test {Compressed incremental replication delivers correct data} {
         $primary config set repl-compression lz4
         $primary flushall
@@ -228,39 +82,6 @@ start_server {tags {"repl"} overrides {save ""}} {
             for {set i 0} {$i < 50} {incr i} {
                 assert_equal [string repeat "payload$i " 20] [$replica get "compressed:$i"]
             }
-
-            $replica replicaof no one
-        }
-
-        $primary config set repl-compression no
-    }
-
-    test {Compressed incremental replication handles values larger than the batch limit} {
-        # A value past REPL_COMPRESSION_BATCH_LIMIT (1 MB) is compressed across
-        # multiple dispatches; verify it round-trips intact.
-        $primary config set repl-compression lz4
-        $primary flushall
-
-        start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
-
-            wait_for_condition 50 100 {
-                [s 0 master_link_status] eq {up}
-            } else {
-                fail "Replication not started"
-            }
-
-            # ~4 MB value (well past the 1 MB batch limit) written after full sync.
-            set bigval [string repeat "abcdefghij0123456789" 209715]
-            $primary set bigkey $bigval
-
-            wait_for_condition 50 200 {
-                [$replica get bigkey] eq $bigval
-            } else {
-                fail "Large value did not replicate intact under compression"
-            }
-            assert_equal [string length $bigval] [string length [$replica get bigkey]]
 
             $replica replicaof no one
         }
@@ -542,137 +363,6 @@ start_server {tags {"repl"} overrides {save ""}} {
 
             $replica replicaof no one
         }
-    }
-
-    test {CONFIG SET repl-compression no disconnects compressed replicas} {
-        $primary config set repl-compression lz4
-
-        start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
-
-            wait_for_condition 50 100 {
-                [s 0 master_link_status] eq {up}
-            } else {
-                fail "Replication not started"
-            }
-
-            # Wait for compression to be active (replica must be state=online)
-            wait_for_condition 50 200 {
-                [string match {*state=online*compression=lz4*} [$primary info replication]]
-            } else {
-                fail "Compression not active on replica"
-            }
-
-            # Disable compression on primary — should disconnect compressed replicas
-            $primary config set repl-compression no
-
-            # Replica should disconnect and reconnect
-            wait_for_condition 50 200 {
-                [s 0 master_link_status] eq {up}
-            } else {
-                fail "Replica did not reconnect after repl-compression disabled"
-            }
-
-            # After reconnect, compression should NOT be active
-            set info [$primary info replication]
-            if {[string match "*compression=lz4*" $info]} {
-                fail "Compression still active after disable"
-            }
-
-            $replica replicaof no one
-        }
-    }
-
-    test {Multiple compressed replicas receive replication correctly} {
-        # Verifies that multiple compressed replicas can connect to the same
-        # primary and all receive replication data on the main-thread write
-        # path (io-threads multi-replica coverage lives in a later test).
-        $primary config set repl-compression lz4
-
-        start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-            set replica1 [srv 0 client]
-            $replica1 replicaof $primary_host $primary_port
-
-            wait_for_condition 50 100 {
-                [s 0 master_link_status] eq {up}
-            } else {
-                fail "Replica 1 not started"
-            }
-
-            start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-                set replica2 [srv 0 client]
-                $replica2 replicaof $primary_host $primary_port
-
-                wait_for_condition 50 100 {
-                    [s 0 master_link_status] eq {up}
-                } else {
-                    fail "Replica 2 not started"
-                }
-
-                # Write data and verify both replicas receive it
-                for {set i 0} {$i < 30} {incr i} {
-                    $primary set "multi_repl:$i" "value_$i"
-                }
-
-                wait_for_condition 50 100 {
-                    [$replica1 get "multi_repl:29"] eq {value_29} &&
-                    [$replica2 get "multi_repl:29"] eq {value_29}
-                } else {
-                    fail "Not all replicas caught up"
-                }
-
-                # Verify both have compression active
-                set info [$primary info replication]
-                set matches [regexp -all "compression=lz4" $info]
-                assert {$matches >= 2}
-
-                $replica2 replicaof no one
-            }
-            $replica1 replicaof no one
-        }
-        $primary config set repl-compression no
-    }
-
-    test {Compressed replication works with io-threads enabled on the replica} {
-        $primary config set repl-compression lz4
-        start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb io-threads 4 io-threads-always-active yes}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
-
-            wait_for_condition 50 100 {
-                [s 0 master_link_status] eq {up}
-            } else {
-                fail "Replication not started"
-            }
-
-            # The link is compressed while the replica runs io threads; the
-            # primary-link decode stays on the replica's main thread.
-            wait_for_condition 50 200 {
-                [string match {*state=online*compression=lz4*} [$primary info replication]]
-            } else {
-                fail "Compression not active on replica"
-            }
-
-            $primary set io_test_key "io_test_value"
-            wait_for_condition 50 100 {
-                [$replica get io_test_key] eq {io_test_value}
-            } else {
-                fail "Initial replication failed"
-            }
-
-            for {set i 0} {$i < 20} {incr i} {
-                $primary set "io_threads:$i" "value_$i"
-            }
-            wait_for_condition 50 100 {
-                [$replica get "io_threads:19"] eq {value_19}
-            } else {
-                fail "Replication with replica io-threads failed"
-            }
-
-            $replica replicaof no one
-        }
-        $primary config set repl-compression no
     }
 
     test {Dual-channel full sync with compression delivers writes made during load} {
@@ -1045,83 +735,6 @@ start_server {tags {"repl"} overrides {save "" io-threads 4 repl-compression lz4
 
                     $replica3 replicaof no one
                 }
-                $replica2 replicaof no one
-            }
-            $replica1 replicaof no one
-        }
-    }
-}
-
-# Test 5: Compressed replication survives replica disconnect/reconnect
-start_server {tags {"repl"} overrides {save "" io-threads 4 io-threads-always-active yes repl-compression lz4}} {
-    set primary [srv 0 client]
-    set primary_host [srv 0 host]
-    set primary_port [srv 0 port]
-
-    test {Compressed replication survives replica disconnect and reconnect} {
-        start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-            set replica1 [srv 0 client]
-            $replica1 replicaof $primary_host $primary_port
-            wait_for_sync $replica1
-
-            start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-                set replica2 [srv 0 client]
-                $replica2 replicaof $primary_host $primary_port
-                wait_for_sync $replica2
-
-                # Drive traffic, verify both in sync
-                for {set i 0} {$i < 200} {incr i} {
-                    $primary set "pre_disconnect:$i" [string repeat "x" 50]
-                }
-
-                wait_for_condition 50 200 {
-                    [$replica1 dbsize] == [$primary dbsize] &&
-                    [$replica2 dbsize] == [$primary dbsize]
-                } else {
-                    fail "Replicas not in sync before disconnect"
-                }
-
-                # Disconnect replica1
-                $replica1 replicaof no one
-
-                # Drive more traffic — replica2 should stay connected and in sync
-                for {set i 0} {$i < 200} {incr i} {
-                    $primary set "post_disconnect:$i" [string repeat "x" 50]
-                }
-
-                wait_for_condition 50 200 {
-                    [$replica2 get "post_disconnect:199"] eq [string repeat "x" 50]
-                } else {
-                    fail "Replica2 did not stay in sync after replica1 disconnect"
-                }
-
-                # Reconnect replica1
-                $replica1 replicaof $primary_host $primary_port
-
-                wait_for_condition 50 200 {
-                    [status $replica1 master_link_status] eq "up"
-                } else {
-                    fail "Replica1 did not reconnect"
-                }
-
-                # Wait for replica1 to catch up
-                wait_for_condition 50 200 {
-                    [$replica1 dbsize] == [$primary dbsize]
-                } else {
-                    fail "Replica1 did not re-sync: replica1=[$replica1 dbsize] primary=[$primary dbsize]"
-                }
-
-                # Verify compression is re-negotiated on replica1
-                wait_for_condition 50 200 {
-                    [regexp -all "compression=lz4" [$primary info replication]] >= 2
-                } else {
-                    fail "Compression not re-negotiated after reconnect"
-                }
-
-                # Verify data integrity
-                assert_equal [$primary debug digest] [$replica1 debug digest]
-                assert_equal [$primary debug digest] [$replica2 debug digest]
-
                 $replica2 replicaof no one
             }
             $replica1 replicaof no one

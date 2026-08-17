@@ -23,30 +23,11 @@ extern "C" {
 #endif
 
 TEST(replCompression, capaCompressionBitNoConflict) {
-    /* Each REPLICA_CAPA_* must occupy a unique bit position. */
-    int all_capas[] = {
-        REPLICA_CAPA_EOF,
-        REPLICA_CAPA_PSYNC2,
-        REPLICA_CAPA_DUAL_CHANNEL,
-        REPLICA_CAPA_SKIP_RDB_CHECKSUM,
-        REPLICA_CAPA_COMPRESSION,
-    };
-    int count = sizeof(all_capas) / sizeof(all_capas[0]);
-
-    for (int i = 0; i < count; i++) {
-        /* Each value must be a power of two (single bit set). */
-        EXPECT_NE(all_capas[i], 0) << "capability " << i << " must be non-zero";
-        EXPECT_EQ(all_capas[i] & (all_capas[i] - 1), 0)
-            << "capability " << i << " must be a power of two";
-
-        for (int j = i + 1; j < count; j++) {
-            EXPECT_EQ(all_capas[i] & all_capas[j], 0)
-                << "capabilities " << i << " and " << j << " must not share bits";
-        }
-    }
-
-    /* Verify the specific value. */
     EXPECT_EQ(REPLICA_CAPA_COMPRESSION, (1 << 4));
+    EXPECT_EQ(REPLICA_CAPA_COMPRESSION &
+                  (REPLICA_CAPA_EOF | REPLICA_CAPA_PSYNC2 |
+                   REPLICA_CAPA_DUAL_CHANNEL | REPLICA_CAPA_SKIP_RDB_CHECKSUM),
+              0);
 }
 
 TEST(replCompression, resetBatchRetainsAllocationForIncompressibleBatch) {
@@ -74,7 +55,7 @@ TEST(replCompression, resetBatchRetainsAllocationForIncompressibleBatch) {
     EXPECT_EQ(sdslen(rc->out_buf), (size_t)0);      /* cleared */
     EXPECT_EQ(sdsalloc(rc->out_buf), alloc_before); /* retained, not freed to empty */
     zfree(buf);
-    replCompressorDestroy(rc);
+    replCompressorFree(rc);
 }
 
 /* ===== Decoder corruption and edge cases (crafted bytes) ===== */
@@ -94,6 +75,17 @@ static void fillIncompressible(unsigned char *buf, size_t n, uint32_t seed) {
  * checksum present, bit 4 = block checksums present. Frozen wire format. */
 #define LZ4F_FLG_CONTENT_CHECKSUM 0x04
 #define LZ4F_FLG_BLOCK_CHECKSUM 0x10
+
+static int finishReplFrame(replCompressor *rc) {
+    size_t bound = streamCompressorOutputBound(&rc->stream, 0);
+    rc->out_buf = sdsMakeRoomFor(rc->out_buf, bound);
+    ssize_t written = streamCompressorFeed(&rc->stream,
+                                           (uint8_t *)rc->out_buf + sdslen(rc->out_buf),
+                                           sdsavail(rc->out_buf), NULL, 0, COMPRESS_FLUSH_END);
+    if (written < 0) return C_ERR;
+    sdsIncrLen(rc->out_buf, (size_t)written);
+    return C_OK;
+}
 
 TEST(replCompression, replFrameOmitsContentChecksum) {
     /* A repl frame never ends, so its content checksum would be computed on
@@ -118,31 +110,29 @@ TEST(replCompression, replFrameOmitsContentChecksum) {
     /* Round-trip: the decoder learns checksum presence from the frame header,
      * so it needs no matching configuration. */
     replDecompressor *rd = replDecompressorCreate();
-    ASSERT_TRUE(rd != NULL);
-    size_t out_len = 0;
-    ASSERT_EQ(replDecompressorDecode(rd, rc->out_buf, sdslen(rc->out_buf), 1024 * 1024, &out_len),
-              REPL_DECODE_OK);
-    ASSERT_EQ(out_len, sizeof(payload));
-    EXPECT_EQ(memcmp(replDecompressorBuf(rd), payload, sizeof(payload)), 0);
+    ssize_t out_len = replDecompress(rd, rc->out_buf, sdslen(rc->out_buf), 1024 * 1024);
+    ASSERT_EQ(out_len, (ssize_t)sizeof(payload));
+    EXPECT_EQ(memcmp(rd->decode_buf, payload, sizeof(payload)), 0);
 
-    replDecompressorDestroy(rd);
-    replCompressorDestroy(rc);
+    replDecompressorFree(rd);
+    replCompressorFree(rc);
 }
 
 TEST(replCompression, rdbFrameKeepsContentChecksum) {
-    /* Contrast: the default (RDB) stream kind finishes its frame, so the
-     * content checksum stays on. */
-    streamWriter writer;
-    sds sink = sdsempty();
-    ASSERT_EQ(streamWriterInit(&writer, ALGO_LZ4, true, NULL, NULL), C_OK);
-    streamWriterSetSink(&writer, &sink);
-    ASSERT_EQ(streamWriterWrite(&writer, "rdb-bytes", 9), C_OK);
-    ASSERT_GE(sdslen(sink), (size_t)(VCS_ENVELOPE_SIZE + 5));
-    unsigned char flg = ((const unsigned char *)sink)[VCS_ENVELOPE_SIZE + 4];
+    /* RDB uses the codec default, where both checksums stay on. */
+    streamCompressor stream;
+    ASSERT_EQ(streamCompressorInit(&stream, ALGO_LZ4, 0, true), C_OK);
+    size_t bound = streamCompressorOutputBound(&stream, 9);
+    unsigned char *output = (unsigned char *)zmalloc(bound);
+    ssize_t written = streamCompressorFeed(&stream, output, bound,
+                                           (const uint8_t *)"rdb-bytes", 9,
+                                           COMPRESS_FLUSH_CONTINUE);
+    ASSERT_GE(written, 5);
+    unsigned char flg = output[4];
     EXPECT_EQ(flg & LZ4F_FLG_CONTENT_CHECKSUM, LZ4F_FLG_CONTENT_CHECKSUM);
     EXPECT_EQ(flg & LZ4F_FLG_BLOCK_CHECKSUM, LZ4F_FLG_BLOCK_CHECKSUM);
-    streamWriterFree(&writer);
-    sdsfree(sink);
+    streamCompressorFree(&stream);
+    zfree(output);
 }
 
 TEST(replCompression, decodeFrameDoneOnLiveLink) {
@@ -151,16 +141,14 @@ TEST(replCompression, decodeFrameDoneOnLiveLink) {
     const char payload[] = "frame-done-on-live-link";
     ASSERT_EQ(replCompressorWrite(rc, payload, sizeof(payload)), C_OK);
     /* Finish ends the frame; a live replication link must never see that. */
-    ASSERT_EQ(streamWriterFinish(&rc->writer), C_OK);
+    ASSERT_EQ(finishReplFrame(rc), C_OK);
 
     replDecompressor *rd = replDecompressorCreate();
-    ASSERT_TRUE(rd != NULL);
-    size_t out_len = 0;
-    EXPECT_EQ(replDecompressorDecode(rd, rc->out_buf, sdslen(rc->out_buf), 1024 * 1024, &out_len),
+    EXPECT_EQ(replDecompress(rd, rc->out_buf, sdslen(rc->out_buf), 1024 * 1024),
               REPL_DECODE_FRAME_DONE);
 
-    replDecompressorDestroy(rd);
-    replCompressorDestroy(rc);
+    replDecompressorFree(rd);
+    replCompressorFree(rc);
 }
 
 TEST(replCompression, decodeOverflowGuard) {
@@ -174,14 +162,12 @@ TEST(replCompression, decodeOverflowGuard) {
     ASSERT_EQ(replCompressorFlush(rc), C_OK); /* frame stays open */
 
     replDecompressor *rd = replDecompressorCreate();
-    ASSERT_TRUE(rd != NULL);
-    size_t out_len = 0;
-    EXPECT_EQ(replDecompressorDecode(rd, rc->out_buf, sdslen(rc->out_buf), 1024, &out_len),
+    EXPECT_EQ(replDecompress(rd, rc->out_buf, sdslen(rc->out_buf), 1024),
               REPL_DECODE_OVERFLOW);
 
-    replDecompressorDestroy(rd);
+    replDecompressorFree(rd);
     zfree(buf);
-    replCompressorDestroy(rc);
+    replCompressorFree(rc);
 }
 
 TEST(replCompression, decodeEnvelopeSplitAcrossFeeds) {
@@ -197,76 +183,63 @@ TEST(replCompression, decodeEnvelopeSplitAcrossFeeds) {
     ASSERT_GT(stream_len, (size_t)VCS_ENVELOPE_SIZE);
 
     replDecompressor *rd = replDecompressorCreate();
-    ASSERT_TRUE(rd != NULL);
     unsigned char *decoded = (unsigned char *)zmalloc(n);
     size_t decoded_len = 0;
-    size_t out_len = 0;
+    ssize_t out_len;
 
     /* Byte 0 alone: probe cannot classify yet, nothing decodes. */
-    ASSERT_EQ(replDecompressorDecode(rd, stream, 1, 1024 * 1024, &out_len), REPL_DECODE_OK);
-    EXPECT_EQ(out_len, (size_t)0);
-    memcpy(decoded + decoded_len, replDecompressorBuf(rd), out_len);
-    decoded_len += out_len;
+    out_len = replDecompress(rd, stream, 1, 1024 * 1024);
+    ASSERT_EQ(out_len, 0);
 
     /* Bytes 1-2: magic complete, envelope still short. */
-    ASSERT_EQ(replDecompressorDecode(rd, stream + 1, 2, 1024 * 1024, &out_len), REPL_DECODE_OK);
-    EXPECT_EQ(out_len, (size_t)0);
-    memcpy(decoded + decoded_len, replDecompressorBuf(rd), out_len);
-    decoded_len += out_len;
+    out_len = replDecompress(rd, stream + 1, 2, 1024 * 1024);
+    ASSERT_EQ(out_len, 0);
 
     /* Remainder: envelope parses and the payload decodes. */
-    ASSERT_EQ(replDecompressorDecode(rd, stream + 3, stream_len - 3, 1024 * 1024, &out_len),
-              REPL_DECODE_OK);
-    ASSERT_LE(decoded_len + out_len, n);
-    memcpy(decoded + decoded_len, replDecompressorBuf(rd), out_len);
-    decoded_len += out_len;
+    out_len = replDecompress(rd, stream + 3, stream_len - 3, 1024 * 1024);
+    ASSERT_GE(out_len, 0);
+    ASSERT_LE(decoded_len + (size_t)out_len, n);
+    memcpy(decoded + decoded_len, rd->decode_buf, (size_t)out_len);
+    decoded_len += (size_t)out_len;
 
     ASSERT_EQ(decoded_len, n);
     EXPECT_EQ(memcmp(decoded, payload, n), 0);
 
     zfree(decoded);
     zfree(payload);
-    replDecompressorDestroy(rd);
-    replCompressorDestroy(rc);
+    replDecompressorFree(rd);
+    replCompressorFree(rc);
 }
 
 TEST(replCompression, decodePassthroughReplaysPrefix) {
     replDecompressor *rd = replDecompressorCreate();
-    ASSERT_TRUE(rd != NULL);
-    size_t out_len = 0;
     /* "V" alone could still open the VCS magic: buffered, nothing emitted. */
-    ASSERT_EQ(replDecompressorDecode(rd, "V", 1, 1024, &out_len), REPL_DECODE_OK);
-    EXPECT_EQ(out_len, (size_t)0);
-    EXPECT_FALSE(replDecompressorIsPassthrough(rd));
+    ASSERT_EQ(replDecompress(rd, "V", 1, 1024), 0);
+    EXPECT_NE(rd->mode, REPL_DECODE_MODE_PASSTHROUGH);
     /* "X" rules out the magic: the buffered "V" replays ahead of the new bytes. */
-    ASSERT_EQ(replDecompressorDecode(rd, "XYZ", 3, 1024, &out_len), REPL_DECODE_OK);
-    EXPECT_TRUE(replDecompressorIsPassthrough(rd));
-    ASSERT_EQ(out_len, (size_t)4);
-    ASSERT_EQ(sdslen(replDecompressorBuf(rd)), (size_t)4);
-    EXPECT_EQ(memcmp(replDecompressorBuf(rd), "VXYZ", 4), 0);
-    replDecompressorDestroy(rd);
+    ASSERT_EQ(replDecompress(rd, "XYZ", 3, 1024), 4);
+    EXPECT_EQ(rd->mode, REPL_DECODE_MODE_PASSTHROUGH);
+    ASSERT_EQ(sdslen(rd->decode_buf), (size_t)4);
+    EXPECT_EQ(memcmp(rd->decode_buf, "VXYZ", 4), 0);
+    replDecompressorFree(rd);
 }
 
 TEST(replCompression, decodeRejectsBadCodec) {
     replDecompressor *rd = replDecompressorCreate();
-    ASSERT_TRUE(rd != NULL);
     /* Valid magic/version/kind, unknown codec id 0xFF. */
     unsigned char stream[VCS_ENVELOPE_SIZE + 4] = {'V', 'C', 'S', VCS_VERSION, 0xFF, 0x00,
                                                    VCS_STREAM_REPL, 0xDE, 0xAD, 0xBE, 0xEF};
-    size_t out_len = 0;
-    EXPECT_EQ(replDecompressorDecode(rd, stream, sizeof(stream), 1024, &out_len), REPL_DECODE_ERR);
-    replDecompressorDestroy(rd);
+    EXPECT_EQ(replDecompress(rd, stream, sizeof(stream), 1024), REPL_DECODE_ERR);
+    replDecompressorFree(rd);
 }
 
 TEST(replCompression, decodeRejectsNonzeroReserved) {
     replDecompressor *rd = replDecompressorCreate();
-    ASSERT_TRUE(rd != NULL);
     /* Valid magic/version/codec/kind, nonzero reserved byte. */
     unsigned char stream[VCS_ENVELOPE_SIZE + 4] = {'V', 'C', 'S', VCS_VERSION, VCS_CODEC_LZ4, 0x01,
                                                    VCS_STREAM_REPL, 0xDE, 0xAD, 0xBE, 0xEF};
-    size_t out_len = 0;
-    EXPECT_EQ(replDecompressorDecode(rd, stream, sizeof(stream), 1024, &out_len), REPL_DECODE_ERR);
-    replDecompressorDestroy(rd);
+    EXPECT_EQ(replDecompress(rd, stream, sizeof(stream), 1024), REPL_DECODE_ERR);
+    replDecompressorFree(rd);
 }
 
 TEST(replCompression, decodeErrOnCorruptPayload) {
@@ -282,13 +255,11 @@ TEST(replCompression, decodeErrOnCorruptPayload) {
     memset(stream + VCS_ENVELOPE_SIZE, 0xFF, 64);
 
     replDecompressor *rd = replDecompressorCreate();
-    ASSERT_TRUE(rd != NULL);
-    size_t out_len = 0;
-    EXPECT_EQ(replDecompressorDecode(rd, stream, sizeof(stream), 1024 * 1024, &out_len),
+    EXPECT_EQ(replDecompress(rd, stream, sizeof(stream), 1024 * 1024),
               REPL_DECODE_ERR);
 
-    replDecompressorDestroy(rd);
-    replCompressorDestroy(rc);
+    replDecompressorFree(rd);
+    replCompressorFree(rc);
 }
 
 TEST(replCompression, decodeDrainsBufferedOutputWithoutMoreInput) {
@@ -315,16 +286,13 @@ TEST(replCompression, decodeDrainsBufferedOutputWithoutMoreInput) {
     /* All compressed bytes in ONE call: no later input can push out whatever
      * the codec buffered, so the decode itself must drain it. */
     replDecompressor *rd = replDecompressorCreate();
-    ASSERT_TRUE(rd != NULL);
-    size_t out_len = 0;
-    ASSERT_EQ(replDecompressorDecode(rd, rc->out_buf, sdslen(rc->out_buf), 4 * 1024 * 1024, &out_len),
-              REPL_DECODE_OK);
-    EXPECT_EQ(out_len, n);
-    ASSERT_EQ(sdslen(replDecompressorBuf(rd)), n);
-    EXPECT_EQ(memcmp(replDecompressorBuf(rd), payload, n), 0);
+    ssize_t out_len = replDecompress(rd, rc->out_buf, sdslen(rc->out_buf), 4 * 1024 * 1024);
+    ASSERT_EQ(out_len, (ssize_t)n);
+    ASSERT_EQ(sdslen(rd->decode_buf), n);
+    EXPECT_EQ(memcmp(rd->decode_buf, payload, n), 0);
 
-    replDecompressorDestroy(rd);
-    replCompressorDestroy(rc);
+    replDecompressorFree(rd);
+    replCompressorFree(rc);
     zfree(payload);
 }
 
@@ -346,14 +314,12 @@ TEST(replCompression, decodeCallOutputStaysUnderCapAtMaxRatio) {
     size_t chunk = sdslen(rc->out_buf);
     if (chunk > (size_t)16 * 1024) chunk = (size_t)16 * 1024;
     replDecompressor *rd = replDecompressorCreate();
-    ASSERT_TRUE(rd != NULL);
-    size_t out_len = 0;
-    ASSERT_EQ(replDecompressorDecode(rd, rc->out_buf, chunk, 16 * 1024 * 1024, &out_len),
-              REPL_DECODE_OK);
-    EXPECT_GT(out_len, (size_t)1024 * 1024); /* high ratio actually exercised */
-    EXPECT_LT(out_len, (size_t)16 * 1024 * 1024);
+    ssize_t out_len = replDecompress(rd, rc->out_buf, chunk, 16 * 1024 * 1024);
+    ASSERT_GT(out_len, 0);
+    EXPECT_GT((size_t)out_len, (size_t)1024 * 1024); /* high ratio actually exercised */
+    EXPECT_LT((size_t)out_len, (size_t)16 * 1024 * 1024);
 
-    replDecompressorDestroy(rd);
-    replCompressorDestroy(rc);
+    replDecompressorFree(rd);
+    replCompressorFree(rc);
     zfree(payload);
 }

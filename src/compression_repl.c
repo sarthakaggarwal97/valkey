@@ -25,34 +25,62 @@
 replCompressor *replCompressorCreate(compressionAlgo algo) {
     replCompressor *rc = zcalloc(sizeof(*rc));
 
-    rc->out_buf = sdsempty();
-    /* Block checksums ON (codec_checksum=true). */
-    if (streamWriterInit(&rc->writer, algo, true, NULL, NULL) != C_OK) {
-        sdsfree(rc->out_buf);
+    if (streamCompressorInit(&rc->stream, algo, 0, true) != C_OK) {
         zfree(rc);
         return NULL;
     }
-    streamWriterSetStreamKind(&rc->writer, VCS_STREAM_REPL);
     /* Repl frames never end: a content checksum would never be emitted or
      * validated. Block checksums stay. */
-    streamCompressorSetContentChecksum(&rc->writer.compressor, false);
-    streamWriterSetSink(&rc->writer, &rc->out_buf);
+    rc->stream.content_checksum = false;
+    rc->out_buf = sdsempty();
     return rc;
 }
 
-void replCompressorDestroy(replCompressor *rc) {
-    if (!rc) return;
-    streamWriterFree(&rc->writer);
+void replCompressorFree(replCompressor *rc) {
+    streamCompressorFree(&rc->stream);
     sdsfree(rc->out_buf);
     zfree(rc);
 }
 
+static int replCompressorFeed(replCompressor *rc,
+                              const uint8_t *input,
+                              size_t input_len,
+                              compressFlushMode flush_mode) {
+    if (!rc->stream.stream_started) {
+        uint8_t envelope[VCS_ENVELOPE_SIZE];
+        if (vcsWriteEnvelope(envelope, rc->stream.algo, VCS_STREAM_REPL) == C_ERR)
+            return C_ERR;
+        rc->out_buf = sdscatlen(rc->out_buf, envelope, sizeof(envelope));
+    }
+
+    size_t bound = streamCompressorOutputBound(&rc->stream, input_len);
+    rc->out_buf = sdsMakeRoomFor(rc->out_buf, bound);
+    ssize_t compressed = streamCompressorFeed(&rc->stream,
+                                              (uint8_t *)rc->out_buf + sdslen(rc->out_buf),
+                                              sdsavail(rc->out_buf), input, input_len, flush_mode);
+    if (compressed < 0) return C_ERR;
+    sdsIncrLen(rc->out_buf, (size_t)compressed);
+    return C_OK;
+}
+
 int replCompressorWrite(replCompressor *rc, const void *buf, size_t len) {
-    return streamWriterWrite(&rc->writer, buf, len);
+    const uint8_t *input = buf;
+
+    while (len > 0) {
+        size_t chunk = len < REPL_COMPRESSION_BATCH_LIMIT
+                           ? len
+                           : REPL_COMPRESSION_BATCH_LIMIT;
+        if (replCompressorFeed(rc, input, chunk, COMPRESS_FLUSH_CONTINUE) == C_ERR)
+            return C_ERR;
+        input += chunk;
+        len -= chunk;
+    }
+    return C_OK;
 }
 
 int replCompressorFlush(replCompressor *rc) {
-    return streamWriterFlush(&rc->writer);
+    if (!rc->stream.stream_started) return C_OK;
+    return replCompressorFeed(rc, NULL, 0, COMPRESS_FLUSH_SYNC);
 }
 
 void replCompressorResetBatch(replCompressor *rc) {
@@ -71,15 +99,8 @@ void replCompressorResetBatch(replCompressor *rc) {
 }
 
 size_t replCompressorMemUsage(const replCompressor *rc) {
-    if (!rc) return 0;
     /* Codec context memory is small and fixed; only the staging SDS is measured. */
-    size_t total = sizeof(*rc);
-    if (rc->out_buf) total += sdsalloc(rc->out_buf);
-    return total;
-}
-
-compressionAlgo replCompressorAlgo(const replCompressor *rc) {
-    return rc ? rc->writer.compressor.algo : ALGO_NONE;
+    return sizeof(*rc) + sdsalloc(rc->out_buf);
 }
 
 /* ===== Replica-side decompressor ===== */
@@ -90,9 +111,8 @@ replDecompressor *replDecompressorCreate(void) {
     return rd;
 }
 
-void replDecompressorDestroy(replDecompressor *rd) {
-    if (!rd) return;
-    if (rd->mode == REPL_DECODE_MODE_COMPRESSED) streamDecompressorFree(&rd->decompressor);
+void replDecompressorFree(replDecompressor *rd) {
+    if (rd->mode == REPL_DECODE_MODE_COMPRESSED) streamDecompressorFree(&rd->stream);
     sdsfree(rd->decode_buf);
     zfree(rd);
 }
@@ -121,7 +141,7 @@ static replDecodeResult replDecodeFeed(replDecompressor *rd, const uint8_t *in, 
         if (room > output_max - used) room = output_max - used;
         rd->decode_buf = sdsMakeRoomFor(rd->decode_buf, room);
         size_t consumed = 0;
-        produced = streamDecompressorFeed(&rd->decompressor,
+        produced = streamDecompressorFeed(&rd->stream,
                                           (uint8_t *)rd->decode_buf + used,
                                           room,
                                           in + off, len - off, &consumed);
@@ -131,7 +151,7 @@ static replDecodeResult replDecodeFeed(replDecompressor *rd, const uint8_t *in, 
         /* A long-lived replication stream must never reach a compressed frame
          * end. If it does, the stream is corrupt or the primary sent an
          * unexpected terminator: the caller should disconnect. */
-        if (rd->decompressor.frame_done) return REPL_DECODE_FRAME_DONE;
+        if (rd->stream.frame_done) return REPL_DECODE_FRAME_DONE;
         /* The codec always makes progress given input and output room; no
          * progress with input still pending is a stuck state. Fail rather
          * than let the caller drop the unconsumed tail. Gated on pending
@@ -143,14 +163,9 @@ static replDecodeResult replDecodeFeed(replDecompressor *rd, const uint8_t *in, 
     return REPL_DECODE_OK;
 }
 
-replDecodeResult replDecompressorDecode(replDecompressor *rd,
-                                        const void *src,
-                                        size_t len,
-                                        size_t output_max,
-                                        size_t *out_len) {
+ssize_t replDecompress(replDecompressor *rd, const void *src, size_t len, size_t output_max) {
     static const uint8_t vcs_magic[VCS_MAGIC_SIZE] = {VCS_MAGIC_0, VCS_MAGIC_1, VCS_MAGIC_2};
 
-    if (out_len) *out_len = 0;
     sdsclear(rd->decode_buf);
 
     const uint8_t *in = src;
@@ -174,9 +189,9 @@ replDecodeResult replDecompressorDecode(replDecompressor *rd,
             if (rd->envelope_len < VCS_ENVELOPE_SIZE) return REPL_DECODE_OK; /* Need more header. */
 
             compressionAlgo algo = ALGO_NONE;
-            if (streamParseVcsEnvelope(rd->envelope, VCS_ENVELOPE_SIZE, VCS_STREAM_REPL, &algo) != C_OK)
+            if (vcsReadEnvelope(rd->envelope, VCS_STREAM_REPL, &algo) != C_OK)
                 return REPL_DECODE_ERR;
-            if (streamDecompressorInit(&rd->decompressor, algo, false) != C_OK) return REPL_DECODE_ERR;
+            if (streamDecompressorInit(&rd->stream, algo, false) != C_OK) return REPL_DECODE_ERR;
             rd->mode = REPL_DECODE_MODE_COMPRESSED;
         }
     }
@@ -199,18 +214,5 @@ replDecodeResult replDecompressorDecode(replDecompressor *rd,
         rd->decode_buf = sdsRemoveFreeSpace(rd->decode_buf, 0);
     }
 
-    if (out_len) *out_len = sdslen(rd->decode_buf);
-    return REPL_DECODE_OK;
-}
-
-sds replDecompressorBuf(replDecompressor *rd) {
-    return rd ? rd->decode_buf : NULL;
-}
-
-bool replDecompressorIsPassthrough(const replDecompressor *rd) {
-    return rd && rd->mode == REPL_DECODE_MODE_PASSTHROUGH;
-}
-
-bool replDecompressorIsCompressed(const replDecompressor *rd) {
-    return rd && rd->mode == REPL_DECODE_MODE_COMPRESSED;
+    return (ssize_t)sdslen(rd->decode_buf);
 }

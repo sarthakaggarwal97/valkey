@@ -2495,8 +2495,8 @@ static void postWriteToReplica(client *c) {
         serverLog(LL_WARNING,
                   "Compression error on replica %s (algo=%s, raw_bytes=%zu), disconnecting",
                   replicationGetReplicaName(c),
-                  compressionAlgoName(replCompressorAlgo(c->repl_data->repl_compressor)),
-                  c->repl_data->repl_compressor ? c->repl_data->repl_compressor->raw_bytes : 0);
+                  compressionAlgoName(c->repl_data->repl_compressor->stream.algo),
+                  c->repl_data->repl_compressor->raw_bytes);
         freeClientAsync(c);
         return;
     }
@@ -4574,17 +4574,18 @@ void readQueryFromClient(connection *conn) {
     size_t decoded_total = 0;
     do {
         size_t qblen_before_read = c->querybuf ? sdslen(c->querybuf) : 0;
-        size_t decoded = 0;
+        ssize_t decoded = 0;
         bool full_read = readToQueryBuf(c);
         if (handleReadResult(c) == C_OK) {
-            if (c->flag.primary &&
-                server.repl_decompressor &&
-                replDecompressQueryBuf(c, qblen_before_read, &decoded) == C_ERR) {
-                serverLog(LL_WARNING, "Disconnecting primary due to replication stream decompression failure");
-                freeClientAsync(c);
-                return;
+            if (c->flag.primary && server.repl_decompressor) {
+                decoded = replDecompressQueryBuf(c, qblen_before_read);
+                if (decoded < 0) {
+                    serverLog(LL_WARNING, "Disconnecting primary due to replication stream decompression failure");
+                    freeClientAsync(c);
+                    return;
+                }
             }
-            decoded_total += decoded;
+            decoded_total += (size_t)decoded;
             if (processInputBuffer(c) == C_ERR) return;
             trimCommandQueue(c);
         }
