@@ -2,10 +2,6 @@ source tests/support/aofmanifest.tcl
 
 tags {"rdb-compression external:skip needs:debug"} {
 
-proc dump_rdb_path {client} {
-    return [file join [lindex [$client config get dir] 1] dump.rdb]
-}
-
 proc read_dump_rdb_header_bytes {client} {
     return [read_binary_file_prefix [dump_rdb_path $client] 8]
 }
@@ -394,11 +390,11 @@ tags {"rdb-compression external:skip needs:debug needs:other-server compatible-r
         $other_server set compatibility:key $compatibility_value
         set expected_dbsize [$other_server dbsize]
         assert_equal "OK" [$other_server save]
-        set other_rdb [file join [lindex [$other_server config get dir] 1] dump.rdb]
+        set other_rdb [dump_rdb_path $other_server]
 
         start_server {config "minimal.conf" overrides {save "" enable-debug-command local}} {
             test {Current server loads an LZF RDB created by another server version} {
-                set current_rdb [file join [lindex [r config get dir] 1] dump.rdb]
+                set current_rdb [dump_rdb_path r]
                 file copy -force $other_rdb $current_rdb
                 assert_equal "OK" [r debug reload nosave]
                 assert_equal $expected_dbsize [r dbsize]
