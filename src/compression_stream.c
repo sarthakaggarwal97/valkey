@@ -31,6 +31,9 @@ int vcsBuildEnvelope(uint8_t *buf, compressionAlgo algo, uint8_t stream_kind) {
     case ALGO_LZ4:
         codec = VCS_CODEC_LZ4;
         break;
+    case ALGO_ZSTD:
+        codec = VCS_CODEC_ZSTD;
+        break;
     default:
         return C_ERR;
     }
@@ -63,6 +66,13 @@ static int readVcsEnvelope(const uint8_t *buf, uint8_t expected_stream_kind, com
     case VCS_CODEC_LZ4:
         *algo = ALGO_LZ4;
         break;
+    case VCS_CODEC_ZSTD:
+#ifdef HAVE_ZSTD
+        *algo = ALGO_ZSTD;
+        break;
+#else
+        return C_ERR;
+#endif
     default:
         return C_ERR;
     }
