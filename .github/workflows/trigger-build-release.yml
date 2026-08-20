@@ -58,8 +58,8 @@ jobs:
         id: resolve-sha
         # The build pipeline pins its checkout to source_sha instead of
         # trusting the moving tag at build time, so resolve the tag to the
-        # exact commit it points at. Annotated tags are peeled via the
-        # object.type check to the underlying commit SHA. Untrusted values
+        # exact commit it points at. Annotated tags are peeled to the
+        # underlying commit SHA via the object.type check. Untrusted values
         # enter only through env, never interpolated into shell source.
         env:
           GH_TOKEN: ${{ github.token }}
