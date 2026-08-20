@@ -23,6 +23,11 @@ on:
         required: false
         type: boolean
         default: false
+      target_version:
+        description: Fork-only exact patch target for one intentionally skipped unpublished version
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -43,10 +48,23 @@ jobs:
       - name: Validate inputs
         env:
           BRANCH: ${{ inputs.branch }}
+          INTENT: ${{ inputs.intent }}
+          TARGET_VERSION: ${{ inputs.target_version }}
           INITIATOR: ${{ github.triggering_actor }}
         run: |
           set -euo pipefail
           [[ "$BRANCH" =~ ^[0-9]+\.[0-9]+$ ]] || { echo "branch must be MAJOR.MINOR" >&2; exit 1; }
+          if [[ -n "$TARGET_VERSION" ]]; then
+            [[ "$INTENT" == "patch" ]] || { echo "target_version requires patch intent" >&2; exit 1; }
+            [[ "$TARGET_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+              echo "target_version must be exact unpadded MAJOR.MINOR.PATCH" >&2
+              exit 1
+            }
+            [[ "$TARGET_VERSION" == "$BRANCH".* ]] || {
+              echo "target_version must belong to branch $BRANCH" >&2
+              exit 1
+            }
+          fi
           [[ "$INITIATOR" =~ ^[A-Za-z0-9-]{1,39}$ ]] || { echo "invalid initiator login" >&2; exit 1; }
 
       - name: Start controller workflow
@@ -56,18 +74,24 @@ jobs:
           INTENT: ${{ inputs.intent }}
           URGENCY: ${{ inputs.urgency }}
           DRY_RUN: ${{ inputs.dry_run }}
+          TARGET_VERSION: ${{ inputs.target_version }}
           INITIATOR: ${{ github.triggering_actor }}
         run: |
           set -euo pipefail
           [[ -n "$GH_TOKEN" ]] || { echo "AUTOMATION_PAT is required for fork E2E" >&2; exit 1; }
-          gh workflow run release-prepare.yml \
-            --repo sarthakaggarwal97/valkey-ci-agent \
-            --ref e2e/latest-9.1.4-release-controller \
-            -f branch="$BRANCH" \
-            -f intent="$INTENT" \
-            -f urgency="$URGENCY" \
-            -f dry_run="$DRY_RUN" \
+          args=(
+            --repo sarthakaggarwal97/valkey-ci-agent
+            --ref e2e/latest-9.1.4-release-controller
+            -f branch="$BRANCH"
+            -f intent="$INTENT"
+            -f urgency="$URGENCY"
+            -f dry_run="$DRY_RUN"
             -f initiator="$INITIATOR"
+          )
+          if [[ -n "$TARGET_VERSION" ]]; then
+            args+=(-f target_version="$TARGET_VERSION")
+          fi
+          gh workflow run release-prepare.yml "${args[@]}"
 
           {
             echo "## Release preparation started"
