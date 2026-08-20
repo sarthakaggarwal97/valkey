@@ -34,13 +34,11 @@ concurrency:
 jobs:
   start:
     name: Hand off to the release controller
-    if: github.repository == 'valkey-io/valkey' && github.ref == 'refs/heads/unstable'
+    if: github.repository == 'sarthakaggarwal97/valkey' && github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # No reviewer is configured here, so this adds no click. The environment
-    # exists only to expose the App key to the exact unstable branch; a workflow
-    # pushed to an arbitrary branch cannot mint the cross-repository token.
-    environment: release-control
+    # Fork-only E2E: the temporary repository PAT is available only as a
+    # repository secret and is deleted after the release relay completes.
     steps:
       - name: Validate inputs
         env:
@@ -51,25 +49,9 @@ jobs:
           [[ "$BRANCH" =~ ^[0-9]+\.[0-9]+$ ]] || { echo "branch must be MAJOR.MINOR" >&2; exit 1; }
           [[ "$INITIATOR" =~ ^[A-Za-z0-9-]{1,39}$ ]] || { echo "invalid initiator login" >&2; exit 1; }
 
-      # This reuses the release-control App; there is no relay service,
-      # HMAC key, repository_dispatch receiver, or separate relay App.
-      # Its installation grant on valkey-ci-agent needs only Actions:write
-      # and Metadata:read, so compromise can start preparation but cannot
-      # publish a release or bypass either protected approval.
-      - name: Create controller dispatch token
-        id: token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.VALKEY_RELEASE_CONTROL_APP_ID }}
-          private-key: ${{ secrets.VALKEY_RELEASE_CONTROL_APP_PRIVATE_KEY }}
-          owner: valkey-io
-          repositories: valkey-ci-agent
-          permission-actions: write
-          permission-metadata: read
-
       - name: Start controller workflow
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ secrets.AUTOMATION_PAT }}
           BRANCH: ${{ inputs.branch }}
           INTENT: ${{ inputs.intent }}
           URGENCY: ${{ inputs.urgency }}
@@ -77,9 +59,10 @@ jobs:
           INITIATOR: ${{ github.triggering_actor }}
         run: |
           set -euo pipefail
+          [[ -n "$GH_TOKEN" ]] || { echo "AUTOMATION_PAT is required for fork E2E" >&2; exit 1; }
           gh workflow run release-prepare.yml \
-            --repo valkey-io/valkey-ci-agent \
-            --ref main \
+            --repo sarthakaggarwal97/valkey-ci-agent \
+            --ref e2e/latest-9.1.4-release-controller \
             -f branch="$BRANCH" \
             -f intent="$INTENT" \
             -f urgency="$URGENCY" \
@@ -91,5 +74,5 @@ jobs:
             echo
             echo "The controller will derive the exact release, open the notes PR, and create the maintainer dashboard."
             echo
-            echo "[Open release controller runs](https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-prepare.yml)"
+            echo "[Open release controller runs](https://github.com/sarthakaggarwal97/valkey-ci-agent/actions/workflows/release-prepare.yml)"
           } >> "$GITHUB_STEP_SUMMARY"
