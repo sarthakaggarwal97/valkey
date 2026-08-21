@@ -11,6 +11,11 @@ Upgrade urgency levels:
 | CRITICAL | There is a critical bug affecting MOST USERS. Upgrade ASAP.         |
 | SECURITY | There are security fixes in the release.                            |
 
+Valkey 8.0.12  -  Released Fri 21 August 2026
+---------------------------------------------
+
+Upgrade urgency MODERATE: Program an upgrade of the server, but it's not urgent.
+
 Valkey 8.0.11  -  Released Tue 11 August 2026
 ---------------------------------------------
 
