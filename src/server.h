@@ -466,11 +466,11 @@ typedef enum {
 #define REPLICA_CAPA_PSYNC2 (1 << 1)            /* Supports PSYNC2 protocol. */
 #define REPLICA_CAPA_DUAL_CHANNEL (1 << 2)      /* Supports dual channel replication sync */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM (1 << 3) /* Supports skipping RDB checksum for sync requests. */
-#define REPLICA_CAPA_COMPRESS_STREAM (1 << 4)   /* Can decode a compressed incremental replication stream. */
+#define REPLICA_CAPA_COMPRESS_REPL (1 << 4)     /* Can decode a compressed incremental replication stream. */
 
 /* Replica capability strings */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR "skip-rdb-checksum" /* Supports skipping RDB checksum for sync requests. */
-#define REPLICA_CAPA_COMPRESS_STREAM_STR "compress-stream"     /* Can decode a compressed incremental replication stream. */
+#define REPLICA_CAPA_COMPRESS_REPL_STR "compress-repl"         /* Can decode a compressed incremental replication stream. */
 
 /* Replica requirements */
 #define REPLICA_REQ_NONE 0
@@ -631,6 +631,8 @@ typedef enum {
     REPL_COMPRESSION_YES,    /* Use the default compression algorithm. */
     REPL_COMPRESSION_LZ4     /* Pin whole-stream LZ4 compression. */
 } repl_compression_mode;
+
+#define REPL_COMPRESSION_CAPA_UNKNOWN -1
 
 /* Structure representing a non-owning view of a buffer.
  * A stringRef struct does not manage the underlying memory, so its destruction
@@ -2129,11 +2131,6 @@ struct valkeyServer {
     int saveparamslen;                    /* Number of saving points */
     char *rdb_filename;                   /* Name of RDB file */
     int rdb_compression;                  /* RDB compression mode */
-    int repl_compression;                 /* Replication compression mode */
-    int repl_compression_changed;         /* repl-compression changed at runtime; consumed once by
-                                           * replicationCron to drop the upstream link for
-                                           * renegotiation. Replica links reconcile from live state
-                                           * every tick and do not read this flag. */
     int rdb_checksum;                     /* Use RDB checksum? */
     int rdb_del_sync_files;               /* Remove RDB files used only for SYNC if
                                              the instance does not use persistence. */
@@ -2279,6 +2276,9 @@ struct valkeyServer {
                                               * when it receives an error on the replication stream */
     int repl_ignore_disk_write_error;        /* Configures whether replicas panic when unable to
                                               * persist writes to AOF. */
+    int repl_compression;                    /* Replication compression mode. */
+    int repl_compression_capa_advertised;    /* Compression capability advertised to the current primary,
+                                              * or REPL_COMPRESSION_CAPA_UNKNOWN before REPLCONF capa. */
     streamPushReader *repl_stream_reader;    /* Replica-side replication stream reader (NULL when inactive). */
     long long repl_decompression_errors;     /* Decompression failures (replica side). */
     long long total_repl_decompressed_bytes; /* Total decompressed bytes processed (replica side). */
