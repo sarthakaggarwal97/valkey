@@ -226,13 +226,9 @@ static void replRefreshStreamReader(void) {
     streamPushReaderInit(server.repl_stream_reader, VCS_STREAM_REPL);
 }
 
-/* Cap on decoded output per reader feed (decompression-bomb guard).
- * replDecodeToQueryBuf slices its input so one feed never sees more than
- * PROTO_IOBUF_LEN wire bytes: one socket read's worth. The cap must exceed
- * the worst-case expansion any supported codec can legitimately produce from
- * that much input; a codec whose per-block expansion can exceed it needs a
- * resumable feed before it is onboarded. */
-#define REPL_DECODE_MAX_OUTPUT_PER_FEED (16 * 1024 * 1024)
+bool replStreamHasPendingDecode(void) {
+    return server.repl_stream_reader && streamPushReaderHasPending(server.repl_stream_reader);
+}
 
 /* Decode len wire bytes into c->querybuf, advancing read_reploff by the
  * decoded byte count (wire bytes are never counted: handleReadResult skips
@@ -244,8 +240,7 @@ static void replRefreshStreamReader(void) {
  * and may use IO threads. */
 ssize_t replDecodeToQueryBuf(client *c, const void *buf, size_t len) {
     streamPushReader *pr = server.repl_stream_reader;
-
-    if (len == 0) return 0;
+    if (len == 0 && !streamPushReaderHasPending(pr)) return 0;
 
     /* Decoded output grows the query buffer, so it must be private. The
      * reader path never assigns the thread-shared query buffer, so the
@@ -253,28 +248,14 @@ ssize_t replDecodeToQueryBuf(client *c, const void *buf, size_t len) {
     if (c->querybuf == NULL) c->querybuf = sdsempty();
 
     size_t before = sdslen(c->querybuf);
-    /* Feed in PROTO_IOBUF_LEN slices so one feed never sees more wire bytes
-     * than a socket read delivers, whatever the caller's buffer size: the
-     * per-feed output cap is calibrated to one read's worth of input, and
-     * slicing here keeps that assumption enforced locally instead of by the
-     * sizing math of every caller (dual-channel replay blocks are read-sized
-     * today, plus allocator rounding). */
-    for (size_t fed = 0; fed < len; fed += PROTO_IOBUF_LEN) {
-        size_t n = len - fed;
-        if (n > PROTO_IOBUF_LEN) n = PROTO_IOBUF_LEN;
-        streamPushReaderResult r =
-            streamPushReaderFeed(pr, (const uint8_t *)buf + fed, n, &c->querybuf, REPL_DECODE_MAX_OUTPUT_PER_FEED);
-        if (r != STREAM_PUSH_READER_OK) {
-            /* A long-lived replication stream must never reach a compressed
-             * frame end. If it does, the stream is corrupt or the primary
-             * sent an unexpected terminator. */
-            if (r == STREAM_PUSH_READER_FRAME_DONE)
-                serverLog(LL_WARNING, "Primary closed compressed replication frame unexpectedly");
-            server.repl_decompression_errors++;
-            return -1;
-        }
+    streamPushReaderResult result = streamPushReaderFeed(pr, buf, len, &c->querybuf,
+                                                         REPL_DECODE_EVENT_BUDGET);
+    if (result == STREAM_PUSH_READER_ERR || result == STREAM_PUSH_READER_FRAME_DONE) {
+        if (result == STREAM_PUSH_READER_FRAME_DONE)
+            serverLog(LL_WARNING, "Primary closed compressed replication frame unexpectedly");
+        server.repl_decompression_errors++;
+        return -1;
     }
-
     size_t produced = sdslen(c->querybuf) - before;
     if (c->querybuf_peak < sdslen(c->querybuf)) c->querybuf_peak = sdslen(c->querybuf);
 
@@ -3691,16 +3672,23 @@ int streamReplDataBufToDb(client *c) {
         replDataBufBlock *o = listNodeValue(cur);
         used = o->used;
         if (server.repl_stream_reader) {
-            if (replDecodeToQueryBuf(c, o->buf, used) < 0) {
-                serverLog(LL_WARNING, "Dual-channel replication stream decompression failure");
-                blockingOperationEnds();
-                return C_ERR;
-            }
+            const void *input = o->buf;
+            size_t input_len = used;
+            do {
+                if (replDecodeToQueryBuf(c, input, input_len) < 0) {
+                    serverLog(LL_WARNING, "Dual-channel replication stream decompression failure");
+                    blockingOperationEnds();
+                    return C_ERR;
+                }
+                processInputBuffer(c);
+                input = NULL;
+                input_len = 0;
+            } while (replStreamHasPendingDecode());
         } else {
             c->querybuf = sdscatlen(c->querybuf, o->buf, used);
             c->repl_data->read_reploff += used;
+            processInputBuffer(c);
         }
-        processInputBuffer(c);
         server.pending_repl_data.mem -= (used + sizeof(replDataBufBlock) + sizeof(listNode));
         server.pending_repl_data.len -= used;
         offset += used;

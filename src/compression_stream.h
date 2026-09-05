@@ -160,7 +160,7 @@ typedef enum {
     STREAM_PUSH_READER_OK = 0,          /* Input consumed; output (possibly 0 bytes) appended. */
     STREAM_PUSH_READER_ERR = -1,        /* Envelope or codec error. */
     STREAM_PUSH_READER_FRAME_DONE = -2, /* The compressed frame ended. */
-    STREAM_PUSH_READER_OVERFLOW = -3,   /* Output for one feed call exceeded the caller's cap. */
+    STREAM_PUSH_READER_NEED_OUTPUT = 1, /* Decode budget reached; resume with an empty feed. */
 } streamPushReaderResult;
 
 typedef enum {
@@ -175,19 +175,23 @@ typedef struct streamPushReader {
     uint8_t stream_kind;                 /* Expected VCS stream kind. */
     uint8_t envelope[VCS_ENVELOPE_SIZE]; /* Leading bytes gathered during probe. */
     size_t envelope_len;
+    sds pending_input;
+    size_t pending_input_pos;
+    bool needs_drain;
 } streamPushReader;
 
 /* Push reader API. Init never fails (codec state is created lazily once the
  * envelope is parsed); Free releases codec state and is safe to call in any
  * state. Feed consumes len source bytes and appends decoded (or passthrough)
- * output to *out, which may be reallocated. output_max caps the bytes one
- * feed call may append, as a decompression-bomb guard. On STREAM_PUSH_READER_OK
- * a zero-length append means a partial envelope or compressed block was
- * buffered; resume when more input arrives. Any other result is terminal:
- * input may be partially consumed and output partially appended, and the only
- * valid next call on the reader is streamPushReaderFree(). */
+ * output to *out, which may be reallocated. output_max bounds decompression
+ * work and output growth for one call; passthrough input is not bounded because
+ * it cannot amplify. STREAM_PUSH_READER_NEED_OUTPUT is nonterminal: the reader
+ * retains unconsumed input and the caller resumes it with a zero-length feed
+ * before reading more source bytes. Errors and an unexpected frame end are
+ * terminal. */
 void streamPushReaderInit(streamPushReader *pr, uint8_t stream_kind);
 void streamPushReaderFree(streamPushReader *pr);
+bool streamPushReaderHasPending(const streamPushReader *pr);
 streamPushReaderResult streamPushReaderFeed(streamPushReader *pr, const void *src, size_t len, sds *out, size_t output_max);
 
 #endif /* COMPRESSION_STREAM_H */

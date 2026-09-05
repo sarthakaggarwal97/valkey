@@ -1271,6 +1271,8 @@ typedef struct ClientPubSubData {
 /* Max raw replication-backlog bytes compressed per write dispatch cycle;
  * bounds per-batch latency and the compressed staging buffer. */
 #define REPL_COMPRESSION_BATCH_LIMIT (1024 * 1024)
+/* Bound replica-side decompression work before yielding to the event loop. */
+#define REPL_DECODE_EVENT_BUDGET (8 * 1024 * 1024)
 
 /* Incremental replication compression state for one replica link (primary
  * side). The write path compresses backlog bytes directly into out_buf via
@@ -1306,6 +1308,7 @@ typedef struct ClientReplicationData {
     int replica_version;                 /* Version on the form 0xMMmmpp. */
     short replica_capa;                  /* Replica capabilities: REPLICA_CAPA_* bitwise OR. */
     short replica_req;                   /* Replica requirements: REPLICA_REQ_* */
+    bool repl_decode_scheduled;          /* Buffered compressed input has a queued continuation. */
     uint64_t associated_rdb_client_id;   /* The client id of this replica's rdb connection */
     time_t rdb_client_disconnect_time;   /* Time of the first freeClient call on this client. Used for delaying free. */
     listNode *ref_repl_buf_node;         /* Referenced node of replication buffer blocks,
@@ -3132,6 +3135,7 @@ void flushReplicasOutputBuffers(void);
 void disconnectReplicas(void);
 void replicaDestroyCompression(client *c);
 ssize_t replDecodeToQueryBuf(client *c, const void *buf, size_t len);
+bool replStreamHasPendingDecode(void);
 void evictClients(void);
 int listenToPort(connListener *fds);
 void pauseActions(pause_purpose purpose, mstime_t end, uint32_t actions);

@@ -441,39 +441,38 @@ void streamPushReaderInit(streamPushReader *pr, uint8_t stream_kind) {
 
 void streamPushReaderFree(streamPushReader *pr) {
     if (pr->state == STREAM_PUSH_READER_COMPRESSED) streamDecompressorFree(&pr->decompressor);
+    sdsfree(pr->pending_input);
+    pr->pending_input = NULL;
+    pr->pending_input_pos = 0;
+    pr->needs_drain = false;
     pr->state = STREAM_PUSH_READER_PROBE;
     pr->envelope_len = 0;
 }
 
-/* Append raw bytes to *out (passthrough), respecting the remaining budget. */
-static streamPushReaderResult pushReaderEmit(sds *out, const uint8_t *in, size_t len, size_t *budget) {
-    if (len == 0) return STREAM_PUSH_READER_OK;
-    if (len > *budget) return STREAM_PUSH_READER_OVERFLOW;
-    *out = sdscatlen(*out, in, len);
-    *budget -= len;
-    return STREAM_PUSH_READER_OK;
-}
-
 /* Drain compressed bytes [in, in+len) through the codec, appending decoded
- * output to *out within the remaining budget (decompression-bomb guard). */
+ * output to *out within the remaining scheduling budget. */
 static streamPushReaderResult
-pushReaderFeedCodec(streamPushReader *pr, const uint8_t *in, size_t len, sds *out, size_t *budget) {
+pushReaderFeedCodec(streamPushReader *pr, const uint8_t *in, size_t len, size_t *input_consumed, sds *out, size_t *budget) {
     size_t off = 0;
     size_t room = 0;
     ssize_t produced = 0;
     do {
-        /* Budget exhausted with more output possibly pending: the stream
-         * expands past the bomb-guard cap. Checked up front so the codec is
-         * never handed more room than the remaining budget allows. */
-        if (*budget == 0) return STREAM_PUSH_READER_OVERFLOW;
+        if (*budget == 0) {
+            *input_consumed = off;
+            return STREAM_PUSH_READER_NEED_OUTPUT;
+        }
         room = STREAM_PUSH_READER_CHUNK;
         if (room > *budget) room = *budget;
         size_t used = sdslen(*out);
         *out = sdsMakeRoomFor(*out, room);
         size_t consumed = 0;
-        produced = streamDecompressorFeed(&pr->decompressor, (uint8_t *)*out + used, room, in + off, len - off,
+        const uint8_t *feed_input = in ? in + off : NULL;
+        produced = streamDecompressorFeed(&pr->decompressor, (uint8_t *)*out + used, room, feed_input, len - off,
                                           &consumed);
-        if (produced < 0 || consumed > len - off) return STREAM_PUSH_READER_ERR;
+        if (produced < 0 || consumed > len - off) {
+            *input_consumed = off;
+            return STREAM_PUSH_READER_ERR;
+        }
         if (produced > 0) {
             sdsIncrLen(*out, (size_t)produced);
             *budget -= (size_t)produced;
@@ -481,22 +480,30 @@ pushReaderFeedCodec(streamPushReader *pr, const uint8_t *in, size_t len, sds *ou
         off += consumed;
         /* Report the frame end; for a long-lived stream this means the
          * source ended it unexpectedly. */
-        if (pr->decompressor.frame_done) return STREAM_PUSH_READER_FRAME_DONE;
+        if (pr->decompressor.frame_done) {
+            *input_consumed = off;
+            return STREAM_PUSH_READER_FRAME_DONE;
+        }
         /* The codec always makes progress given input and output room; no
          * progress with input still pending is a stuck state. Fail rather
          * than let the caller drop the unconsumed tail. Gated on pending
          * input: empty-input drain iterations legitimately produce 0. */
-        if (off < len && consumed == 0 && produced == 0) return STREAM_PUSH_READER_ERR;
+        if (off < len && consumed == 0 && produced == 0) {
+            *input_consumed = off;
+            return STREAM_PUSH_READER_ERR;
+        }
         /* Keep draining with empty input while the codec may hold buffered
          * output, which is only the case when it filled the entire room. */
     } while (off < len || (size_t)produced == room);
+    *input_consumed = off;
     return STREAM_PUSH_READER_OK;
 }
 
-streamPushReaderResult streamPushReaderFeed(streamPushReader *pr, const void *src, size_t len, sds *out, size_t output_max) {
+static streamPushReaderResult pushReaderFeedInput(streamPushReader *pr, const void *src, size_t len, size_t *input_consumed, sds *out, size_t output_max) {
     const uint8_t *in = src;
     size_t off = 0;
     size_t budget = output_max;
+    *input_consumed = 0;
 
     /* Probe phase: classify the stream from its leading bytes. The magic may
      * arrive split across feeds, so bytes accumulate until the prefix matches
@@ -513,23 +520,76 @@ streamPushReaderResult streamPushReaderFeed(streamPushReader *pr, const void *sr
         if (pr->state == STREAM_PUSH_READER_PROBE) {
             /* Magic matches so far; gather the rest of the envelope. */
             while (pr->envelope_len < VCS_ENVELOPE_SIZE && off < len) pr->envelope[pr->envelope_len++] = in[off++];
-            if (pr->envelope_len < VCS_ENVELOPE_SIZE) return STREAM_PUSH_READER_OK; /* Need more header. */
+            if (pr->envelope_len < VCS_ENVELOPE_SIZE) {
+                *input_consumed = off;
+                return STREAM_PUSH_READER_OK; /* Need more header. */
+            }
 
             compressionAlgo algo = ALGO_NONE;
-            if (readVcsEnvelope(pr->envelope, pr->stream_kind, &algo) != C_OK)
+            if (readVcsEnvelope(pr->envelope, pr->stream_kind, &algo) != C_OK) {
+                *input_consumed = off;
                 return STREAM_PUSH_READER_ERR;
-            if (streamDecompressorInit(&pr->decompressor, algo, false) != C_OK) return STREAM_PUSH_READER_ERR;
+            }
+            if (streamDecompressorInit(&pr->decompressor, algo, false) != C_OK) {
+                *input_consumed = off;
+                return STREAM_PUSH_READER_ERR;
+            }
             pr->state = STREAM_PUSH_READER_COMPRESSED;
         }
     }
 
     if (pr->state == STREAM_PUSH_READER_PASSTHROUGH) {
         /* Replay any buffered magic-prefix bytes once, then forward the rest. */
-        streamPushReaderResult r = pushReaderEmit(out, pr->envelope, pr->envelope_len, &budget);
+        *out = sdscatlen(*out, pr->envelope, pr->envelope_len);
         pr->envelope_len = 0;
-        if (r != STREAM_PUSH_READER_OK) return r;
-        return pushReaderEmit(out, in + off, len - off, &budget);
+        if (off < len) *out = sdscatlen(*out, in + off, len - off);
+        *input_consumed = len;
+        return STREAM_PUSH_READER_OK;
     }
-    if (off < len) return pushReaderFeedCodec(pr, in + off, len - off, out, &budget);
+    if (off < len || len == 0) {
+        size_t codec_consumed = 0;
+        const uint8_t *codec_input = in ? in + off : NULL;
+        streamPushReaderResult result = pushReaderFeedCodec(pr, codec_input, len - off, &codec_consumed,
+                                                            out, &budget);
+        *input_consumed = off + codec_consumed;
+        return result;
+    }
+    *input_consumed = off;
     return STREAM_PUSH_READER_OK;
+}
+
+bool streamPushReaderHasPending(const streamPushReader *pr) {
+    return pr->needs_drain || pr->pending_input != NULL;
+}
+
+streamPushReaderResult streamPushReaderFeed(streamPushReader *pr, const void *src, size_t len, sds *out, size_t output_max) {
+    bool resuming = streamPushReaderHasPending(pr);
+    if (len > 0 && resuming) return STREAM_PUSH_READER_ERR;
+
+    const uint8_t *input = src;
+    size_t input_len = len;
+    if (pr->pending_input) {
+        input = (const uint8_t *)pr->pending_input + pr->pending_input_pos;
+        input_len = sdslen(pr->pending_input) - pr->pending_input_pos;
+    } else if (pr->needs_drain) {
+        input = NULL;
+        input_len = 0;
+    }
+
+    size_t consumed = 0;
+    streamPushReaderResult result = pushReaderFeedInput(pr, input, input_len, &consumed, out, output_max);
+    if (consumed > input_len) return STREAM_PUSH_READER_ERR;
+
+    if (pr->pending_input) {
+        pr->pending_input_pos += consumed;
+        if (pr->pending_input_pos == sdslen(pr->pending_input)) {
+            sdsfree(pr->pending_input);
+            pr->pending_input = NULL;
+            pr->pending_input_pos = 0;
+        }
+    } else if (result == STREAM_PUSH_READER_NEED_OUTPUT && consumed < input_len) {
+        pr->pending_input = sdsnewlen(input + consumed, input_len - consumed);
+    }
+    pr->needs_drain = result == STREAM_PUSH_READER_NEED_OUTPUT && consumed == input_len;
+    return result;
 }
