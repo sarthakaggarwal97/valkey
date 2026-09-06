@@ -71,8 +71,8 @@ typedef struct {
     size_t input_hint; /* Preferred compressed bytes for next feed, 0 if unknown. */
 } streamDecompressor;
 
-/* Decompressor lifecycle. Codec dispatch used by streamReader; the reader owns
- * buffering and sticky error state. */
+/* Decompressor lifecycle. Codec dispatch used by streamReader and
+ * streamPushReader; the reader owns buffering and sticky error state. */
 int streamDecompressorInit(streamDecompressor *decompressor,
                            compressionAlgo algo,
                            bool skip_codec_checksum_validation);

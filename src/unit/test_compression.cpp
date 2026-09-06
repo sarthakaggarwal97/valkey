@@ -1470,7 +1470,7 @@ TEST(replCompression, pushReaderFrameDoneOnLiveLink) {
     freeReplCompressState(&rc);
 }
 
-TEST(replCompression, pushReaderOverflowGuard) {
+TEST(replCompression, pushReaderOutputLimitIsResumable) {
     replicaCompressionState rc;
     initReplCompressState(&rc);
     const size_t n = 64 * 1024;
@@ -1482,9 +1482,16 @@ TEST(replCompression, pushReaderOverflowGuard) {
     streamPushReader reader;
     streamPushReaderInit(&reader, VCS_STREAM_REPL);
     sds out = sdsempty();
-    EXPECT_EQ(streamPushReaderFeed(&reader, rc.out_buf, sdslen(rc.out_buf), &out, 1024),
-              STREAM_PUSH_READER_OVERFLOW);
-    EXPECT_LE(sdslen(out), (size_t)1024);
+    streamPushReaderResult result = streamPushReaderFeed(&reader, rc.out_buf, sdslen(rc.out_buf), &out, 1024);
+    EXPECT_EQ(result, STREAM_PUSH_READER_NEED_OUTPUT);
+    EXPECT_EQ(sdslen(out), (size_t)1024);
+
+    while (result != STREAM_PUSH_READER_OK) {
+        ASSERT_EQ(result, STREAM_PUSH_READER_NEED_OUTPUT);
+        result = streamPushReaderFeed(&reader, NULL, 0, &out, 1024);
+    }
+    ASSERT_EQ(sdslen(out), n);
+    EXPECT_EQ(memcmp(out, buf, n), 0);
 
     streamPushReaderFree(&reader);
     sdsfree(out);
@@ -1605,37 +1612,6 @@ TEST(replCompression, pushReaderDrainsBufferedOutputWithoutMoreInput) {
     ASSERT_EQ(streamPushReaderFeed(&reader, rc.out_buf, sdslen(rc.out_buf), &out, 4 * 1024 * 1024), STREAM_PUSH_READER_OK);
     ASSERT_EQ(sdslen(out), n);
     EXPECT_EQ(memcmp(out, payload, n), 0);
-
-    streamPushReaderFree(&reader);
-    sdsfree(out);
-    freeReplCompressState(&rc);
-    zfree(payload);
-}
-
-TEST(replCompression, pushReaderLz4HighRatioOutputFitsProductionCap) {
-    /* Feed paths hand the reader at most PROTO_IOBUF_LEN (16KB) per call and
-     * LZ4 expansion is bounded, so one call's output stays far under the 16MB
-     * overflow cap (REPL_DECODE_MAX_OUTPUT_PER_FEED in replication.c) for a
-     * high-ratio input. */
-    const size_t n = 4 * 1024 * 1024; /* 4MB of one byte: near-max ratio */
-    unsigned char *payload = (unsigned char *)zmalloc(n);
-    memset(payload, 'Z', n);
-
-    replicaCompressionState rc;
-    initReplCompressState(&rc);
-    ASSERT_EQ(replFeed(&rc, payload, n, COMPRESS_FLUSH_CONTINUE), C_OK);
-    ASSERT_EQ(replFeed(&rc, NULL, 0, COMPRESS_FLUSH_SYNC), C_OK);
-
-    /* One feed receives one production-sized wire read; a 255x expansion
-     * bound remains below the 16MB cap. */
-    const size_t chunk = PROTO_IOBUF_LEN;
-    ASSERT_GE(sdslen(rc.out_buf), chunk);
-    streamPushReader reader;
-    streamPushReaderInit(&reader, VCS_STREAM_REPL);
-    sds out = sdsempty();
-    ASSERT_EQ(streamPushReaderFeed(&reader, rc.out_buf, chunk, &out, 16 * 1024 * 1024), STREAM_PUSH_READER_OK);
-    EXPECT_GT(sdslen(out), (size_t)1024 * 1024); /* high ratio actually exercised */
-    EXPECT_LT(sdslen(out), (size_t)16 * 1024 * 1024);
 
     streamPushReaderFree(&reader);
     sdsfree(out);

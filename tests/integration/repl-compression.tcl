@@ -411,11 +411,13 @@ start_server {tags {"repl"} overrides {save ""}} {
             # Returning to the advertised state before cron runs does not
             # require renegotiating the existing link.
             $replica debug pause-cron 1
-            try {
+            set pause_code [catch {
                 $replica config set repl-compression no
                 $replica config set repl-compression lz4
-            } finally {
-                $replica debug pause-cron 0
+            } pause_result pause_opts]
+            $replica debug pause-cron 0
+            if {$pause_code} {
+                return -options $pause_opts $pause_result
             }
             after 1500
             assert_equal $partial_before [status $primary sync_partial_ok]

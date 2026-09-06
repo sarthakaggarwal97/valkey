@@ -466,7 +466,7 @@ typedef enum {
 #define REPLICA_CAPA_PSYNC2 (1 << 1)            /* Supports PSYNC2 protocol. */
 #define REPLICA_CAPA_DUAL_CHANNEL (1 << 2)      /* Supports dual channel replication sync */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM (1 << 3) /* Supports skipping RDB checksum for sync requests. */
-#define REPLICA_CAPA_COMPRESS_REPL (1 << 4)     /* Can decode a compressed incremental replication stream. */
+#define REPLICA_CAPA_COMPRESS_REPL (1 << 5)     /* Can decode a compressed incremental replication stream. */
 
 /* Replica capability strings */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR "skip-rdb-checksum" /* Supports skipping RDB checksum for sync requests. */
@@ -1271,6 +1271,10 @@ typedef struct ClientPubSubData {
 /* Max raw replication-backlog bytes compressed per write dispatch cycle;
  * bounds per-batch latency and the compressed staging buffer. */
 #define REPL_COMPRESSION_BATCH_LIMIT (1024 * 1024)
+/* Max decoded bytes processed before yielding to the event loop. This is
+ * deliberately above the plaintext path's per-event read allowance while
+ * remaining reachable by highly compressible LZ4 input. */
+#define REPL_DECODE_EVENT_BUDGET (1024 * 1024)
 
 /* Incremental replication compression state for one replica link (primary
  * side). The write path compresses backlog bytes directly into out_buf via
@@ -2280,6 +2284,7 @@ struct valkeyServer {
     int repl_ignore_disk_write_error;        /* Configures whether replicas panic when unable to
                                               * persist writes to AOF. */
     streamPushReader *repl_stream_reader;    /* Replica-side replication stream reader (NULL when inactive). */
+    long long repl_decode_time_event_id;     /* Timer draining buffered compressed input, or AE_DELETED_EVENT_ID. */
     long long repl_decompression_errors;     /* Decompression failures (replica side). */
     long long total_repl_decompressed_bytes; /* Total decompressed bytes processed (replica side). */
 
@@ -3131,7 +3136,8 @@ char *getClientTypeName(int client_class);
 void flushReplicasOutputBuffers(void);
 void disconnectReplicas(void);
 void replicaDestroyCompression(client *c);
-ssize_t replDecodeToQueryBuf(client *c, const void *buf, size_t len);
+ssize_t replDecodeToQueryBuf(client *c, const void *buf, size_t len, size_t output_max);
+bool replStreamHasPendingDecode(void);
 void evictClients(void);
 int listenToPort(connListener *fds);
 void pauseActions(pause_purpose purpose, mstime_t end, uint32_t actions);

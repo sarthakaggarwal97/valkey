@@ -4609,10 +4609,35 @@ static bool readToQueryBuf(client *c) {
 }
 
 #define REPL_MAX_READS_PER_IO_EVENT 25
-/* Soft bound on decode work per event: checked between reads, so one event
- * decodes at most this budget plus one feed's output. The next event resumes
- * where this one stopped. */
-#define REPL_DECODE_EVENT_BUDGET (8 * 1024 * 1024)
+
+/* Resume buffered decompression without relying on another socket-read event.
+ * The timer remains armed while an IO thread owns the primary client. */
+static long long resumeReplDecodeTimeProc(aeEventLoop *eventLoop, long long id, void *clientData) {
+    UNUSED(eventLoop);
+    UNUSED(clientData);
+
+    serverAssert(server.repl_decode_time_event_id == id);
+    client *c = server.primary;
+    if (!c || c->flag.close_asap || !server.repl_stream_reader || !replStreamHasPendingDecode()) {
+        server.repl_decode_time_event_id = AE_DELETED_EVENT_ID;
+        return AE_NOMORE;
+    }
+    if (c->io_write_state != CLIENT_IDLE || c->io_read_state != CLIENT_IDLE) return 1;
+
+    /* Clear before entering the read path so it can schedule the next slice. */
+    server.repl_decode_time_event_id = AE_DELETED_EVENT_ID;
+    readQueryFromClient(c->conn);
+    return AE_NOMORE;
+}
+
+static int scheduleReplDecode(void) {
+    if (!replStreamHasPendingDecode() || server.repl_decode_time_event_id != AE_DELETED_EVENT_ID) return C_OK;
+    long long id = aeCreateTimeEvent(server.el, 0, resumeReplDecodeTimeProc, NULL, NULL);
+    if (id == AE_ERR) return C_ERR;
+    server.repl_decode_time_event_id = id;
+    return C_OK;
+}
+
 void readQueryFromClient(connection *conn) {
     client *c = connGetPrivateData(conn);
     /* Check if we can send the client to be handled by the IO-thread */
@@ -4630,8 +4655,13 @@ void readQueryFromClient(connection *conn) {
          * and appends the decoded stream to the query buffer; every other
          * client reads straight into the query buffer. */
         bool use_reader = c->flag.primary && server.repl_stream_reader;
+        bool resume_decode = use_reader && replStreamHasPendingDecode();
+        size_t decode_budget = REPL_DECODE_EVENT_BUDGET - decoded_total;
         uint8_t decode_buf[PROTO_IOBUF_LEN];
-        if (use_reader) {
+        if (resume_decode) {
+            decoded = replDecodeToQueryBuf(c, NULL, 0, decode_budget);
+            full_read = !replStreamHasPendingDecode();
+        } else if (use_reader) {
             /* Mirrors readToQueryBuf's guard: a client marked to close must
              * not be read from. */
             if (c->flag.close_asap) {
@@ -4644,18 +4674,26 @@ void readQueryFromClient(connection *conn) {
         } else {
             full_read = readToQueryBuf(c);
         }
-        if (handleReadResult(c) == C_OK) {
-            if (use_reader) {
-                decoded = replDecodeToQueryBuf(c, decode_buf, (size_t)c->nread);
-                if (decoded < 0) {
-                    serverLog(LL_WARNING, "Disconnecting primary due to replication stream decompression failure");
-                    freeClientAsync(c);
-                    return;
-                }
+        if (resume_decode || handleReadResult(c) == C_OK) {
+            if (use_reader && !resume_decode) {
+                decoded = replDecodeToQueryBuf(c, decode_buf, (size_t)c->nread, decode_budget);
+            }
+            if (decoded < 0) {
+                serverLog(LL_WARNING, "Disconnecting primary due to replication stream decompression failure");
+                freeClientAsync(c);
+                return;
             }
             decoded_total += (size_t)decoded;
             if (processInputBuffer(c) == C_ERR) return;
             trimCommandQueue(c);
+            if (use_reader && replStreamHasPendingDecode()) {
+                if (scheduleReplDecode() == C_ERR) {
+                    serverLog(LL_WARNING, "Unable to schedule replication stream decompression");
+                    freeClientAsync(c);
+                    return;
+                }
+                full_read = false;
+            }
         }
         repeat = (c->flag.primary &&
                   !c->flag.close_asap &&
