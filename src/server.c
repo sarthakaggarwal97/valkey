@@ -2910,8 +2910,6 @@ void resetServerStats(void) {
     server.stat_sync_full = 0;
     server.stat_sync_partial_ok = 0;
     server.stat_sync_partial_err = 0;
-    server.repl_decompression_errors = 0;
-    server.total_repl_decompressed_bytes = 0;
     server.stat_io_reads_processed = 0;
     server.stat_total_reads_processed = 0;
     server.stat_io_writes_processed = 0;
@@ -6862,11 +6860,6 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
                     "slave_priority:%d\r\n", server.replica_priority,
                     "slave_read_only:%d\r\n", server.repl_replica_ro,
                     "replica_announced:%d\r\n", server.replica_announced));
-            info = sdscatfmt(info,
-                             "repl_decompression_errors:%I\r\n"
-                             "total_repl_decompressed_bytes:%I\r\n",
-                             server.repl_decompression_errors,
-                             server.total_repl_decompressed_bytes);
         }
 
         info = sdscatprintf(info, "connected_slaves:%lu\r\n", listLength(server.replicas));

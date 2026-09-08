@@ -253,17 +253,12 @@ ssize_t replDecodeToQueryBuf(client *c, const void *buf, size_t len, size_t outp
     if (result == STREAM_PUSH_READER_ERR || result == STREAM_PUSH_READER_FRAME_DONE) {
         if (result == STREAM_PUSH_READER_FRAME_DONE)
             serverLog(LL_WARNING, "Primary closed compressed replication frame unexpectedly");
-        server.repl_decompression_errors++;
         return -1;
     }
     size_t produced = sdslen(c->querybuf) - before;
     if (c->querybuf_peak < sdslen(c->querybuf)) c->querybuf_peak = sdslen(c->querybuf);
 
     c->repl_data->read_reploff += (long long)produced;
-
-    /* Stats cover only streams classified compressed; probe and passthrough
-     * bytes are not decompression work. */
-    if (pr->state == STREAM_PUSH_READER_COMPRESSED) server.total_repl_decompressed_bytes += produced;
 
     /* Plaintext stream confirmed: the reader is pure overhead from here on. */
     if (pr->state == STREAM_PUSH_READER_PASSTHROUGH) replDestroyStreamReader();

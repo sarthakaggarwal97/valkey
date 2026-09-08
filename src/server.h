@@ -2285,8 +2285,6 @@ struct valkeyServer {
                                               * persist writes to AOF. */
     streamPushReader *repl_stream_reader;    /* Replica-side replication stream reader (NULL when inactive). */
     long long repl_decode_time_event_id;     /* Timer draining buffered compressed input, or AE_DELETED_EVENT_ID. */
-    long long repl_decompression_errors;     /* Decompression failures (replica side). */
-    long long total_repl_decompressed_bytes; /* Total decompressed bytes processed (replica side). */
 
     /* The following two fields is where we store primary PSYNC replid/offset
      * while the PSYNC is in progress. At the end we'll copy the fields into

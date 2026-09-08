@@ -228,6 +228,87 @@ start_server {tags {"repl"} overrides {save ""}} {
         $primary config set repl-compression no
     }
 
+    test {Compressed replica obeys the hard output buffer limit and resynchronizes} {
+        $primary config set repl-compression lz4
+        $primary config set repl-backlog-size 1mb
+        $primary config set client-output-buffer-limit "replica 4mb 0 0"
+        $primary flushall
+
+        start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
+            set replica [srv 0 client]
+            set replica_pid [srv 0 pid]
+            $replica replicaof $primary_host $primary_port
+
+            wait_for_condition 50 200 {
+                [s 0 master_link_status] eq {up} &&
+                [string match {*state=online*compression=lz4*} [$primary info replication]]
+            } else {
+                fail "Compressed replication not established"
+            }
+
+            set sync_full_before [status $primary sync_full]
+            set primary_loglines [count_log_lines -1]
+            expr {srand(99173)}
+            set payload [randstring [expr {256 * 1024}] [expr {256 * 1024}]]
+            set last_key ""
+
+            pause_process $replica_pid
+            set pause_code [catch {
+                # Incompressible writes fill the compressed staging buffer and
+                # pin raw backlog blocks while the replica cannot read.
+                for {set i 0} {$i < 128} {incr i} {
+                    set last_key "cob:$i"
+                    $primary set $last_key $payload
+                    if {[status $primary connected_slaves] == 0} break
+                }
+
+                wait_for_condition 100 100 {
+                    [status $primary connected_slaves] == 0
+                } else {
+                    fail "Primary did not disconnect compressed replica at the hard output buffer limit"
+                }
+                wait_for_log_messages -1 \
+                    {"*scheduled to be closed ASAP for overcoming of output buffer limits*"} \
+                    $primary_loglines 100 100
+
+                assert_equal "" [string trim [$primary client list type replica]]
+                wait_for_condition 100 100 {
+                    [status $primary repl_backlog_histlen] <= 2 * 1024 * 1024
+                } else {
+                    fail "Compressed replica backlog reference was not released"
+                }
+            } pause_result pause_options]
+            resume_process $replica_pid
+            if {$pause_code} {
+                return -options $pause_options $pause_result
+            }
+
+            # The burst is larger than the 1 MiB backlog, so reconnection needs
+            # a full sync. Incremental compression must be active afterward.
+            wait_for_condition 300 100 {
+                [status $primary sync_full] == $sync_full_before + 1 &&
+                [s 0 master_link_status] eq {up} &&
+                [string match {*state=online*compression=lz4*} [$primary info replication]]
+            } else {
+                fail "Replica did not resynchronize with compression after the output buffer disconnect"
+            }
+            assert_equal $payload [$replica get $last_key]
+
+            $primary set cob:after-resync delivered
+            wait_for_condition 50 100 {
+                [$replica get cob:after-resync] eq {delivered}
+            } else {
+                fail "Replication did not continue after compressed resynchronization"
+            }
+
+            $replica replicaof no one
+        }
+
+        $primary config set repl-compression no
+        $primary config set repl-backlog-size 10mb
+        $primary config set client-output-buffer-limit "replica 256mb 64mb 60"
+    }
+
     test {Compressed partial resync preserves data and decoded ACK offsets} {
         $primary config set repl-compression lz4
         $primary flushall
@@ -375,9 +456,8 @@ start_server {tags {"repl"} overrides {save ""}} {
             }
             assert_equal [$primary dbsize] [$replica dbsize]
 
-            # The link remained plaintext; no bytes entered the decompressor.
+            # The link remained plaintext.
             assert_equal 0 [string match {*compression=lz4*} [$primary info replication]]
-            assert_equal 0 [s 0 total_repl_decompressed_bytes]
 
             $replica replicaof no one
         }
