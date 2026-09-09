@@ -1107,7 +1107,13 @@ start_server {overrides {forkless-infrastructure-enabled yes save ""}} {
         set evicted_keys [s evicted_keys]
         assert {$evicted_keys > 0}
         assert_equal [s rdb_bgsave_in_progress] 1
-        
+
+        # Lift the memory cap now that evictions have been observed. Reloading
+        # the snapshot below restores the full pre-eviction dataset, which does
+        # not fit under the cap, so leaving it in place would let allkeys-lru
+        # evict the very keys the verification is about to read back.
+        r config set maxmemory 0
+
         # Resume save at normal speed
         r config set rdb-key-save-delay 0
         waitForBgsave r
