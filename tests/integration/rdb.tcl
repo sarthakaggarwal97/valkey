@@ -1007,12 +1007,15 @@ start_server {overrides {forkless-infrastructure-enabled yes save ""}} {
         set num_keys 100
         createComplexDatasetForVerification r $num_keys
         
-        # Set TTLs on all keys - key i expires in (i/10 + 1) seconds
+        # Set TTLs on all keys - key i expires (i/10 + 1) seconds after start_time.
+        # The deadline is absolute rather than relative so that the time spent
+        # issuing these commands does not push a key's expiry past the point
+        # where the verification below expects it to be gone.
         set start_time [clock milliseconds]
         for {set i 0} {$i < $num_keys} {incr i} {
-            set ttl [expr {$i/10 + 1}]
+            set deadline [expr {$start_time + ($i/10 + 1) * 1000}]
             foreach prefix {before int lst set zset hash hll bits geo geo_set stream iset} {
-                r expire ${prefix}_${i} $ttl
+                r pexpireat ${prefix}_${i} $deadline
             }
         }
         
@@ -1035,11 +1038,15 @@ start_server {overrides {forkless-infrastructure-enabled yes save ""}} {
         }
         
         while {[llength $verified] > 0} {
-            set elapsed_time [expr {([clock milliseconds] - $start_time) / 1000.0}]
-            
             foreach i $verified {
-                # If not yet expired, verify all data types exist
-                if {$elapsed_time < [expr {$i/10.0}]} {
+                # Re-read the clock for every key: verifying one key issues a
+                # dozen commands, so a single reading taken outside this loop
+                # goes stale long before the last key is checked.
+                set elapsed_time [expr {([clock milliseconds] - $start_time) / 1000.0}]
+                set ttl [expr {$i/10 + 1}]
+
+                # More than a second before the deadline, verify all data types exist
+                if {$elapsed_time < $ttl - 1} {
                     assert_equal [r exists before_${i}] 1
                     assert_equal [r exists int_${i}] 1
                     assert_equal [r exists lst_${i}] 1
@@ -1054,8 +1061,8 @@ start_server {overrides {forkless-infrastructure-enabled yes save ""}} {
                     assert_equal [r exists iset_${i}] 1
                 }
                 
-                # If expired for more than 2 seconds, verify all data types are gone
-                if {$elapsed_time > [expr {$i/10.0 + 2}]} {
+                # More than 2 seconds past the deadline, verify all data types are gone
+                if {$elapsed_time > $ttl + 2} {
                     assert_equal [r exists before_${i}] 0
                     assert_equal [r exists int_${i}] 0
                     assert_equal [r exists lst_${i}] 0
