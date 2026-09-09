@@ -1283,36 +1283,37 @@ typedef struct replicaCompressionState {
 } replicaCompressionState;
 
 typedef struct ClientReplicationData {
-    int repl_state;                           /* Replication state if this is a replica. */
-    int repl_start_cmd_stream_on_ack;         /* Install replica write handler on first ACK. */
-    int repldbfd;                             /* Replication DB file descriptor. */
-    off_t repldboff;                          /* Replication DB file offset. */
-    off_t repldbsize;                         /* Replication DB file size. */
-    sds replpreamble;                         /* Replication DB preamble. */
-    long long read_reploff;                   /* Read replication offset if this is a primary. */
-    long long reploff;                        /* Applied replication offset if this is a primary. */
-    long long repl_applied;                   /* Applied replication data count in querybuf, if this is a replica. */
-    long long repl_ack_off;                   /* Replication ack offset, if this is a replica. */
-    long long repl_aof_off;                   /* Replication AOF fsync ack offset, if this is a replica. */
-    long long repl_ack_time;                  /* Replication ack time, if this is a replica. */
-    long long repl_last_partial_write;        /* The last time the server did a partial write from the RDB child pipe to this
-                                                 replica  */
-    long long psync_initial_offset;           /* FULLRESYNC reply offset other replicas
-                                                 copying this replica output buffer
-                                                 should use. */
-    char replid[CONFIG_RUN_ID_SIZE + 1];      /* primary replication ID (if primary). */
-    int replica_listening_port;               /* As configured with: REPLCONF listening-port */
-    char *replica_addr;                       /* Optionally given by REPLCONF ip-address */
-    int replica_version;                      /* Version on the form 0xMMmmpp. */
-    short replica_capa;                       /* Replica capabilities: REPLICA_CAPA_* bitwise OR. */
-    short replica_req;                        /* Replica requirements: REPLICA_REQ_* */
-    uint64_t associated_rdb_client_id;        /* The client id of this replica's rdb connection */
-    time_t rdb_client_disconnect_time;        /* Time of the first freeClient call on this client. Used for delaying free. */
-    listNode *ref_repl_buf_node;              /* Referenced node of replication buffer blocks,
-                                                see the definition of replBufBlock. */
-    size_t ref_block_pos;                     /* Access position of referenced buffer block,
-                                                i.e. the next offset to send. */
-    sds replica_nodeid;                       /* Node id in cluster mode. */
+    int repl_state;                      /* Replication state if this is a replica. */
+    int repl_start_cmd_stream_on_ack;    /* Install replica write handler on first ACK. */
+    int repldbfd;                        /* Replication DB file descriptor. */
+    off_t repldboff;                     /* Replication DB file offset. */
+    off_t repldbsize;                    /* Replication DB file size. */
+    sds replpreamble;                    /* Replication DB preamble. */
+    long long read_reploff;              /* Read replication offset if this is a primary. */
+    long long reploff;                   /* Applied replication offset if this is a primary. */
+    long long repl_applied;              /* Applied replication data count in querybuf, if this is a replica. */
+    long long repl_ack_off;              /* Replication ack offset, if this is a replica. */
+    long long repl_aof_off;              /* Replication AOF fsync ack offset, if this is a replica. */
+    long long repl_ack_time;             /* Replication ack time, if this is a replica. */
+    long long repl_last_partial_write;   /* The last time the server did a partial write from the RDB child pipe to this
+                                            replica  */
+    long long psync_initial_offset;      /* FULLRESYNC reply offset other replicas
+                                            copying this replica output buffer
+                                            should use. */
+    char replid[CONFIG_RUN_ID_SIZE + 1]; /* primary replication ID (if primary). */
+    int replica_listening_port;          /* As configured with: REPLCONF listening-port */
+    char *replica_addr;                  /* Optionally given by REPLCONF ip-address */
+    int replica_version;                 /* Version on the form 0xMMmmpp. */
+    short replica_capa;                  /* Replica capabilities: REPLICA_CAPA_* bitwise OR. */
+    short replica_req;                   /* Replica requirements: REPLICA_REQ_* */
+    uint64_t associated_rdb_client_id;   /* The client id of this replica's rdb connection */
+    time_t rdb_client_disconnect_time;   /* Time of the first freeClient call on this client. Used for delaying free. */
+    listNode *ref_repl_buf_node;         /* Referenced node of replication buffer blocks,
+                                           see the definition of replBufBlock. */
+    size_t ref_block_pos;                /* Access position of referenced buffer block,
+                                           i.e. the next offset to send. */
+    sds replica_nodeid;                  /* Node id in cluster mode. */
+
     replicaCompressionState *repl_compressor; /* Per-replica replication compressor (NULL if uncompressed). */
 } ClientReplicationData;
 
@@ -2248,33 +2249,34 @@ struct valkeyServer {
         long long read_reploff;
         int dbid;
     } repl_provisional_primary;
-    client *cached_primary;                      /* Cached primary to be reused for PSYNC. */
-    rio *loading_rio;                            /* Pointer to the rio object currently used for loading data. */
-    int repl_syncio_timeout;                     /* Timeout for synchronous I/O calls */
-    int repl_state;                              /* Replication status if the instance is a replica */
-    int repl_rdb_channel_state;                  /* State of the replica's rdb channel during dual-channel-replication */
-    off_t repl_transfer_size;                    /* Size of RDB to read from primary during sync. */
-    off_t repl_transfer_read;                    /* Amount of RDB read from primary during sync. */
-    off_t repl_transfer_last_fsync_off;          /* Offset when we fsync-ed last time. */
-    connection *repl_transfer_s;                 /* Replica -> Primary SYNC connection */
-    connection *repl_rdb_transfer_s;             /* Primary FULL SYNC connection (RDB download) */
-    int repl_transfer_fd;                        /* Replica -> Primary SYNC temp file descriptor */
-    char *repl_transfer_tmpfile;                 /* Replica-> Primary SYNC temp file name */
-    _Atomic(time_t) repl_transfer_lastio;        /* Unix time of the latest read, for timeout */
-    int repl_serve_stale_data;                   /* Serve stale data when link is down? */
-    int repl_replica_ro;                         /* Replica is read only? */
-    int repl_replica_ignore_maxmemory;           /* If true replicas do not evict. */
-    time_t repl_down_since;                      /* Unix time at which link with primary went down */
-    int repl_disable_tcp_nodelay;                /* Disable TCP_NODELAY after SYNC? */
-    int repl_mptcp;                              /* Use Multipath TCP for replica on client side */
-    int replica_priority;                        /* Reported in INFO and used by Sentinel. */
-    int replica_announced;                       /* If true, replica is announced by Sentinel */
-    int replica_announce_port;                   /* Give the primary this listening port. */
-    char *replica_announce_ip;                   /* Give the primary this ip address. */
-    int propagation_error_behavior;              /* Configures the behavior of the replica
-                                                  * when it receives an error on the replication stream */
-    int repl_ignore_disk_write_error;            /* Configures whether replicas panic when unable to
-                                                  * persist writes to AOF. */
+    client *cached_primary;               /* Cached primary to be reused for PSYNC. */
+    rio *loading_rio;                     /* Pointer to the rio object currently used for loading data. */
+    int repl_syncio_timeout;              /* Timeout for synchronous I/O calls */
+    int repl_state;                       /* Replication status if the instance is a replica */
+    int repl_rdb_channel_state;           /* State of the replica's rdb channel during dual-channel-replication */
+    off_t repl_transfer_size;             /* Size of RDB to read from primary during sync. */
+    off_t repl_transfer_read;             /* Amount of RDB read from primary during sync. */
+    off_t repl_transfer_last_fsync_off;   /* Offset when we fsync-ed last time. */
+    connection *repl_transfer_s;          /* Replica -> Primary SYNC connection */
+    connection *repl_rdb_transfer_s;      /* Primary FULL SYNC connection (RDB download) */
+    int repl_transfer_fd;                 /* Replica -> Primary SYNC temp file descriptor */
+    char *repl_transfer_tmpfile;          /* Replica-> Primary SYNC temp file name */
+    _Atomic(time_t) repl_transfer_lastio; /* Unix time of the latest read, for timeout */
+    int repl_serve_stale_data;            /* Serve stale data when link is down? */
+    int repl_replica_ro;                  /* Replica is read only? */
+    int repl_replica_ignore_maxmemory;    /* If true replicas do not evict. */
+    time_t repl_down_since;               /* Unix time at which link with primary went down */
+    int repl_disable_tcp_nodelay;         /* Disable TCP_NODELAY after SYNC? */
+    int repl_mptcp;                       /* Use Multipath TCP for replica on client side */
+    int replica_priority;                 /* Reported in INFO and used by Sentinel. */
+    int replica_announced;                /* If true, replica is announced by Sentinel */
+    int replica_announce_port;            /* Give the primary this listening port. */
+    char *replica_announce_ip;            /* Give the primary this ip address. */
+    int propagation_error_behavior;       /* Configures the behavior of the replica
+                                           * when it receives an error on the replication stream */
+    int repl_ignore_disk_write_error;     /* Configures whether replicas panic when unable to
+                                           * persist writes to AOF. */
+
     struct streamPushReader *repl_stream_reader; /* Replica-side stream decoder, or NULL for the normal read path. */
 
     /* The following two fields is where we store primary PSYNC replid/offset

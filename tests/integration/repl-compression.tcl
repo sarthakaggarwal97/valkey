@@ -247,7 +247,7 @@ start_server {tags {"repl"} overrides {save ""}} {
             }
 
             set sync_full_before [status $primary sync_full]
-            set primary_loglines [count_log_lines -1]
+            set cob_disconnections_before [s -1 client_output_buffer_limit_disconnections]
             expr {srand(99173)}
             set payload [randstring [expr {256 * 1024}] [expr {256 * 1024}]]
             set last_key ""
@@ -267,9 +267,11 @@ start_server {tags {"repl"} overrides {save ""}} {
                 } else {
                     fail "Primary did not disconnect compressed replica at the hard output buffer limit"
                 }
-                wait_for_log_messages -1 \
-                    {"*scheduled to be closed ASAP for overcoming of output buffer limits*"} \
-                    $primary_loglines 100 100
+                wait_for_condition 100 100 {
+                    [s -1 client_output_buffer_limit_disconnections] > $cob_disconnections_before
+                } else {
+                    fail "Primary did not record the output buffer limit disconnection"
+                }
 
                 assert_equal "" [string trim [$primary client list type replica]]
                 wait_for_condition 100 100 {
@@ -453,6 +455,16 @@ start_server {tags {"repl"} overrides {save ""}} {
             # The link remained plaintext.
             assert_equal 0 [string match {*compression=lz4*} [$primary info replication]]
 
+            # Disabling a link already classified as plaintext must not cause
+            # an unnecessary reconnect.
+            set full_before [status $primary sync_full]
+            set partial_before [status $primary sync_partial_ok]
+            $replica config set repl-compression no
+            after 1500
+            assert_equal $full_before [status $primary sync_full]
+            assert_equal $partial_before [status $primary sync_partial_ok]
+            assert_equal up [s 0 master_link_status]
+
             $replica replicaof no one
         }
     }
@@ -613,6 +625,10 @@ start_server {tags {"repl"} overrides {save ""}} {
             for {set i 0} {$i < 200} {incr i} {
                 $primary set "during_load:$i" "value_$i"
             }
+            # This compresses below one socket read but expands past one decode
+            # budget, exercising streamReplDataBufToDb's resumable decode loop.
+            set during_load_payload [string repeat x [expr {2 * 1024 * 1024}]]
+            $primary set during_load:large $during_load_payload
             assert_equal 1 [s 0 master_sync_in_progress]
             assert_match {*state=bg_transfer*compression=lz4*} [$primary info replication]
 
@@ -630,6 +646,7 @@ start_server {tags {"repl"} overrides {save ""}} {
             for {set i 0} {$i < 200} {incr i} {
                 assert_equal "value_$i" [$replica get "during_load:$i"]
             }
+            assert_equal $during_load_payload [$replica get during_load:large]
             assert_match "*compression=lz4*" [$primary info replication]
             wait_for_ofs_sync $primary $replica
 

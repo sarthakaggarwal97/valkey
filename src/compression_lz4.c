@@ -95,7 +95,7 @@ ssize_t compressionLz4CompressFeed(streamCompressor *compressor,
     case COMPRESS_FLUSH_CONTINUE:
         break;
     case COMPRESS_FLUSH_SYNC: {
-        /* Replication batch path caller: drain buffered codec bytes, keep frame open. */
+        /* Emit buffered bytes without ending the frame. */
         if (offset >= output_capacity) return -1;
         size_t r = LZ4F_flush(cctx, output + offset, output_capacity - offset, NULL);
         if (LZ4F_isError(r)) return -1;

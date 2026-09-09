@@ -1902,7 +1902,8 @@ static void sendGetackToReplicas(void) {
 
 extern int ProcessingEventsWhileBlocked;
 
-/* Process one buffered decompression slice before the event loop sleeps. */
+/* Process one buffered decompression slice before the event loop sleeps.
+ * Returning true lets processEventsWhileBlocked count the slice as progress. */
 static bool processPendingReplStream(void) {
     client *primary = server.primary;
     if (!primary || primary->flag.close_asap || !replStreamHasPendingDecode()) return false;
@@ -1944,6 +1945,9 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
         uint64_t processed = 0;
         processed += processIOThreadsResponses();
         processed += connTypeProcessPendingData();
+        /* Keep an online compressed primary draining when a long-running
+         * command yields to the event loop. */
+        processed += processPendingReplStream();
         if (server.aof_state == AOF_ON || server.aof_state == AOF_WAIT_REWRITE) flushAppendOnlyFile(0);
         processed += handleClientsWithPendingWrites();
         int last_processed = 0;

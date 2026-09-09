@@ -82,7 +82,7 @@ ConnectionType *connTypeOfReplication(void) {
     return connectionTypeTcp();
 }
 
-static compressionAlgo replCompressionConfiguredAlgo(void) {
+static compressionAlgo getReplCompressionAlgo(void) {
     switch ((repl_compression_mode)server.repl_compression) {
     case REPL_COMPRESSION_NO: return ALGO_NONE;
     case REPL_COMPRESSION_YES:
@@ -93,7 +93,7 @@ static compressionAlgo replCompressionConfiguredAlgo(void) {
 
 static compressionAlgo replicaExpectedCompressionAlgo(client *replica) {
     if (!(replica->repl_data->replica_capa & REPLICA_CAPA_COMPRESS_REPL)) return ALGO_NONE;
-    return replCompressionConfiguredAlgo();
+    return getReplCompressionAlgo();
 }
 
 /* True when the replica's live transport no longer matches what the current
@@ -140,8 +140,14 @@ static void reconcileUpstreamCompression(void) {
     if (!server.primary_host) return;
     if (server.repl_compression_advertised == REPL_COMPRESSION_CAPA_UNKNOWN) return;
 
-    int configured = replCompressionConfiguredAlgo() != ALGO_NONE;
+    int configured = getReplCompressionAlgo() != ALGO_NONE;
     if (configured == server.repl_compression_advertised) return;
+
+    /* A retired reader means the live stream was classified as plaintext.
+     * Disabling compression then needs no reconnect; a future handshake will
+     * advertise the new setting. Keep probing or compressed links eligible for
+     * reconnect because their transport may still need to change. */
+    if (!configured && server.primary && !server.repl_stream_reader) return;
 
     if (server.primary) {
         serverLog(LL_NOTICE, "Disconnecting from primary to renegotiate replication compression (now %s)",
@@ -161,24 +167,24 @@ static void reconcileUpstreamCompression(void) {
  * first compressed batch. No-ops when the link stays plaintext or is already
  * compressed (dual-channel reaches both the +CONTINUE and put-online paths).
  * Returns C_ERR when initialization failed; the caller drops the link. */
-static int replicaEnableCompressionIfNegotiated(client *c) {
-    compressionAlgo algo = replicaExpectedCompressionAlgo(c);
+static int replicaEnableCompressionIfNegotiated(client *replica) {
+    compressionAlgo algo = replicaExpectedCompressionAlgo(replica);
     if (algo == ALGO_NONE) return C_OK;
-    if (c->repl_data->repl_compressor) return C_OK;
+    if (replica->repl_data->repl_compressor) return C_OK;
 
-    serverAssert(c->io_write_state == CLIENT_IDLE);
+    serverAssert(replica->io_write_state == CLIENT_IDLE);
 
     replicaCompressionState *compressor = zcalloc(sizeof(*compressor));
     if (streamCompressorInit(&compressor->stream, algo, 0, STREAM_CHECKSUM_BLOCK) != C_OK) {
         zfree(compressor);
-        serverLog(LL_WARNING, "Failed to initialize compression for replica %s", replicationGetReplicaName(c));
+        serverLog(LL_WARNING, "Failed to initialize compression for replica %s", replicationGetReplicaName(replica));
         return C_ERR;
     }
     compressor->out_buf = sdsempty();
 
-    c->repl_data->repl_compressor = compressor;
+    replica->repl_data->repl_compressor = compressor;
 
-    serverLog(LL_NOTICE, "Replication compression enabled for replica %s (algo=%s)", replicationGetReplicaName(c),
+    serverLog(LL_NOTICE, "Replication compression enabled for replica %s (algo=%s)", replicationGetReplicaName(replica),
               compressionAlgoName(algo));
     return C_OK;
 }
@@ -212,7 +218,7 @@ static void replDestroyStreamReader(void) {
  * the reader never depends on what the handshake advertised. Classification
  * is unambiguous: a plaintext replication stream is RESP, whose first byte is
  * never 'V'. */
-static void replRefreshStreamReader(void) {
+static void replResetStreamReader(void) {
     replDestroyStreamReader();
     server.repl_stream_reader = zmalloc(sizeof(*server.repl_stream_reader));
     streamPushReaderInit(server.repl_stream_reader, VCS_STREAM_REPL);
@@ -2641,7 +2647,7 @@ void replicaAfterLoadPrimaryRDB(connection *conn, rdbSaveInfo *rsi, int disk_bas
         server.repl_down_since = 0;
         /* The ACK allows the primary to start the command stream, so install
          * the reader first even though this path does not currently yield. */
-        replRefreshStreamReader();
+        replResetStreamReader();
         /* Send the initial ACK immediately to put this replica in online state. */
         replicationSendAck();
         /* Finalize full sync duration here for single channel replication.
@@ -4044,7 +4050,7 @@ int dualChannelReplMainConnRecvPsyncReply(connection *conn, sds *err) {
             serverCommunicateSystemd("STATUS=PRIMARY <-> REPLICA sync: Partial Resynchronization accepted. Ready to "
                                      "accept connections in read-write mode.\n");
         }
-        replRefreshStreamReader();
+        replResetStreamReader();
         dualChannelSyncHandlePsync();
         return C_OK;
     }
@@ -4173,8 +4179,7 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
      * The primary will ignore capabilities it does not understand. */
 
     // we can ignore primary's conditions when sending capa (is_primary_stream_verified=1)
-    int use_diskless_load = useDisklessLoad();
-    int send_skip_rdb_checksum_capa = replicationSupportSkipRDBChecksum(conn, use_diskless_load, 1);
+    int send_skip_rdb_checksum_capa = replicationSupportSkipRDBChecksum(conn, useDisklessLoad(), 1);
     char *argv[11] = {"REPLCONF", "capa", "eof", "capa", "psync2", NULL, NULL, NULL, NULL, NULL, NULL};
     size_t lens[11] = {8, 4, 3, 4, 6, 0, 0, 0, 0, 0, 0};
     int argc = 5;
@@ -4198,7 +4203,7 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
      * an operator can keep a specific replica plaintext. The reader does not
      * depend on this: it classifies the incoming stream from its leading bytes,
      * so a config change after the handshake cannot desync the link. */
-    int advertise_compression = replCompressionConfiguredAlgo() != ALGO_NONE;
+    int advertise_compression = getReplCompressionAlgo() != ALGO_NONE;
     if (advertise_compression) {
         argv[argc] = "capa";
         lens[argc] = strlen("capa");
@@ -4585,7 +4590,7 @@ void syncWithPrimary(connection *conn) {
             serverCommunicateSystemd("STATUS=PRIMARY <-> REPLICA sync: Partial Resynchronization accepted. Ready to "
                                      "accept connections in read-write mode.\n");
         }
-        replRefreshStreamReader();
+        replResetStreamReader();
         return;
     }
 
