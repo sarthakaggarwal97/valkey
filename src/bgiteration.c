@@ -984,8 +984,14 @@ static void feedIterator(bgIterator *it, monotime end_time_us) {
 
     // Now do some feeding
     bool have_time = (getMonotonicUs() < end_time_us);
+    /* A cycle's budget can already be spent before we are called, and an iterator that is fed
+     * nothing makes no forward progress at all: a reader blocked on this iterator's queue would
+     * wait for a later cycle that is free to make the same choice.  Queue one item in that case,
+     * and leave have_time alone so the queue length heuristic below still sees the truth. */
+    bool must_make_progress = !have_time;
     int timeCheckCounter = 0;
-    while (shouldFeedIteratorMore(it) && have_time) {
+    while (shouldFeedIteratorMore(it) && (have_time || must_make_progress)) {
+        must_make_progress = false;
         int orig_dbid, cur_dbid;
         fifo *dbEntryFifo = it->keyset_iter->getEntries(it->keyset_iter, &orig_dbid, &cur_dbid);
 
@@ -1651,17 +1657,21 @@ static long long bgIteration_feedIterators_task(struct aeEventLoop *eventLoop,
             dutyTimeUs = MIN(dutyTimeUs, BGITER_CYCLE_BUDGET_MAX_MS * 1000);
         }
     }
-    monotime endTime = startTime + dutyTimeUs;
 
     // Run this part regardless of time limit...
     receiveItemsBackFromIterators(false);
 
-    // Feeding iterators (below) respects endTime.  The stuff above always runs to completion.
+    /* Feeding iterators (below) respects endTime.  The stuff above always runs to completion, so
+     * the deadline is anchored here rather than at the top of the cycle: charging that work to the
+     * feeding budget shortens it by an unbounded amount, and where execution is slow enough (under
+     * valgrind, or under emulation such as the s390x job) it consumes the budget entirely and the
+     * cycle feeds nothing at all. */
+    monotime endTime = getMonotonicUs() + dutyTimeUs;
 
     listIter li;
     listNode *node;
     listRewind(allIterators, &li);
-    while ((node = listNext(&li)) != NULL && getMonotonicUs() < endTime) {
+    while ((node = listNext(&li)) != NULL) {
         bgIterator *it = listNodeValue(node);
         if (it->completed || it->terminated) continue;
         feedIterator(it, endTime);

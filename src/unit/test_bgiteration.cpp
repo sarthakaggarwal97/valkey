@@ -1073,7 +1073,10 @@ TEST_F(BgIterationTest, createAndCleanup) {
     EXPECT_EQ(status.queue_length, 0u);
     EXPECT_GT(status.queue_length_target, 0u);
 
-    EXPECT_LT(status.runtime_ms, 5u);
+    /* A freshly created iterator has done no work yet.  The bound is generous on purpose: it is
+     * here to catch a nonsensical runtime, not to measure the host.  A tight bound fails on any
+     * slow environment, and this suite runs under valgrind and under s390x emulation. */
+    EXPECT_LT(status.runtime_ms, 1000u);
     EXPECT_EQ(status.current_item_ms, 0u);
 
     expectAnythingCleanup(it);
