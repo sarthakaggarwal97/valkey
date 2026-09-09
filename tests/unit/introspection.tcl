@@ -2112,7 +2112,10 @@ start_server {overrides {forkless-infrastructure-enabled yes} tags {"introspecti
 
             r config set rdb-key-save-delay 0
             r flushall
-            wait_for_condition 1000 10 {
+            # Clearing the delay does not shorten the sleep already under way for
+            # the key being written, so aborting the save takes up to the delay
+            # configured above. The bound has to outlast that, not just match it.
+            wait_for_condition 150 100 {
                 [s rdb_bgsave_in_progress] eq 0
             } else {
                 fail "bgsave did not stop in time"
