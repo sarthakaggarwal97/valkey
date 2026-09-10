@@ -92,7 +92,7 @@ static compressionAlgo getReplCompressionAlgo(void) {
 }
 
 static compressionAlgo replicaExpectedCompressionAlgo(client *replica) {
-    if (!(replica->repl_data->replica_capa & REPLICA_CAPA_COMPRESS_REPL)) return ALGO_NONE;
+    if (!(replica->repl_data->replica_capa & REPLICA_CAPA_LZ4)) return ALGO_NONE;
     return getReplCompressionAlgo();
 }
 
@@ -1458,7 +1458,7 @@ void syncCommand(client *c) {
         }
         /* Incremental compression starts independently after the RDB transfer,
          * so it must not prevent replicas from sharing a BGSAVE. */
-        int required_capa = ln ? replica->repl_data->replica_capa & ~REPLICA_CAPA_COMPRESS_REPL : 0;
+        int required_capa = ln ? replica->repl_data->replica_capa & ~REPLICA_CAPA_LZ4 : 0;
         if (ln && ((c->repl_data->replica_capa & required_capa) == required_capa) &&
             c->repl_data->replica_req == replica->repl_data->replica_req) {
             /* Perfect, the server is already registering differences for
@@ -1491,7 +1491,7 @@ void syncCommand(client *c) {
             /* We don't have a BGSAVE in progress, let's start one. Diskless
              * or disk-based mode is determined by replica's capacity. */
             if (!hasActiveChildProcess()) {
-                startBgsaveForReplication(c->repl_data->replica_capa & ~REPLICA_CAPA_COMPRESS_REPL,
+                startBgsaveForReplication(c->repl_data->replica_capa & ~REPLICA_CAPA_LZ4,
                                           c->repl_data->replica_req,
                                           replicaRdbVersion(c));
             } else {
@@ -1584,14 +1584,14 @@ void freeClientReplicationData(client *c) {
  * the primary can accurately lists replicas and their listening ports in the
  * INFO output.
  *
- * - capa <eof|psync2|dual-channel|skip-rdb-checksum|compress-repl>
+ * - capa <eof|psync2|dual-channel|skip-rdb-checksum|lz4>
  * What is the capabilities of this instance.
  * eof: supports EOF-style RDB transfer for diskless replication.
  * psync2: supports PSYNC v2, so understands +CONTINUE <new repl ID>.
  * dual-channel: supports full sync using rdb channel.
  * skip-rdb-checksum: supports skipping RDB checksum calculations during diskless sync using
  *                    a connection that has integrity checks (such as TLS).
- * compress-repl: can decode a compressed incremental replication stream.
+ * lz4: can decode LZ4 streaming-compressed payloads.
  *
  * - ack <offset> [fack <aofofs>]
  * Replica informs the primary the amount of replication stream that it
@@ -1673,12 +1673,9 @@ void replconfCommand(client *c) {
                 }
             } else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR))
                 c->repl_data->replica_capa |= REPLICA_CAPA_SKIP_RDB_CHECKSUM;
-            /* "compress-repl": the replica can decode a compressed
-             * incremental replication stream. The primary compresses only
-             * when both sides enable repl-compression; a primary that does
-             * not understand the capability ignores it. */
-            else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_COMPRESS_REPL_STR))
-                c->repl_data->replica_capa |= REPLICA_CAPA_COMPRESS_REPL;
+            /* "lz4": the replica can decode LZ4 streaming-compressed payloads. */
+            else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_LZ4_STR))
+                c->repl_data->replica_capa |= REPLICA_CAPA_LZ4;
         } else if (!strcasecmp(objectGetVal(c->argv[j]), "ack")) {
             /* REPLCONF ACK is used by replica to inform the primary the amount
              * of replication stream that it processed so far. It is an
@@ -4208,8 +4205,8 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
         argv[argc] = "capa";
         lens[argc] = strlen("capa");
         argc++;
-        argv[argc] = REPLICA_CAPA_COMPRESS_REPL_STR;
-        lens[argc] = strlen(REPLICA_CAPA_COMPRESS_REPL_STR);
+        argv[argc] = REPLICA_CAPA_LZ4_STR;
+        lens[argc] = strlen(REPLICA_CAPA_LZ4_STR);
         argc++;
     }
     err = sendCommandArgv(conn, argc, argv, lens);
@@ -5853,7 +5850,7 @@ int shouldStartChildReplication(int *mincapa_out, int *req_out, int *rdbver_out)
                 idle = server.unixtime - replica->last_interaction;
                 if (idle > max_idle) max_idle = idle;
                 replicas_waiting++;
-                int rdb_capa = replica->repl_data->replica_capa & ~REPLICA_CAPA_COMPRESS_REPL;
+                int rdb_capa = replica->repl_data->replica_capa & ~REPLICA_CAPA_LZ4;
                 mincapa = first ? rdb_capa : (mincapa & rdb_capa);
                 first = 0;
             }
