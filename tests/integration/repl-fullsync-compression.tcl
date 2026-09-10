@@ -116,7 +116,7 @@ start_server {tags {"repl rdb-compression external:skip needs:debug"} overrides 
         }
     }
 
-    # Both scenarios fall back to plaintext: the replica advertises compress-sync
+    # Both scenarios fall back to plaintext: the replica advertises LZ4
     # per its own rdbcompression, and the primary's mode is set per iteration.
     start_server {overrides {save "" enable-debug-command local rdbcompression lz4}} {
         set replica [srv 0 client]
@@ -173,7 +173,7 @@ start_server {tags {"repl rdb-compression external:skip needs:debug"} overrides 
 # the group-AND decision is exercised directly. A slow manual BGSAVE occupies the
 # RDB child slot; a disk replica can't start its own BGSAVE (syncCommand defers to
 # replicationCron), so both park. The cron then groups both waiters and the AND
-# clears the compress-sync bit. Deterministic because the manual BGSAVE is still
+# clears the LZ4 capability. Deterministic because the manual BGSAVE is still
 # running when both register (asserted via connected_slaves==2); one round is
 # asserted via the "Starting BGSAVE for SYNC" delta.
 
@@ -545,7 +545,7 @@ start_server {overrides {save "" rdbcompression lz4 repl-diskless-sync yes repl-
 }
 
 # Mixed diskless cohort (one capable, one not) falls back to plaintext for all: the
-# group-AND clears the compress-sync bit. A slow manual BGSAVE occupies the child
+# group-AND clears the LZ4 capability. A slow manual BGSAVE occupies the child
 # slot so both replicas park in WAIT_BGSAVE_START together, exercising the AND deterministically.
 start_server {overrides {save "" rdbcompression lz4 repl-diskless-sync yes repl-diskless-sync-delay 0}} {
     set primary [srv 0 client]
