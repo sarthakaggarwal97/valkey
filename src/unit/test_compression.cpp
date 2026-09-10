@@ -1323,6 +1323,13 @@ TEST(CompressionTest, streamWriterWriteAfterFinish) {
     dynamicBufFree(&db);
 }
 
+TEST(CompressionTest, replicaSupportsOnlyAdvertisedStreamCompressionAlgorithms) {
+    EXPECT_TRUE(replicaSupportsStreamCompressionAlgo(REPLICA_CAPA_NONE, ALGO_NONE));
+    EXPECT_FALSE(replicaSupportsStreamCompressionAlgo(REPLICA_CAPA_NONE, ALGO_LZ4));
+    EXPECT_TRUE(replicaSupportsStreamCompressionAlgo(REPLICA_CAPA_LZ4, ALGO_LZ4));
+    EXPECT_FALSE(replicaSupportsStreamCompressionAlgo(REPLICA_CAPA_LZ4, ALGO_LZF));
+}
+
 /* ===== Replication push reader and repl-frame policy ===== */
 
 static void fillIncompressible(unsigned char *buf, size_t n, uint32_t seed) {

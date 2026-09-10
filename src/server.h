@@ -466,11 +466,15 @@ typedef enum {
 #define REPLICA_CAPA_PSYNC2 (1 << 1)            /* Supports PSYNC2 protocol. */
 #define REPLICA_CAPA_DUAL_CHANNEL (1 << 2)      /* Supports dual channel replication sync */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM (1 << 3) /* Supports skipping RDB checksum for sync requests. */
-#define REPLICA_CAPA_COMPRESS_REPL (1 << 5)     /* Can decode a compressed incremental replication stream. */
+#define REPLICA_CAPA_LZ4 (1 << 5)               /* Can decode LZ4 streaming-compressed payloads. */
+#define REPLICA_CAPA_COMPRESS_REPL (1 << 6)     /* Accepts compression for incremental replication. */
+
+#define REPLICA_CAPA_STREAM_CODEC_MASK REPLICA_CAPA_LZ4 /* Supported streaming compression codecs. */
 
 /* Replica capability strings */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR "skip-rdb-checksum" /* Supports skipping RDB checksum for sync requests. */
-#define REPLICA_CAPA_COMPRESS_REPL_STR "compress-repl"         /* Can decode a compressed incremental replication stream. */
+#define REPLICA_CAPA_LZ4_STR "lz4"                             /* Can decode LZ4 streaming-compressed payloads. */
+#define REPLICA_CAPA_COMPRESS_REPL_STR "compress-repl"         /* Accepts compression for incremental replication. */
 
 /* Replica requirements */
 #define REPLICA_REQ_NONE 0
@@ -2129,7 +2133,7 @@ struct valkeyServer {
     char *rdb_filename;                   /* Name of RDB file */
     int rdb_compression;                  /* RDB compression mode */
     int repl_compression;                 /* Replication compression mode */
-    int repl_compression_advertised;      /* Compression capability advertised in the current upstream handshake,
+    int repl_compression_advertised;      /* Whether compress-repl was advertised in the current upstream handshake,
                                            * or REPL_COMPRESSION_CAPA_UNKNOWN before REPLCONF capa. */
     int rdb_checksum;                     /* Use RDB checksum? */
     int rdb_del_sync_files;               /* Remove RDB files used only for SYNC if
@@ -3386,6 +3390,7 @@ const char *getFailoverStateString(void);
 sds getReplicaPortString(void);
 int sendCurrentOffsetToReplica(client *replica);
 int replicaRdbVersion(client *replica);
+bool replicaSupportsStreamCompressionAlgo(int replica_capa, compressionAlgo compression_algo);
 void addRdbReplicaToPsyncWait(client *replica);
 void initClientReplicationData(client *c);
 void freeClientReplicationData(client *c);

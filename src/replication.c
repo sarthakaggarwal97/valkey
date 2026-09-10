@@ -91,9 +91,18 @@ static compressionAlgo getReplCompressionAlgo(void) {
     }
 }
 
+bool replicaSupportsStreamCompressionAlgo(int replica_capa, compressionAlgo compression_algo) {
+    switch (compression_algo) {
+    case ALGO_NONE: return true;
+    case ALGO_LZ4: return replica_capa & REPLICA_CAPA_LZ4;
+    default: return false;
+    }
+}
+
 static compressionAlgo replicaExpectedCompressionAlgo(client *replica) {
     if (!(replica->repl_data->replica_capa & REPLICA_CAPA_COMPRESS_REPL)) return ALGO_NONE;
-    return getReplCompressionAlgo();
+    compressionAlgo algo = getReplCompressionAlgo();
+    return replicaSupportsStreamCompressionAlgo(replica->repl_data->replica_capa, algo) ? algo : ALGO_NONE;
 }
 
 /* True when the replica's live transport no longer matches what the current
@@ -162,8 +171,8 @@ static void reconcileUpstreamCompression(void) {
 }
 
 /* Enable framed transport compression for a replica at PSYNC completion when
- * both sides opted in: repl-compression is enabled here and the replica
- * advertised the capability. The write path emits the VCS envelope with the
+ * the primary enables it, the replica opts in, and the replica advertises the
+ * selected codec. The write path emits the VCS envelope with the
  * first compressed batch. No-ops when the link stays plaintext or is already
  * compressed (dual-channel reaches both the +CONTINUE and put-online paths).
  * Returns C_ERR when initialization failed; the caller drops the link. */
@@ -1457,8 +1466,10 @@ void syncCommand(client *c) {
                 break;
         }
         /* Incremental compression starts independently after the RDB transfer,
-         * so it must not prevent replicas from sharing a BGSAVE. */
-        int required_capa = ln ? replica->repl_data->replica_capa & ~REPLICA_CAPA_COMPRESS_REPL : 0;
+         * so its opt-in and codec capabilities must not prevent replicas from
+         * sharing a BGSAVE. */
+        int required_capa =
+            ln ? replica->repl_data->replica_capa & ~(REPLICA_CAPA_COMPRESS_REPL | REPLICA_CAPA_STREAM_CODEC_MASK) : 0;
         if (ln && ((c->repl_data->replica_capa & required_capa) == required_capa) &&
             c->repl_data->replica_req == replica->repl_data->replica_req) {
             /* Perfect, the server is already registering differences for
@@ -1491,9 +1502,10 @@ void syncCommand(client *c) {
             /* We don't have a BGSAVE in progress, let's start one. Diskless
              * or disk-based mode is determined by replica's capacity. */
             if (!hasActiveChildProcess()) {
-                startBgsaveForReplication(c->repl_data->replica_capa & ~REPLICA_CAPA_COMPRESS_REPL,
-                                          c->repl_data->replica_req,
-                                          replicaRdbVersion(c));
+                startBgsaveForReplication(
+                    c->repl_data->replica_capa & ~(REPLICA_CAPA_COMPRESS_REPL | REPLICA_CAPA_STREAM_CODEC_MASK),
+                    c->repl_data->replica_req,
+                    replicaRdbVersion(c));
             } else {
                 serverLog(LL_NOTICE, "No BGSAVE in progress, but another BG operation is active. "
                                      "BGSAVE for replication delayed");
@@ -1584,14 +1596,15 @@ void freeClientReplicationData(client *c) {
  * the primary can accurately lists replicas and their listening ports in the
  * INFO output.
  *
- * - capa <eof|psync2|dual-channel|skip-rdb-checksum|compress-repl>
+ * - capa <eof|psync2|dual-channel|skip-rdb-checksum|compress-repl|lz4>
  * What is the capabilities of this instance.
  * eof: supports EOF-style RDB transfer for diskless replication.
  * psync2: supports PSYNC v2, so understands +CONTINUE <new repl ID>.
  * dual-channel: supports full sync using rdb channel.
  * skip-rdb-checksum: supports skipping RDB checksum calculations during diskless sync using
  *                    a connection that has integrity checks (such as TLS).
- * compress-repl: can decode a compressed incremental replication stream.
+ * compress-repl: accepts compression for incremental replication.
+ * lz4: can decode LZ4 streaming-compressed payloads.
  *
  * - ack <offset> [fack <aofofs>]
  * Replica informs the primary the amount of replication stream that it
@@ -1673,12 +1686,13 @@ void replconfCommand(client *c) {
                 }
             } else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR))
                 c->repl_data->replica_capa |= REPLICA_CAPA_SKIP_RDB_CHECKSUM;
-            /* "compress-repl": the replica can decode a compressed
-             * incremental replication stream. The primary compresses only
-             * when both sides enable repl-compression; a primary that does
-             * not understand the capability ignores it. */
+            /* "compress-repl": the replica accepts compression for its
+             * incremental replication stream. */
             else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_COMPRESS_REPL_STR))
                 c->repl_data->replica_capa |= REPLICA_CAPA_COMPRESS_REPL;
+            /* "lz4": the replica can decode LZ4 streaming-compressed payloads. */
+            else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_LZ4_STR))
+                c->repl_data->replica_capa |= REPLICA_CAPA_LZ4;
         } else if (!strcasecmp(objectGetVal(c->argv[j]), "ack")) {
             /* REPLCONF ACK is used by replica to inform the primary the amount
              * of replication stream that it processed so far. It is an
@@ -4180,8 +4194,8 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
 
     // we can ignore primary's conditions when sending capa (is_primary_stream_verified=1)
     int send_skip_rdb_checksum_capa = replicationSupportSkipRDBChecksum(conn, useDisklessLoad(), 1);
-    char *argv[11] = {"REPLCONF", "capa", "eof", "capa", "psync2", NULL, NULL, NULL, NULL, NULL, NULL};
-    size_t lens[11] = {8, 4, 3, 4, 6, 0, 0, 0, 0, 0, 0};
+    char *argv[13] = {"REPLCONF", "capa", "eof", "capa", "psync2", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+    size_t lens[13] = {8, 4, 3, 4, 6, 0, 0, 0, 0, 0, 0, 0, 0};
     int argc = 5;
     if (send_skip_rdb_checksum_capa) {
         argv[argc] = "capa";
@@ -4199,12 +4213,19 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
         lens[argc] = strlen("dual-channel");
         argc++;
     }
-    /* Advertise compression support only when repl-compression is enabled, so
-     * an operator can keep a specific replica plaintext. The reader does not
-     * depend on this: it classifies the incoming stream from its leading bytes,
-     * so a config change after the handshake cannot desync the link. */
-    int advertise_compression = getReplCompressionAlgo() != ALGO_NONE;
-    if (advertise_compression) {
+    /* Advertise codec support independently of this replica's channel policy. */
+    argv[argc] = "capa";
+    lens[argc] = strlen("capa");
+    argc++;
+    argv[argc] = REPLICA_CAPA_LZ4_STR;
+    lens[argc] = strlen(REPLICA_CAPA_LZ4_STR);
+    argc++;
+
+    /* The separate channel capability lets an operator keep this replica's
+     * incoming stream plaintext. The reader classifies the actual wire format,
+     * so a config change after the handshake cannot desynchronize the link. */
+    int advertise_compress_repl = getReplCompressionAlgo() != ALGO_NONE;
+    if (advertise_compress_repl) {
         argv[argc] = "capa";
         lens[argc] = strlen("capa");
         argc++;
@@ -4214,7 +4235,7 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
     }
     err = sendCommandArgv(conn, argc, argv, lens);
     if (err) goto err;
-    server.repl_compression_advertised = advertise_compression;
+    server.repl_compression_advertised = advertise_compress_repl;
 
     /* Inform the primary of our (replica) version. */
     err = sendCommand(conn, "REPLCONF", "version", VALKEY_VERSION, NULL);
@@ -5853,7 +5874,8 @@ int shouldStartChildReplication(int *mincapa_out, int *req_out, int *rdbver_out)
                 idle = server.unixtime - replica->last_interaction;
                 if (idle > max_idle) max_idle = idle;
                 replicas_waiting++;
-                int rdb_capa = replica->repl_data->replica_capa & ~REPLICA_CAPA_COMPRESS_REPL;
+                int rdb_capa =
+                    replica->repl_data->replica_capa & ~(REPLICA_CAPA_COMPRESS_REPL | REPLICA_CAPA_STREAM_CODEC_MASK);
                 mincapa = first ? rdb_capa : (mincapa & rdb_capa);
                 first = 0;
             }
