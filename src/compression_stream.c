@@ -25,7 +25,7 @@ static bool vcsHasMagicPrefix(const uint8_t *buf, size_t len) {
     return memcmp(buf, VCS_MAGIC, n) == 0;
 }
 
-int vcsBuildEnvelope(uint8_t *out, compressionAlgo algo, uint8_t stream_kind) {
+int vcsBuildEnvelope(uint8_t *buf, compressionAlgo algo, uint8_t stream_kind) {
     uint8_t codec;
     switch (algo) {
     case ALGO_LZ4:
@@ -44,7 +44,7 @@ int vcsBuildEnvelope(uint8_t *out, compressionAlgo algo, uint8_t stream_kind) {
         [VCS_OFFSET_RESERVED] = 0,
         [VCS_OFFSET_STREAM_KIND] = stream_kind,
     };
-    memcpy(out, envelope, VCS_ENVELOPE_SIZE);
+    memcpy(buf, envelope, VCS_ENVELOPE_SIZE);
     return C_OK;
 }
 
@@ -437,11 +437,11 @@ void streamReaderFree(streamReader *reader) {
 /* Decoded-output room offered to the codec per feed iteration: bounds how
  * much the caller's sds over-allocates per iteration while the drain loop
  * empties the codec's buffered output. */
-#define STREAM_PUSH_READER_CHUNK (16 * 1024)
+#define STREAM_PUSH_READER_OUTPUT_CHUNK_SIZE (16 * 1024)
 
-void streamPushReaderInit(streamPushReader *reader, uint8_t stream_kind) {
+void streamPushReaderInit(streamPushReader *reader, uint8_t expected_stream_kind) {
     memset(reader, 0, sizeof(*reader));
-    reader->stream_kind = stream_kind;
+    reader->expected_stream_kind = expected_stream_kind;
 }
 
 void streamPushReaderFree(streamPushReader *reader) {
@@ -449,7 +449,7 @@ void streamPushReaderFree(streamPushReader *reader) {
     sdsfree(reader->pending_input);
     reader->pending_input = NULL;
     reader->pending_input_pos = 0;
-    reader->needs_drain = false;
+    reader->codec_needs_drain = false;
     reader->state = STREAM_PUSH_READER_PROBE;
     reader->envelope_len = 0;
 }
@@ -457,7 +457,7 @@ void streamPushReaderFree(streamPushReader *reader) {
 /* Drain compressed bytes [in, in+len) through the codec, appending decoded
  * output to *out within the remaining scheduling budget. */
 static streamPushReaderResult
-pushReaderFeedCodec(streamPushReader *reader, const uint8_t *in, size_t len, size_t *input_consumed, sds *out, size_t *budget) {
+streamPushReaderFeedCodec(streamPushReader *reader, const uint8_t *in, size_t len, size_t *input_consumed, sds *out, size_t *budget) {
     size_t off = 0;
     size_t room = 0;
     ssize_t produced = 0;
@@ -466,7 +466,7 @@ pushReaderFeedCodec(streamPushReader *reader, const uint8_t *in, size_t len, siz
             *input_consumed = off;
             return STREAM_PUSH_READER_NEED_OUTPUT;
         }
-        room = STREAM_PUSH_READER_CHUNK;
+        room = STREAM_PUSH_READER_OUTPUT_CHUNK_SIZE;
         if (room > *budget) room = *budget;
         size_t used = sdslen(*out);
         *out = sdsMakeRoomFor(*out, room);
@@ -504,7 +504,7 @@ pushReaderFeedCodec(streamPushReader *reader, const uint8_t *in, size_t len, siz
     return STREAM_PUSH_READER_OK;
 }
 
-static streamPushReaderResult pushReaderFeedInput(streamPushReader *reader, const void *src, size_t len, size_t *input_consumed, sds *out, size_t output_budget) {
+static streamPushReaderResult streamPushReaderFeedInput(streamPushReader *reader, const void *src, size_t len, size_t *input_consumed, sds *out, size_t output_budget) {
     const uint8_t *in = src;
     size_t off = 0;
     size_t budget = output_budget;
@@ -532,7 +532,7 @@ static streamPushReaderResult pushReaderFeedInput(streamPushReader *reader, cons
             }
 
             compressionAlgo algo = ALGO_NONE;
-            if (readVcsEnvelope(reader->envelope, reader->stream_kind, &algo) != C_OK) {
+            if (readVcsEnvelope(reader->envelope, reader->expected_stream_kind, &algo) != C_OK) {
                 *input_consumed = off;
                 return STREAM_PUSH_READER_ERR;
             }
@@ -555,8 +555,8 @@ static streamPushReaderResult pushReaderFeedInput(streamPushReader *reader, cons
     if (off < len || len == 0) {
         size_t codec_consumed = 0;
         const uint8_t *codec_input = in ? in + off : NULL;
-        streamPushReaderResult result = pushReaderFeedCodec(reader, codec_input, len - off, &codec_consumed,
-                                                            out, &budget);
+        streamPushReaderResult result = streamPushReaderFeedCodec(reader, codec_input, len - off, &codec_consumed,
+                                                                  out, &budget);
         *input_consumed = off + codec_consumed;
         return result;
     }
@@ -564,12 +564,12 @@ static streamPushReaderResult pushReaderFeedInput(streamPushReader *reader, cons
     return STREAM_PUSH_READER_OK;
 }
 
-bool streamPushReaderHasPending(const streamPushReader *reader) {
-    return reader->needs_drain || reader->pending_input != NULL;
+bool streamPushReaderHasPendingDecode(const streamPushReader *reader) {
+    return reader->codec_needs_drain || reader->pending_input != NULL;
 }
 
 streamPushReaderResult streamPushReaderFeed(streamPushReader *reader, const void *src, size_t len, sds *out, size_t output_budget) {
-    bool resuming = streamPushReaderHasPending(reader);
+    bool resuming = streamPushReaderHasPendingDecode(reader);
     if (len > 0 && resuming) return STREAM_PUSH_READER_ERR;
 
     const uint8_t *input = src;
@@ -577,13 +577,13 @@ streamPushReaderResult streamPushReaderFeed(streamPushReader *reader, const void
     if (reader->pending_input) {
         input = (const uint8_t *)reader->pending_input + reader->pending_input_pos;
         input_len = sdslen(reader->pending_input) - reader->pending_input_pos;
-    } else if (reader->needs_drain) {
+    } else if (reader->codec_needs_drain) {
         input = NULL;
         input_len = 0;
     }
 
     size_t consumed = 0;
-    streamPushReaderResult result = pushReaderFeedInput(reader, input, input_len, &consumed, out, output_budget);
+    streamPushReaderResult result = streamPushReaderFeedInput(reader, input, input_len, &consumed, out, output_budget);
     if (consumed > input_len) return STREAM_PUSH_READER_ERR;
 
     if (reader->pending_input) {
@@ -596,6 +596,6 @@ streamPushReaderResult streamPushReaderFeed(streamPushReader *reader, const void
     } else if (result == STREAM_PUSH_READER_NEED_OUTPUT && consumed < input_len) {
         reader->pending_input = sdsnewlen(input + consumed, input_len - consumed);
     }
-    reader->needs_drain = result == STREAM_PUSH_READER_NEED_OUTPUT && consumed == input_len;
+    reader->codec_needs_drain = result == STREAM_PUSH_READER_NEED_OUTPUT && consumed == input_len;
     return result;
 }

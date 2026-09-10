@@ -3,8 +3,8 @@ tags {"repl external:skip"} {
 # uncompressed_bytes= from the replica line of the primary's INFO replication.
 proc replica_line_uncompressed_bytes {primary} {
     set info [$primary info replication]
-    assert {[regexp {uncompressed_bytes=([0-9]+)} $info -> ub]}
-    return $ub
+    assert {[regexp {uncompressed_bytes=([0-9]+)} $info -> uncompressed_bytes]}
+    return $uncompressed_bytes
 }
 
 # ============================================================
@@ -60,9 +60,8 @@ start_server {tags {"repl"} overrides {save ""}} {
                         fail "Replication not started"
                     }
 
-                    # Full sync completes, then compression activates for the
-                    # post-sync incremental stream (the full-sync RDB itself is
-                    # never compressed by this capability).
+                    # The same negotiated capability covers diskless full sync
+                    # and the post-sync incremental stream.
                     wait_for_condition 50 100 {
                         [regexp -all "compression=lz4" [$primary info replication]] >= 1
                     } else {
@@ -182,32 +181,32 @@ start_server {tags {"repl"} overrides {save ""}} {
                 }
 
                 # Wait for the residual kernel-buffer drain to settle.
-                set prev [replica_line_uncompressed_bytes $primary]
+                set previous_uncompressed_bytes [replica_line_uncompressed_bytes $primary]
                 set stable_samples 0
                 for {set i 0} {$i < 100 && $stable_samples < 3} {incr i} {
                     after 100
-                    set cur [replica_line_uncompressed_bytes $primary]
-                    if {$cur == $prev} {
+                    set current_uncompressed_bytes [replica_line_uncompressed_bytes $primary]
+                    if {$current_uncompressed_bytes == $previous_uncompressed_bytes} {
                         incr stable_samples
                     } else {
                         set stable_samples 0
                     }
-                    set prev $cur
+                    set previous_uncompressed_bytes $current_uncompressed_bytes
                 }
                 assert_equal 3 $stable_samples
 
                 # Frozen cursor: two samples with writes in between must be equal.
-                set ub1 [replica_line_uncompressed_bytes $primary]
-                set off1 [status $primary master_repl_offset]
+                set uncompressed_bytes_before [replica_line_uncompressed_bytes $primary]
+                set repl_offset_before [status $primary master_repl_offset]
                 for {set i 0} {$i < 20} {incr i} {
                     $primary set "pin:tick:$i" tick_val
                 }
                 after 300
-                set ub2 [replica_line_uncompressed_bytes $primary]
-                set off2 [status $primary master_repl_offset]
+                set uncompressed_bytes_after [replica_line_uncompressed_bytes $primary]
+                set repl_offset_after [status $primary master_repl_offset]
 
-                assert {$off2 > $off1}
-                assert_equal $ub1 $ub2
+                assert {$repl_offset_after > $repl_offset_before}
+                assert_equal $uncompressed_bytes_before $uncompressed_bytes_after
             } pause_result pause_opts]
             resume_process $replica_pid
             if {$pause_code} {
@@ -218,7 +217,7 @@ start_server {tags {"repl"} overrides {save ""}} {
             wait_for_ofs_sync $primary $replica
             assert {[$replica get pin:burst:199] eq $payload}
             assert_equal tick_val [$replica get pin:tick:19]
-            assert {[replica_line_uncompressed_bytes $primary] > $ub2}
+            assert {[replica_line_uncompressed_bytes $primary] > $uncompressed_bytes_after}
             assert_equal $sync_full_before [status $primary sync_full]
             assert_equal $sync_partial_before [status $primary sync_partial_ok]
 

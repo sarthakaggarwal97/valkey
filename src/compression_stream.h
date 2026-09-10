@@ -175,20 +175,20 @@ typedef enum {
 typedef struct streamPushReader {
     streamDecompressor decompressor; /* Valid once state == COMPRESSED. */
     streamPushReaderState state;
-    uint8_t stream_kind;                 /* Expected VCS stream kind. */
+    uint8_t expected_stream_kind;        /* Required VCS stream kind. */
     uint8_t envelope[VCS_ENVELOPE_SIZE]; /* Leading bytes gathered during probe. */
     size_t envelope_len;
-    sds pending_input;
+    sds pending_input; /* Wire bytes retained when the output budget is exhausted. */
     size_t pending_input_pos;
-    bool needs_drain;
+    bool codec_needs_drain; /* Codec may have output left after consuming all input. */
 } streamPushReader;
 
 /* Feed appends decoded or passthrough bytes to *out. output_budget limits
  * decoded output per call. On STREAM_PUSH_READER_NEED_OUTPUT, call Feed again
  * with no input before reading more source bytes. */
-void streamPushReaderInit(streamPushReader *reader, uint8_t stream_kind);
+void streamPushReaderInit(streamPushReader *reader, uint8_t expected_stream_kind);
 void streamPushReaderFree(streamPushReader *reader);
-bool streamPushReaderHasPending(const streamPushReader *reader);
+bool streamPushReaderHasPendingDecode(const streamPushReader *reader);
 streamPushReaderResult streamPushReaderFeed(streamPushReader *reader, const void *src, size_t len, sds *out, size_t output_budget);
 
 #endif /* COMPRESSION_STREAM_H */

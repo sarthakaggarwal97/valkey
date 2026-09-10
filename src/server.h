@@ -628,7 +628,7 @@ typedef enum {
 
 typedef enum {
     REPL_COMPRESSION_NO = 0, /* Disable replication compression. */
-    REPL_COMPRESSION_YES,    /* Use the default compression algorithm. */
+    REPL_COMPRESSION_YES,    /* Use the default compression algorithm (currently LZ4). */
     REPL_COMPRESSION_LZ4     /* Pin whole-stream LZ4 compression. */
 } repl_compression_mode;
 
@@ -1274,12 +1274,12 @@ typedef struct ClientPubSubData {
 
 /* Primary-side compression state for one replica link. */
 typedef struct replicaCompressionState {
-    streamCompressor stream;      /* The frame stays open for the lifetime of the link. */
-    sds out_buf;                  /* Compressed bytes waiting for the socket. */
-    size_t out_buf_pos;           /* Next byte to send from out_buf. */
-    size_t batch_raw_bytes;       /* Backlog bytes represented by out_buf. */
-    long long compressed_bytes;   /* Completed batches, for INFO replication. */
-    long long uncompressed_bytes; /* Completed batches, for INFO replication. */
+    streamCompressor compressor;     /* The frame stays open for the lifetime of the link. */
+    sds out_buf;                     /* Compressed bytes waiting for the socket. */
+    size_t out_buf_pos;              /* Next byte to send from out_buf. */
+    size_t batch_uncompressed_bytes; /* Backlog bytes represented by out_buf. */
+    long long compressed_bytes;      /* Completed batches, for INFO replication. */
+    long long uncompressed_bytes;    /* Completed batches, for INFO replication. */
 } replicaCompressionState;
 
 typedef struct ClientReplicationData {
@@ -1314,7 +1314,7 @@ typedef struct ClientReplicationData {
                                            i.e. the next offset to send. */
     sds replica_nodeid;                  /* Node id in cluster mode. */
 
-    replicaCompressionState *repl_compressor; /* Per-replica replication compressor (NULL if uncompressed). */
+    replicaCompressionState *repl_compression; /* Primary-side compression state for this link, or NULL for plaintext. */
 } ClientReplicationData;
 
 typedef struct ClientModuleData {
@@ -2130,8 +2130,6 @@ struct valkeyServer {
     char *rdb_filename;                   /* Name of RDB file */
     int rdb_compression;                  /* RDB compression mode */
     int repl_compression;                 /* Replication compression mode */
-    int repl_compression_advertised;      /* Compression capability advertised in the current upstream handshake,
-                                           * or REPL_COMPRESSION_CAPA_UNKNOWN before REPLCONF capa. */
     int rdb_checksum;                     /* Use RDB checksum? */
     int rdb_del_sync_files;               /* Remove RDB files used only for SYNC if
                                              the instance does not use persistence. */
@@ -2279,7 +2277,9 @@ struct valkeyServer {
     int repl_ignore_disk_write_error;     /* Configures whether replicas panic when unable to
                                            * persist writes to AOF. */
 
-    struct streamPushReader *repl_stream_reader; /* Replica-side stream decoder, or NULL for the normal read path. */
+    int repl_compression_advertised;             /* Whether this replica advertised LZ4 in the current upstream
+                                                  * handshake, or REPL_COMPRESSION_CAPA_UNKNOWN before REPLCONF capa. */
+    struct streamPushReader *repl_stream_reader; /* Decoder for the upstream command stream, or NULL for plaintext. */
 
     /* The following two fields is where we store primary PSYNC replid/offset
      * while the PSYNC is in progress. At the end we'll copy the fields into
@@ -3389,13 +3389,13 @@ sds getReplicaPortString(void);
 int sendCurrentOffsetToReplica(client *replica);
 int replicaRdbVersion(client *replica);
 /* Full-sync compression policy: select the codec and gate replica eligibility on capability. */
-compressionAlgo replSelectFullSyncCompression(int replica_capa);
+compressionAlgo replSelectFullSyncCompression(int replica_capa, bool socket_target);
 bool replicaCanUseFullSyncFormat(int replica_capa, compressionAlgo compression_algo);
 void addRdbReplicaToPsyncWait(client *replica);
 void initClientReplicationData(client *c);
 void freeClientReplicationData(client *c);
 void replicaDestroyCompression(client *replica);
-ssize_t replDecodeToQueryBuf(client *primary, const void *buf, size_t len, size_t output_budget);
+ssize_t replDecodeToQueryBuf(client *primary, const void *wire_buf, size_t wire_len, size_t output_budget);
 bool replStreamHasPendingDecode(void);
 void replicaReceiveRDBFromPrimaryToDisk(connection *conn, int is_dual_channel);
 sds replicationSendAuth(connection *conn);

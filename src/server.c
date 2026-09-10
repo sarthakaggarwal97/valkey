@@ -1904,7 +1904,7 @@ extern int ProcessingEventsWhileBlocked;
 
 /* Process one buffered decompression slice before the event loop sleeps.
  * Returning true lets processEventsWhileBlocked count the slice as progress. */
-static bool processPendingReplStream(void) {
+static bool processPendingReplStreamDecode(void) {
     client *primary = server.primary;
     if (!primary || primary->flag.close_asap || !replStreamHasPendingDecode()) return false;
     if (primary->io_write_state != CLIENT_IDLE || primary->io_read_state != CLIENT_IDLE) return false;
@@ -1947,7 +1947,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
         processed += connTypeProcessPendingData();
         /* Keep an online compressed primary draining when a long-running
          * command yields to the event loop. */
-        processed += processPendingReplStream();
+        processed += processPendingReplStreamDecode();
         if (server.aof_state == AOF_ON || server.aof_state == AOF_WAIT_REWRITE) flushAppendOnlyFile(0);
         processed += handleClientsWithPendingWrites();
         int last_processed = 0;
@@ -1971,7 +1971,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
 
     /* If any connection type(typical TLS) still has pending unread data don't sleep at all. */
     int dont_sleep = connTypeHasPendingData();
-    if (processPendingReplStream()) {
+    if (processPendingReplStreamDecode()) {
         server.el_iteration_active = true;
         if (replStreamHasPendingDecode()) dont_sleep = 1;
     }
@@ -6915,14 +6915,14 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
                                     replica->flag.repl_rdb_channel                                ? "rdb-channel"
                                     : replica->repl_data->repl_state == REPLICA_STATE_BG_RDB_LOAD ? "main-channel"
                                                                                                   : "replica");
-                if (replica->repl_data->repl_compressor) {
+                if (replica->repl_data->repl_compression) {
                     info = sdscatprintf(info,
                                         ",compression=%s"
                                         ",compressed_bytes=%lld"
                                         ",uncompressed_bytes=%lld",
-                                        compressionAlgoName(replica->repl_data->repl_compressor->stream.algo),
-                                        replica->repl_data->repl_compressor->compressed_bytes,
-                                        replica->repl_data->repl_compressor->uncompressed_bytes);
+                                        compressionAlgoName(replica->repl_data->repl_compression->compressor.algo),
+                                        replica->repl_data->repl_compression->compressed_bytes,
+                                        replica->repl_data->repl_compression->uncompressed_bytes);
                 }
                 info = sdscat(info, "\r\n");
                 replica_id++;
