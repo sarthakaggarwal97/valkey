@@ -466,11 +466,15 @@ typedef enum {
 #define REPLICA_CAPA_PSYNC2 (1 << 1)            /* Supports PSYNC2 protocol. */
 #define REPLICA_CAPA_DUAL_CHANNEL (1 << 2)      /* Supports dual channel replication sync */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM (1 << 3) /* Supports skipping RDB checksum for sync requests. */
-#define REPLICA_CAPA_COMPRESS_SYNC (1 << 4)     /* Can decode a compressed full-sync RDB payload (any streaming codec; one bit covers all). */
+#define REPLICA_CAPA_COMPRESS_SYNC (1 << 4)     /* Accepts compression for full-sync RDB payloads. */
+#define REPLICA_CAPA_LZ4 (1 << 5)               /* Can decode LZ4 streaming-compressed payloads. */
+
+#define REPLICA_CAPA_STREAM_CODEC_MASK REPLICA_CAPA_LZ4 /* Supported streaming compression codecs. */
 
 /* Replica capability strings */
 #define REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR "skip-rdb-checksum" /* Supports skipping RDB checksum for sync requests. */
-#define REPLICA_CAPA_COMPRESS_SYNC_STR "compress-sync"         /* Can decode a compressed full-sync RDB payload. */
+#define REPLICA_CAPA_COMPRESS_SYNC_STR "compress-sync"         /* Accepts compression for full-sync RDB payloads. */
+#define REPLICA_CAPA_LZ4_STR "lz4"                             /* Can decode LZ4 streaming-compressed payloads. */
 
 /* Replica requirements */
 #define REPLICA_REQ_NONE 0
@@ -3356,6 +3360,7 @@ const char *getFailoverStateString(void);
 sds getReplicaPortString(void);
 int sendCurrentOffsetToReplica(client *replica);
 int replicaRdbVersion(client *replica);
+bool replicaSupportsStreamCompressionAlgo(int replica_capa, compressionAlgo compression_algo);
 /* Full-sync compression policy: select the codec and gate replica eligibility on capability. */
 compressionAlgo replSelectFullSyncCompression(int replica_capa);
 bool replicaCanUseFullSyncFormat(int replica_capa, compressionAlgo compression_algo);

@@ -995,10 +995,21 @@ need_full_resync:
     return C_ERR;
 }
 
-/* A single compress-sync capability covers every streaming codec, so adding a
- * new codec does not require a new capability bit. */
+bool replicaSupportsStreamCompressionAlgo(int replica_capa, compressionAlgo compression_algo) {
+    switch (compression_algo) {
+    case ALGO_NONE: return true;
+    case ALGO_LZ4: return replica_capa & REPLICA_CAPA_LZ4;
+    default: return false;
+    }
+}
+
+/* The channel opt-in and codec capability are independent: the former lets a
+ * particular replica decline full-sync compression, while the latter prevents
+ * the primary from selecting a codec that the replica cannot decode. */
 bool replicaCanUseFullSyncFormat(int replica_capa, compressionAlgo compression_algo) {
-    return compression_algo == ALGO_NONE || (replica_capa & REPLICA_CAPA_COMPRESS_SYNC);
+    return compression_algo == ALGO_NONE ||
+           ((replica_capa & REPLICA_CAPA_COMPRESS_SYNC) &&
+            replicaSupportsStreamCompressionAlgo(replica_capa, compression_algo));
 }
 
 compressionAlgo replSelectFullSyncCompression(int replica_capa) {
@@ -1289,9 +1300,10 @@ void syncCommand(client *c) {
          * capabilities of the replica that triggered the current BGSAVE and its
          * exact requirements. Compression is asymmetric: a plain running save is
          * joinable by anyone, but a compressed one only by a capable replica.
-         * compress-sync is masked out of the capability superset check so a
-         * capable newcomer can still join a plain running save. */
-        int trigger_capa = ln ? (replica->repl_data->replica_capa & ~REPLICA_CAPA_COMPRESS_SYNC) : 0;
+         * compression capabilities are checked against the running save's
+         * selected format below, so they are excluded from this generic check. */
+        int trigger_capa =
+            ln ? (replica->repl_data->replica_capa & ~(REPLICA_CAPA_COMPRESS_SYNC | REPLICA_CAPA_STREAM_CODEC_MASK)) : 0;
         if (ln && ((c->repl_data->replica_capa & trigger_capa) == trigger_capa) &&
             c->repl_data->replica_req == replica->repl_data->replica_req &&
             replicaCanUseFullSyncFormat(c->repl_data->replica_capa, server.rdb_child_sync_algo)) {
@@ -1418,14 +1430,15 @@ void freeClientReplicationData(client *c) {
  * the primary can accurately lists replicas and their listening ports in the
  * INFO output.
  *
- * - capa <eof|psync2|dual-channel|skip-rdb-checksum|compress-sync>
+ * - capa <eof|psync2|dual-channel|skip-rdb-checksum|compress-sync|lz4>
  * What is the capabilities of this instance.
  * eof: supports EOF-style RDB transfer for diskless replication.
  * psync2: supports PSYNC v2, so understands +CONTINUE <new repl ID>.
  * dual-channel: supports full sync using rdb channel.
  * skip-rdb-checksum: supports skipping RDB checksum calculations during diskless sync using
  *                    a connection that has integrity checks (such as TLS).
- * compress-sync: can decode a compressed full-sync RDB payload.
+ * compress-sync: accepts compression for full-sync RDB payloads.
+ * lz4: can decode LZ4 streaming-compressed payloads.
  *
  * - ack <offset> [fack <aofofs>]
  * Replica informs the primary the amount of replication stream that it
@@ -1507,9 +1520,12 @@ void replconfCommand(client *c) {
                 }
             } else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_SKIP_RDB_CHECKSUM_STR))
                 c->repl_data->replica_capa |= REPLICA_CAPA_SKIP_RDB_CHECKSUM;
-            /* "compress-sync": the replica can decode a compressed full-sync RDB payload. */
+            /* "compress-sync": the replica accepts compression for full-sync RDB payloads. */
             else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_COMPRESS_SYNC_STR))
                 c->repl_data->replica_capa |= REPLICA_CAPA_COMPRESS_SYNC;
+            /* "lz4": the replica can decode LZ4 streaming-compressed payloads. */
+            else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_LZ4_STR))
+                c->repl_data->replica_capa |= REPLICA_CAPA_LZ4;
         } else if (!strcasecmp(objectGetVal(c->argv[j]), "ack")) {
             /* REPLCONF ACK is used by replica to inform the primary the amount
              * of replication stream that it processed so far. It is an
@@ -3229,14 +3245,15 @@ static int dualChannelReplHandleHandshake(connection *conn, sds *err) {
     }
     /* Send replica listening port to primary for clarification */
     sds portstr = getReplicaPortString();
-    /* Also inform the primary of our (replica) version, and advertise compressed
-     * full-sync support when this replica's own rdbcompression is lz4. */
+    /* Also inform the primary of our version and LZ4 decoding capability. The
+     * separate compress-sync capability lets this replica opt in. */
     if (server.rdb_compression == RDB_COMPRESSION_LZ4) {
         *err = sendCommand(conn, "REPLCONF", "capa", "eof", "rdb-only", "1", "rdb-channel", "1", "listening-port",
-                           portstr, "version", VALKEY_VERSION, "capa", REPLICA_CAPA_COMPRESS_SYNC_STR, NULL);
+                           portstr, "version", VALKEY_VERSION, "capa", REPLICA_CAPA_LZ4_STR, "capa",
+                           REPLICA_CAPA_COMPRESS_SYNC_STR, NULL);
     } else {
         *err = sendCommand(conn, "REPLCONF", "capa", "eof", "rdb-only", "1", "rdb-channel", "1", "listening-port",
-                           portstr, "version", VALKEY_VERSION, NULL);
+                           portstr, "version", VALKEY_VERSION, "capa", REPLICA_CAPA_LZ4_STR, NULL);
     }
     sdsfree(portstr);
     if (*err) {
@@ -4044,8 +4061,8 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
 
     // we can ignore primary's conditions when sending capa (is_primary_stream_verified=1)
     int send_skip_rdb_checksum_capa = replicationSupportSkipRDBChecksum(conn, useDisklessLoad(), 1);
-    char *argv[11] = {"REPLCONF", "capa", "eof", "capa", "psync2", NULL, NULL, NULL, NULL, NULL, NULL};
-    size_t lens[11] = {8, 4, 3, 4, 6, 0, 0, 0, 0, 0, 0};
+    char *argv[13] = {"REPLCONF", "capa", "eof", "capa", "psync2", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+    size_t lens[13] = {8, 4, 3, 4, 6, 0, 0, 0, 0, 0, 0, 0, 0};
     int argc = 5;
     if (send_skip_rdb_checksum_capa) {
         argv[argc] = "capa";
@@ -4063,7 +4080,15 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
         lens[argc] = strlen("dual-channel");
         argc++;
     }
-    /* Advertise compressed full-sync support when this replica's own rdbcompression is lz4. */
+    /* Advertise codec support independently of this replica's channel policy. */
+    argv[argc] = "capa";
+    lens[argc] = strlen("capa");
+    argc++;
+    argv[argc] = REPLICA_CAPA_LZ4_STR;
+    lens[argc] = strlen(REPLICA_CAPA_LZ4_STR);
+    argc++;
+
+    /* A separate channel capability preserves per-replica opt-out. */
     if (server.rdb_compression == RDB_COMPRESSION_LZ4) {
         argv[argc] = "capa";
         lens[argc] = strlen("capa");

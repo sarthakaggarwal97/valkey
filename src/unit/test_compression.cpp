@@ -1368,3 +1368,11 @@ TEST(CompressionTest, streamWriterWriteAfterFinish) {
     streamWriterFree(&t);
     dynamicBufFree(&db);
 }
+
+TEST(CompressionTest, fullSyncCompressionRequiresOptInAndMatchingCodec) {
+    EXPECT_TRUE(replicaCanUseFullSyncFormat(REPLICA_CAPA_NONE, ALGO_NONE));
+    EXPECT_FALSE(replicaCanUseFullSyncFormat(REPLICA_CAPA_COMPRESS_SYNC, ALGO_LZ4));
+    EXPECT_FALSE(replicaCanUseFullSyncFormat(REPLICA_CAPA_LZ4, ALGO_LZ4));
+    EXPECT_TRUE(replicaCanUseFullSyncFormat(REPLICA_CAPA_COMPRESS_SYNC | REPLICA_CAPA_LZ4, ALGO_LZ4));
+    EXPECT_FALSE(replicaCanUseFullSyncFormat(REPLICA_CAPA_COMPRESS_SYNC | REPLICA_CAPA_LZ4, ALGO_LZF));
+}
