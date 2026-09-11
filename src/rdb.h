@@ -189,6 +189,7 @@ enum RdbType {
 #define RDB_LOAD_ERR_ALL_ITEMS_EXPIRED 4 /* All fields expired */
 
 bool rdbIsVersionAccepted(int rdbver, bool is_valkey_magic, bool is_redis_magic);
+bool rdbHasFileSignature(const char *buf, size_t len);
 ssize_t rdbWriteRaw(rio *rdb, void *p, size_t len);
 int rdbSaveType(rio *rdb, unsigned char type);
 int rdbLoadType(rio *rdb);
@@ -244,6 +245,18 @@ rdbStreamReaderInitResult rdbInitStreamReader(rio *rdb,
                                               bool skip_codec_checksum_validation,
                                               compressionAlgo *algo);
 void rdbFreeStreamReader(rio *rdb, streamReader *reader);
+
+/* Attach a VCS stream writer to an RDB rio. The caller must finish the writer
+ * before detaching and releasing it with rdbFreeStreamWriter. */
+int rdbInitStreamWriter(rio *rdb,
+                        streamWriter *writer,
+                        compressionAlgo algo,
+                        bool codec_checksum);
+void rdbFreeStreamWriter(rio *rdb, streamWriter *writer);
+
+/* Load plain or VCS-wrapped RDB input, leaving the underlying rio positioned
+ * immediately after the RDB so callers can continue reading an AOF tail. */
+int rdbLoadRioWithAutoDecompression(rio *rdb, int rdbflags, rdbSaveInfo *rsi, const char *source);
 int rdbFunctionLoad(rio *rdb, int ver, functionsLibCtx *lib_ctx, int rdbflags, sds *err);
 int rdbSaveRio(int req, int rdbver, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi);
 ssize_t rdbSaveFunctions(rio *rdb);

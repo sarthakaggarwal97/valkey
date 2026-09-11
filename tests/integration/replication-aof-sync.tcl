@@ -164,10 +164,9 @@ tags {"repl external:skip"} {
         }
     }
 
-    # A streaming-compressed disk-based sync RDB (rdbcompression lz4 on
-    # both ends) cannot be reused as an AOF base, so the replica falls back to
-    # BGREWRITEAOF. Inverse of the plaintext RDB-reuse tests above.
-    test "Disk-based full sync with rdbcompression lz4 falls back to BGREWRITEAOF for AOF base" {
+    # A streaming-compressed disk-based sync RDB can be adopted directly as
+    # the AOF base just like a plain sync RDB.
+    test "Disk-based full sync reuses an LZ4-compressed RDB as the AOF base" {
         start_server {overrides {repl-diskless-sync no rdbcompression lz4 save ""}} {
             set primary [srv 0 client]
             set primary_host [srv 0 host]
@@ -184,38 +183,39 @@ tags {"repl external:skip"} {
                 $replica replicaof $primary_host $primary_port
                 wait_for_sync $replica
 
-                # Replica detects the compressed sync RDB and falls back to BGREWRITEAOF.
+                # The compressed sync RDB is reused without another rewrite.
                 wait_for_condition 50 100 {
-                    [log_file_matches $replica_log "*falling back to BGREWRITEAOF instead of reusing it as an AOF base*"]
+                    [log_file_matches $replica_log "*Reused RDB file from primary sync as AOF base file*"]
                 } else {
-                    fail "Expected streaming-compression AOF fallback log not found"
+                    fail "Expected compressed sync RDB to be reused as the AOF base"
                 }
+                assert_equal 0 [status $replica aof_rewrite_in_progress]
 
-                # And it must NOT have reused the sync RDB as the AOF base.
-                assert {![log_file_matches $replica_log "*Reused RDB file from primary sync as AOF base file*"]}
-
-                # AOF comes up via BGREWRITEAOF; a base file must exist.
-                waitForBgrewriteaof $replica
                 set manifest_path [get_aof_manifest_path $replica]
                 set base_name [get_cur_base_aof_name $manifest_path]
                 assert {$base_name ne ""}
+                set base_path [file join [file dirname $manifest_path] $base_name]
+                assert_equal "VCS" [read_binary_file_prefix $base_path 3]
 
-                # Data correct at runtime (loaded from the compressed socket stream).
+                # Data is correct at runtime after loading the compressed sync RDB.
                 assert_equal 40 [$replica dbsize]
                 for {set i 0} {$i < 40} {incr i} {
                     assert_equal "value:$i" [$replica get "rcomp-key:$i"]
                 }
 
-                # After restart: AOF loads from the rewritten base, not the compressed RDB.
+                # Add an incremental command, then verify both AOF files reload.
+                $primary set rcomp-after-sync incremental
+                wait_for_ofs_sync $primary $replica
                 $replica replicaof no one
                 restart_server 0 true false
                 set replica [srv 0 client]
                 wait_done_loading $replica
 
-                assert_equal 40 [$replica dbsize]
+                assert_equal 41 [$replica dbsize]
                 for {set i 0} {$i < 40} {incr i} {
                     assert_equal "value:$i" [$replica get "rcomp-key:$i"]
                 }
+                assert_equal incremental [$replica get rcomp-after-sync]
             }
         }
     }

@@ -314,20 +314,32 @@ start_server {overrides {save "" enable-debug-command local rdbchecksum no}} {
 }
 
 start_server {overrides {save "" appendonly yes aof-use-rdb-preamble yes rdbcompression lz4}} {
-    test {AOF rewrite RDB preamble remains plain with LZ4 stream snapshots} {
+    test {AOF rewrite compresses and reloads its RDB base with LZ4} {
         r set aof-lz4:key [string repeat "aof-lz4-value " 100]
-        set digest [debug_digest]
 
         r bgrewriteaof
         waitForBgrewriteaof r
 
         set base_aof [get_base_aof_path r]
         assert {[file exists $base_aof]}
-        assert_equal "VALKEY" [string range [read_binary_file_prefix $base_aof 7] 0 5]
+        assert_equal "VCS" [read_binary_file_prefix $base_aof 3]
+
+        # Validate format detection and frame decoding in valkey-check-aof.
+        set dir [lindex [r config get dir] 1]
+        set appenddirname [lindex [r config get appenddirname] 1]
+        set appendfilename [lindex [r config get appendfilename] 1]
+        set manifest [file join $dir $appenddirname $appendfilename$::manifest_suffix]
+        assert_match "*All AOF files and manifest are valid*" [exec $::VALKEY_CHECK_AOF_BIN $manifest]
+
+        # Keep data in the incremental AOF too, so restart covers the boundary
+        # between the compressed base and the RESP command stream.
+        r set aof-lz4:incremental tail
+        set digest [debug_digest]
 
         restart_server 0 true false
         assert_equal $digest [debug_digest]
         assert_equal [string repeat "aof-lz4-value " 100] [r get aof-lz4:key]
+        assert_equal tail [r get aof-lz4:incremental]
     }
 }
 

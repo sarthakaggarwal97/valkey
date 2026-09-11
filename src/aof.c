@@ -1573,8 +1573,9 @@ int loadSingleAppendOnlyFile(char *filename) {
     /* Check if the AOF file is in RDB format (it may be RDB encoded base AOF
      * or old style RDB-preamble AOF). In that case we need to load the RDB file
      * and later continue loading the AOF tail if it is an old style RDB-preamble AOF. */
-    char sig[6]; /* "REDIS" or "VALKEY" */
-    if (fread(sig, 1, 6, fp) != 6 || (memcmp(sig, "REDIS0", 6) != 0 && memcmp(sig, "VALKEY", 6) != 0)) {
+    char sig[6]; /* "REDIS", "VALKEY", or the VCS envelope magic. */
+    size_t siglen = fread(sig, 1, sizeof(sig), fp);
+    if (!rdbHasFileSignature(sig, siglen)) {
         /* Not in RDB format, seek back at 0 offset. */
         if (fseek(fp, 0, SEEK_SET) == -1) goto readerr;
     } else {
@@ -1588,7 +1589,7 @@ int loadSingleAppendOnlyFile(char *filename) {
 
         if (fseek(fp, 0, SEEK_SET) == -1) goto readerr;
         rioInitWithFile(&rdb, fp);
-        if (rdbLoadRio(&rdb, RDBFLAGS_AOF_PREAMBLE, NULL) != RDB_OK) {
+        if (rdbLoadRioWithAutoDecompression(&rdb, RDBFLAGS_AOF_PREAMBLE, NULL, filename) != RDB_OK) {
             if (old_style)
                 serverLog(LL_WARNING, "Error reading the RDB preamble of the AOF file %s, AOF loading aborted",
                           filename);
@@ -2523,6 +2524,39 @@ werr:
     return C_ERR;
 }
 
+static int rewriteAppendOnlyFileRdbPreamble(rio *aof) {
+    streamWriter compression_writer;
+    bool compression_initialized = false;
+    int error = 0;
+    int retval = C_ERR;
+
+    if (server.rdb_compression == RDB_COMPRESSION_LZ4) {
+        if (rdbInitStreamWriter(aof, &compression_writer, ALGO_LZ4, server.rdb_checksum) == C_ERR) {
+            errno = EIO;
+            return C_ERR;
+        }
+        compression_initialized = true;
+        aof->flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
+        aof->update_cksum = NULL;
+        aof->cksum = 0;
+    }
+
+    if (rdbSaveRio(REPLICA_REQ_NONE, RDB_VERSION, aof, &error, RDBFLAGS_AOF_PREAMBLE, NULL) == C_ERR) {
+        errno = error;
+        goto cleanup;
+    }
+
+    if (compression_initialized && streamWriterFinish(&compression_writer) == C_ERR) {
+        errno = EIO;
+        goto cleanup;
+    }
+    retval = C_OK;
+
+cleanup:
+    if (compression_initialized) rdbFreeStreamWriter(aof, &compression_writer);
+    return retval;
+}
+
 /* Write a sequence of commands able to fully rebuild the dataset into
  * "filename". Used both by REWRITEAOF and BGREWRITEAOF.
  *
@@ -2554,11 +2588,7 @@ int rewriteAppendOnlyFile(char *filename) {
     startSaving(RDBFLAGS_AOF_PREAMBLE);
 
     if (server.aof_use_rdb_preamble) {
-        int error;
-        if (rdbSaveRio(REPLICA_REQ_NONE, RDB_VERSION, &aof, &error, RDBFLAGS_AOF_PREAMBLE, NULL) == C_ERR) {
-            errno = error;
-            goto werr;
-        }
+        if (rewriteAppendOnlyFileRdbPreamble(&aof) == C_ERR) goto werr;
     } else {
         if (rewriteAppendOnlyFileRio(&aof) == C_ERR) goto werr;
     }
