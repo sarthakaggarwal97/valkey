@@ -1760,6 +1760,15 @@ int rdbSave(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
         return C_ERR;
     }
 
+    /* A full-sync RDB whose negotiated format differs from the configured
+     * persistence format is consumed through open file descriptors and must
+     * not replace the configured snapshot. */
+    if ((rdbflags & RDBFLAGS_REPLICATION) && server.rdb_child_sync_uses_tmpfile) {
+        serverLog(LL_NOTICE, "DB saved on disk for replication");
+        stopSaving(1);
+        return C_OK;
+    }
+
     /* Use RENAME to make sure the DB file is changed atomically only
      * if the generate DB file is ok. */
     if (rename(tmpfile, filename) == -1) {
@@ -1849,9 +1858,12 @@ int rdbSaveBackground(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
     } else {
         /* Parent */
         if (childpid == -1) {
+            if (!server.rdb_child_sync_uses_tmpfile) {
+                server.lastbgsave_status = C_ERR;
+                server.lastbgsave_try = time(NULL);
+            }
             server.rdb_child_sync_algo = ALGO_NONE; /* Roll back the caller's sync-algo assignment. */
-            server.lastbgsave_status = C_ERR;
-            server.lastbgsave_try = time(NULL);
+            server.rdb_child_sync_uses_tmpfile = false;
             serverLog(LL_WARNING, "Can't save in background: fork: %s", strerror(errno));
             return C_ERR;
         }
@@ -4104,7 +4116,8 @@ static void backgroundSaveDoneHandlerDisk(int exitcode, int bysignal, time_t sav
         } else {
             serverLog(LL_WARNING, "Background saving error");
         }
-        rdbRecordEndMetrics(RDB_BGSAVE_TYPE_FORK, (exitcode == 0) ? C_OK : C_ERR, save_end);
+        if (!server.rdb_child_sync_uses_tmpfile)
+            rdbRecordEndMetrics(RDB_BGSAVE_TYPE_FORK, (exitcode == 0) ? C_OK : C_ERR, save_end);
     } else {
         mstime_t latency;
 
@@ -4116,7 +4129,8 @@ static void backgroundSaveDoneHandlerDisk(int exitcode, int bysignal, time_t sav
         latencyTraceIfNeeded(rdb, rdb_unlink_temp_file, latency);
         /* SIGUSR1 is whitelisted, so we have a way to kill a child without
          * triggering an error condition. */
-        if (bysignal != SIGUSR1) rdbRecordEndMetrics(RDB_BGSAVE_TYPE_FORK, C_ERR, save_end);
+        if (bysignal != SIGUSR1 && !server.rdb_child_sync_uses_tmpfile)
+            rdbRecordEndMetrics(RDB_BGSAVE_TYPE_FORK, C_ERR, save_end);
     }
 }
 
@@ -4164,6 +4178,7 @@ void backgroundSaveDoneHandler(int exitcode, int bysignal) {
     /* Possibly there are replicas waiting for a BGSAVE in order to be served
      * (the first stage of SYNC is a bulk transfer of dump.rdb) */
     updateReplicasWaitingBgsave((!bysignal && exitcode == 0) ? C_OK : C_ERR, type);
+    server.rdb_child_sync_uses_tmpfile = false;
 }
 
 /* Kill the RDB saving child using SIGUSR1 (so that the parent will know

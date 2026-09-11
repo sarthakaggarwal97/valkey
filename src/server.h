@@ -2123,6 +2123,7 @@ struct valkeyServer {
     rdbBgsaveType cur_bgsave_type;        /* Current bgsave type. */
     rdbBgsaveType lastbgsave_type;        /* Last completed bgsave type. */
     compressionAlgo rdb_child_sync_algo;  /* Streaming compression used by the active replication disk child. */
+    bool rdb_child_sync_uses_tmpfile;     /* Active disk sync must not replace the configured RDB. */
     int lastbgsave_status;                /* C_OK or C_ERR */
     int stop_writes_on_bgsave_err;        /* Don't allow writes if can't BGSAVE */
     int rdb_pipe_read;                    /* RDB pipe used to transfer the rdb data */

@@ -1002,10 +1002,14 @@ bool replicaCanUseFullSyncFormat(int replica_capa, compressionAlgo compression_a
     return compression_algo == ALGO_NONE || (replica_capa & REPLICA_CAPA_LZ4);
 }
 
-compressionAlgo replSelectFullSyncCompression(int replica_capa) {
+static compressionAlgo configuredFullSyncCompression(void) {
     /* Only whole-stream LZ4 can frame a sync payload; rdbcompression yes and lzf
-     * select per-string LZF, which is not a stream codec. */
-    compressionAlgo configured_algo = server.rdb_compression == RDB_COMPRESSION_LZ4 ? ALGO_LZ4 : ALGO_NONE;
+     * select per-string LZF, which is supported by all replicas. */
+    return server.rdb_compression == RDB_COMPRESSION_LZ4 ? ALGO_LZ4 : ALGO_NONE;
+}
+
+compressionAlgo replSelectFullSyncCompression(int replica_capa) {
+    compressionAlgo configured_algo = configuredFullSyncCompression();
     return replicaCanUseFullSyncFormat(replica_capa, configured_algo) ? configured_algo : ALGO_NONE;
 }
 
@@ -1069,6 +1073,8 @@ int startBgsaveForReplication(int mincapa, int req, int rdbver) {
                 serverLog(LL_NOTICE, "Disk-based full sync with compression: %s", compressionAlgoName(sync_compression_algo));
             /* The forked child reads this global to pick the sync codec. */
             server.rdb_child_sync_algo = sync_compression_algo;
+            /* Keep a negotiated fallback separate from the configured snapshot. */
+            server.rdb_child_sync_uses_tmpfile = sync_compression_algo != configuredFullSyncCompression();
             /* Keep the page cache since it'll get used soon */
             retval = rdbSaveBackground(req, server.rdb_filename, rsiptr, RDBFLAGS_REPLICATION | RDBFLAGS_KEEP_CACHE);
         }
@@ -2065,6 +2071,13 @@ void slotMigrationPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *c
 void updateReplicasWaitingBgsave(int bgsaveerr, int type) {
     listNode *ln;
     listIter li;
+    char tmpfile[256];
+    const char *sync_rdb_file = server.rdb_filename;
+
+    if (server.rdb_child_sync_uses_tmpfile) {
+        snprintf(tmpfile, sizeof(tmpfile), "temp-%d.rdb", (int)server.child_pid);
+        sync_rdb_file = tmpfile;
+    }
 
     /* Note: there's a chance we got here from within the REPLCONF ACK command
      * so we must avoid using freeClient, otherwise we'll crash on our way up. */
@@ -2126,7 +2139,7 @@ void updateReplicasWaitingBgsave(int bgsaveerr, int type) {
                 }
                 replica->repl_data->repl_start_cmd_stream_on_ack = 1;
             } else {
-                repldbfd = open(server.rdb_filename, O_RDONLY);
+                repldbfd = open(sync_rdb_file, O_RDONLY);
                 if (repldbfd == -1) {
                     freeClientAsync(replica);
                     serverLog(LL_WARNING, "SYNC failed. Can't open DB after BGSAVE: %s", strerror(errno));
@@ -2153,6 +2166,12 @@ void updateReplicasWaitingBgsave(int bgsaveerr, int type) {
                 }
             }
         }
+    }
+
+    /* Every replica now owns an fd, so the negotiated fallback no longer
+     * needs a directory entry and will disappear after the final fd closes. */
+    if (server.rdb_child_sync_uses_tmpfile && bg_unlink(sync_rdb_file) == -1 && errno != ENOENT) {
+        serverLog(LL_WARNING, "Failed removing the temporary RDB used for SYNC: %s", strerror(errno));
     }
 }
 

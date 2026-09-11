@@ -116,30 +116,53 @@ start_server {tags {"repl rdb-compression external:skip needs:debug"} overrides 
         }
     }
 
-    # Both scenarios fall back to plaintext: the replica advertises LZ4
-    # per its own rdbcompression, and the primary's mode is set per iteration.
+    # The replica advertises LZ4 per its own rdbcompression. When the primary
+    # disables stream compression, the shared RDB is written in the legacy
+    # format as usual.
     start_server {overrides {save "" enable-debug-command local rdbcompression lz4}} {
         set replica [srv 0 client]
 
-        foreach {scenario primary_mode replica_mode prefix} {
-            primary-compression-off yes lz4 off
-            replica-not-capable     lz4 yes nocap
-        } {
-            test "Disk full sync: $scenario yields a plaintext RDB that loads" {
-                $primary config set rdbcompression $primary_mode
-                $replica config set rdbcompression $replica_mode
-                populate_compressible_dataset $primary $prefix
+        test {Disk full sync: primary compression off produces a plaintext RDB that loads} {
+            $primary config set rdbcompression yes
+            populate_compressible_dataset $primary off
 
+            $replica replicaof $primary_host $primary_port
+            assert_replica_synced $primary $replica "(primary-compression-off)"
+
+            assert_equal 0 [rdb_is_compressed $primary]
+            $replica replicaof no one
+        }
+
+        test {Disk full sync: capability fallback preserves the configured RDB} {
+            with_cleanup {
+                $primary config set save "1000000 1000000"
+                $primary config set rdbcompression lz4
+                $replica config set rdbcompression yes
+                populate_compressible_dataset $primary nocap
+
+                # Establish the configured persistence snapshot, then make the
+                # in-memory dataset dirty before the replication-only save.
+                assert_equal OK [$primary save]
+                set rdbfile [server_rdb_path $primary]
+                set saved_rdb [read_binary_file $rdbfile]
+                set saved_at [$primary lastsave]
+                $primary set nocap:after-save dirty
+                set dirty_before [status $primary rdb_changes_since_last_save]
+
+                set primary_loglines [count_log_lines -1]
                 $replica replicaof $primary_host $primary_port
-                assert_replica_synced $primary $replica "($scenario)"
+                assert_replica_synced $primary $replica "(replica-not-capable)"
 
-                assert_equal 0 [rdb_is_compressed $primary]
-
+                assert_equal $saved_rdb [read_binary_file $rdbfile]
+                assert_equal $saved_at [$primary lastsave]
+                assert_equal $dirty_before [status $primary rdb_changes_since_last_save]
+                assert_equal {} [glob -nocomplain [file join [file dirname $rdbfile] temp-*.rdb]]
+                wait_for_log_messages -1 {"*DB saved on disk for replication*"} $primary_loglines 50 100
+            } {
                 $replica replicaof no one
+                $primary config set save ""
             }
         }
-        # Restore the fixture default for subsequent shared-primary tests.
-        $primary config set rdbcompression lz4
     }
 
     # Regression: a size-framed ($<len>, no EOF mark) compressed disk RDB, loaded
@@ -208,9 +231,11 @@ start_server {tags {"repl rdb-compression external:skip needs:debug"} overrides 
                 # Exactly one BGSAVE served both -> they were grouped (AND precondition).
                 assert_equal 1 [expr {[count_log_message -2 {Starting BGSAVE for SYNC}] - $rounds_before}]
 
-                # AND result: the grouped RDB is plaintext (capable replica downgraded too).
-                assert_equal 0 [rdb_is_compressed $primary]
+                # AND result: the grouped transfer falls back to plaintext
+                # without replacing the compressed RDB from the manual BGSAVE.
+                assert_equal 1 [rdb_is_compressed $primary]
                 verify_no_log_message -2 "*Disk-based full sync with compression: lz4*" $primary_loglines
+                wait_for_log_messages -2 {"*DB saved on disk for replication*"} $primary_loglines 50 100
 
                 $noncap replicaof no one
                 $capable replicaof no one
@@ -247,7 +272,7 @@ start_server {tags {"repl rdb-compression external:skip needs:debug"} overrides 
             foreach {name primary_mode joiner_mode should_join expected_compressed} {
                 "plain save, non-capable joiner attaches"                   yes yes 1 0
                 "plain save, capable joiner attaches"                       yes lz4 1 0
-                "compressed save, non-capable joiner waits for a new save"  lz4 yes 0 0
+                "compressed save, non-capable joiner waits for a new save"  lz4 yes 0 1
                 "compressed save, capable joiner attaches"                  lz4 lz4 1 1
             } {
                 test "Piggyback: $name" {
