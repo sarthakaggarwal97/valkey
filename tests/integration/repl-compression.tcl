@@ -423,6 +423,68 @@ start_server {tags {"repl"} overrides {save ""}} {
         $primary config set repl-compression no
     }
 
+    if {!$::tls} {
+        test {Corrupt compressed replication stream disconnects cleanly and recovers} {
+            $primary config set repl-compression lz4
+            $primary flushall
+            $primary set corrupt:baseline baseline_val
+            $primary save
+
+            set rdb_payload [read_binary_file [server_rdb_path $primary]]
+            # Valid VCS replication envelope followed by an invalid LZ4 frame.
+            set corrupt_stream [binary format H* 56435301010002]
+            append corrupt_stream [string repeat "\x00" 64]
+
+            set fake_pid ""
+            with_cleanup {
+                set rdb_file [tmpfile fake-primary-rdb]
+                set stream_file [tmpfile fake-primary-stream]
+                write_binary_file $rdb_file $rdb_payload
+                write_binary_file $stream_file $corrupt_stream
+                set fake_port [find_available_port $::baseport $::portcount]
+                set fake_pid [exec [info nameofexecutable] tests/helpers/fake_primary.tcl \
+                                  $fake_port $rdb_file [string length $rdb_payload] $stream_file &]
+                wait_for_condition 50 50 {
+                    [ping_server 127.0.0.1 $fake_port]
+                } else {
+                    fail "Failed to start fake primary"
+                }
+
+                start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
+                    set replica [srv 0 client]
+                    set replica_loglines [count_log_lines 0]
+                    $replica replicaof 127.0.0.1 $fake_port
+
+                    wait_for_log_messages 0 {"*replication stream decompression failure*"} \
+                        $replica_loglines 100 100
+                    wait_for_condition 50 100 {
+                        [s 0 master_link_status] eq {down}
+                    } else {
+                        fail "Replica did not disconnect from the corrupt compressed stream"
+                    }
+                    assert_equal {PONG} [$replica ping]
+                    assert_equal {baseline_val} [$replica get corrupt:baseline]
+
+                    # A fresh replication session must not retain any corrupt
+                    # decoder state from the failed link.
+                    $replica replicaof $primary_host $primary_port
+                    wait_for_condition 50 200 {
+                        [s 0 master_link_status] eq {up} &&
+                        [$replica get corrupt:baseline] eq {baseline_val} &&
+                        [string match {*state=online*compression=lz4*} [$primary info replication]]
+                    } else {
+                        fail "Replica did not recover after compressed stream corruption"
+                    }
+
+                    $replica replicaof no one
+                }
+            } {
+                if {$fake_pid ne ""} {catch {exec kill $fake_pid}}
+                $primary config set repl-compression no
+            }
+        }
+    }
+
     test {Replica with repl-compression lz4 handles a plaintext primary (passthrough)} {
         # Primary has compression OFF, replica ON: the replica advertises the
         # capability but the primary sends plaintext, so the replica must pass
