@@ -1907,6 +1907,10 @@ extern int ProcessingEventsWhileBlocked;
 static bool processPendingReplStreamDecode(void) {
     client *primary = server.primary;
     if (!primary || primary->flag.close_asap || !replStreamHasPendingDecode()) return false;
+    /* streamReplDataBufToDb owns the reader while replaying dual-channel
+     * buffers. Resuming it here could read newer socket bytes before the
+     * remaining buffered blocks. */
+    if (server.pending_repl_data.blocks) return false;
     if (primary->io_write_state != CLIENT_IDLE || primary->io_read_state != CLIENT_IDLE) return false;
 
     readQueryFromClient(primary->conn);

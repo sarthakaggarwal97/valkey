@@ -3654,10 +3654,10 @@ void replDataBufInit(void) {
 
 /* Replication: Replica side.
  * Track the local repl-data buffer streaming progress and serve clients from time to time */
-void replStreamProgressCallback(size_t offset, int readlen, time_t *last_progress_callback) {
+void replStreamProgressCallback(size_t offset, size_t length, time_t *last_progress_callback) {
     time_t now = mstime();
     if (server.loading_process_events_interval_bytes &&
-        ((offset + readlen) / server.loading_process_events_interval_bytes >
+        ((offset + length) / server.loading_process_events_interval_bytes >
          offset / server.loading_process_events_interval_bytes) &&
         (now - *last_progress_callback > server.loading_process_events_interval_ms)) {
         replicationSendNewlineToPrimary();
@@ -3754,7 +3754,7 @@ void bufferReplData(connection *conn) {
 int streamReplDataBufToDb(client *c) {
     serverAssert(c->flag.primary);
     blockingOperationStarts();
-    size_t used, offset = 0;
+    size_t used, processed_bytes = 0;
     listNode *cur = NULL;
     time_t last_progress_callback = mstime();
     while (server.pending_repl_data.blocks && (cur = listFirst(server.pending_repl_data.blocks))) {
@@ -3768,7 +3768,8 @@ int streamReplDataBufToDb(client *c) {
             const void *input = o->buf;
             size_t input_len = used;
             do {
-                if (replDecodeToQueryBuf(c, input, input_len, REPL_DECODE_EVENT_BUDGET) < 0) {
+                ssize_t decoded = replDecodeToQueryBuf(c, input, input_len, REPL_DECODE_EVENT_BUDGET);
+                if (decoded < 0) {
                     serverLog(LL_WARNING, "Dual-channel replication stream decompression failure");
                     blockingOperationEnds();
                     return C_ERR;
@@ -3776,17 +3777,31 @@ int streamReplDataBufToDb(client *c) {
                 processInputBuffer(c);
                 input = NULL;
                 input_len = 0;
+
+                /* Compressed wire bytes can expand far beyond their input
+                 * size. Account progress in decoded bytes so highly
+                 * compressible streams still yield at the configured rate. */
+                replStreamProgressCallback(processed_bytes, (size_t)decoded, &last_progress_callback);
+                processed_bytes += (size_t)decoded;
+                if (!server.pending_repl_data.blocks) {
+                    blockingOperationEnds();
+                    return C_ERR;
+                }
             } while (replStreamHasPendingDecode());
         } else {
             c->querybuf = sdscatlen(c->querybuf, o->buf, used);
             c->repl_data->read_reploff += used;
             processInputBuffer(c);
+            replStreamProgressCallback(processed_bytes, used, &last_progress_callback);
+            processed_bytes += used;
+            if (!server.pending_repl_data.blocks) {
+                blockingOperationEnds();
+                return C_ERR;
+            }
         }
         server.pending_repl_data.mem -= (used + sizeof(replDataBufBlock) + sizeof(listNode));
         server.pending_repl_data.len -= used;
-        offset += used;
         listDelNode(server.pending_repl_data.blocks, cur);
-        replStreamProgressCallback(offset, used, &last_progress_callback);
     }
     blockingOperationEnds();
     if (!server.pending_repl_data.blocks) {
