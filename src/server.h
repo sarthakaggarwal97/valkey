@@ -3407,7 +3407,6 @@ int sendCurrentOffsetToReplica(client *replica);
 int replicaRdbVersion(client *replica);
 /* Full-sync compression policy: select the codec and gate replica eligibility on capability. */
 compressionAlgo replSelectFullSyncCompression(int replica_capa, bool socket_target);
-bool replicaCanUseFullSyncFormat(int replica_capa, compressionAlgo compression_algo);
 void addRdbReplicaToPsyncWait(client *replica);
 void initClientReplicationData(client *c);
 void freeClientReplicationData(client *c);

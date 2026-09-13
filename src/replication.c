@@ -93,9 +93,18 @@ static compressionAlgo replCompressionAlgorithm(void) {
     }
 }
 
+/* Whether a replica accepts the codec used for a streaming-compressed payload. */
+static bool replicaAcceptsCompressionAlgorithm(int replica_capa, compressionAlgo compression_algo) {
+    switch (compression_algo) {
+    case ALGO_NONE: return true;
+    case ALGO_LZ4: return replica_capa & REPLICA_CAPA_LZ4;
+    default: return false;
+    }
+}
+
 static compressionAlgo replicaNegotiatedCompressionAlgorithm(client *replica) {
-    if (!(replica->repl_data->replica_capa & REPLICA_CAPA_LZ4)) return ALGO_NONE;
-    return replCompressionAlgorithm();
+    compressionAlgo configured_algo = replCompressionAlgorithm();
+    return replicaAcceptsCompressionAlgorithm(replica->repl_data->replica_capa, configured_algo) ? configured_algo : ALGO_NONE;
 }
 
 /* True when the replica's live transport no longer matches what the current
@@ -1177,17 +1186,12 @@ need_full_resync:
     return C_ERR;
 }
 
-/* LZ4 full-sync payloads require the replica to advertise LZ4 acceptance. */
-bool replicaCanUseFullSyncFormat(int replica_capa, compressionAlgo compression_algo) {
-    return compression_algo == ALGO_NONE || (replica_capa & REPLICA_CAPA_LZ4);
-}
-
 compressionAlgo replSelectFullSyncCompression(int replica_capa, bool socket_target) {
     /* Diskless full sync follows repl-compression. A disk-based sync follows
      * rdbcompression because it also creates the persisted snapshot. */
     compressionAlgo configured_algo =
         socket_target ? replCompressionAlgorithm() : (server.rdb_compression == RDB_COMPRESSION_LZ4 ? ALGO_LZ4 : ALGO_NONE);
-    return replicaCanUseFullSyncFormat(replica_capa, configured_algo) ? configured_algo : ALGO_NONE;
+    return replicaAcceptsCompressionAlgorithm(replica_capa, configured_algo) ? configured_algo : ALGO_NONE;
 }
 
 /* Start a BGSAVE for replication goals, which is, selecting the disk or
@@ -1301,7 +1305,7 @@ int startBgsaveForReplication(int mincapa, int req, int rdbver) {
                 /* A non-capable waiter must not receive a compressed sync; it
                  * stays parked and the next cron round, whose AND includes it,
                  * is plain. A capable waiter may still join a plain round. */
-                if (!replicaCanUseFullSyncFormat(replica->repl_data->replica_capa, sync_compression_algo)) continue;
+                if (!replicaAcceptsCompressionAlgorithm(replica->repl_data->replica_capa, sync_compression_algo)) continue;
                 replicationSetupReplicaForFullResync(replica, getPsyncInitialOffset());
             }
         }
@@ -1476,7 +1480,7 @@ void syncCommand(client *c) {
         int trigger_capa = ln ? (replica->repl_data->replica_capa & ~REPLICA_CAPA_LZ4) : 0;
         if (ln && ((c->repl_data->replica_capa & trigger_capa) == trigger_capa) &&
             c->repl_data->replica_req == replica->repl_data->replica_req &&
-            replicaCanUseFullSyncFormat(c->repl_data->replica_capa, server.rdb_child_sync_algo)) {
+            replicaAcceptsCompressionAlgorithm(c->repl_data->replica_capa, server.rdb_child_sync_algo)) {
             /* Perfect, the server is already registering differences for
              * another replica. Set the right state, and copy the buffer.
              * We don't copy buffer if clients don't want. */
