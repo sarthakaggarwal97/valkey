@@ -172,8 +172,8 @@ static void reconcileUpstreamCompression(void) {
  * both sides opted in: repl-compression is enabled here and the replica
  * advertised the capability. The write path emits the VCS envelope with the
  * first compressed batch. No-ops when the link stays plaintext or is already
- * compressed (dual-channel reaches both the +CONTINUE and put-online paths).
- * Returns C_ERR when initialization failed; the caller drops the link. */
+ * compressed. Returns C_ERR when initialization failed; the caller drops the
+ * link. */
 static int replicaEnableCompressionIfNegotiated(client *replica) {
     compressionAlgo algo = replicaNegotiatedCompressionAlgorithm(replica);
     if (algo == ALGO_NONE) return C_OK;
@@ -1849,14 +1849,14 @@ int replicaPutOnline(client *replica) {
                   replicationGetReplicaName(replica));
         return 0;
     }
-    /* A dual-channel command stream started at +CONTINUE while the RDB was
-     * loading; that decision is live and cannot switch mid-flight. Any other
-     * path reaches here with no command stream yet, so decide now. */
+    /* A dual-channel command stream started at +CONTINUE cannot switch
+     * mid-flight; cron reconciles it once online. Otherwise decide now, before
+     * the ONLINE transition, so a failed init leaves no half-online replica. */
     bool command_stream_already_started = replica->repl_data->repl_state == REPLICA_STATE_BG_RDB_LOAD;
+    if (!command_stream_already_started && replicaEnableCompressionIfNegotiated(replica) != C_OK) return 0;
+
     replica->repl_data->repl_state = REPLICA_STATE_ONLINE;
     replica->repl_data->repl_ack_time = server.unixtime; /* Prevent false timeout. */
-
-    if (!command_stream_already_started && replicaEnableCompressionIfNegotiated(replica) != C_OK) return 0;
 
     refreshGoodReplicasCount();
     /* Fire the replica change modules event. */
