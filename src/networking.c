@@ -2530,9 +2530,9 @@ static void postWriteToReplica(client *c) {
     server.stat_net_repl_output_bytes += c->nwritten;
 
     if (compression) {
-        /* The cursor advances by the batch's raw bytes only once out_buf is
-         * fully sent; a partial send keeps it pinned so the next cycle sends
-         * the remainder before compressing more. */
+        /* An IO thread may send the batch but cannot update replication block
+         * refcounts while the main thread appends and trims them. Advance the
+         * cursor here only after the whole compressed batch has been sent. */
         if (compression->out_buf_pos == sdslen(compression->out_buf)) {
             size_t batch_uncompressed_bytes = compression->batch_uncompressed_bytes;
 
@@ -2590,7 +2590,7 @@ static int compressReplicaDataToOutputBuffer(replicaCompressionState *compressio
         compression->out_buf = sdscatlen(compression->out_buf, envelope, sizeof(envelope));
     }
     size_t bound = streamCompressorOutputBound(&compression->compressor, input_len);
-    if (bound == 0) return C_ERR;
+    serverAssert(bound > 0);
     compression->out_buf = sdsMakeRoomFor(compression->out_buf, bound);
     ssize_t compressed =
         streamCompressorFeed(&compression->compressor, (uint8_t *)compression->out_buf + sdslen(compression->out_buf),
@@ -2640,8 +2640,8 @@ static void writeToReplicaCompressed(client *c) {
         size_t start = (cur == first_node) ? c->repl_data->ref_block_pos : 0;
         size_t end = (cur == last_node) ? last_pos : block->used;
 
-        if (end <= start) {
-            serverAssert(end >= start);
+        serverAssert(end >= start);
+        if (end == start) {
             if (cur == last_node) break;
             continue;
         }
@@ -2674,11 +2674,7 @@ static void writeToReplicaCompressed(client *c) {
      * (postWriteToReplica), so a partial send keeps it pinned to the start of
      * the batch. */
     size_t avail = sdslen(compression->out_buf);
-    if (avail == 0) {
-        /* Avoid repeatedly compressing the same raw bytes without progress. */
-        c->write_flags |= WRITE_FLAGS_COMPRESSION_ERROR | WRITE_FLAGS_WRITE_ERROR;
-        return;
-    }
+    serverAssert(avail > 0);
 
     c->nwritten = connWrite(c->conn, compression->out_buf, avail);
     if (c->nwritten <= 0) {
@@ -2689,6 +2685,8 @@ static void writeToReplicaCompressed(client *c) {
 }
 
 static void writeToReplica(client *c) {
+    serverAssert(c->bufpos == 0 && listLength(c->reply) == 0);
+
     /* Compressed replicas use the framed write path; the decision lives here so
      * callers do not branch on the per-replica compression state. */
     if (c->repl_data->repl_compression != NULL) {
@@ -2699,7 +2697,6 @@ static void writeToReplica(client *c) {
     listNode *last_node;
     size_t last_pos;
 
-    serverAssert(c->bufpos == 0 && listLength(c->reply) == 0);
     if (!getReplicaWriteRange(c, &last_node, &last_pos)) return;
 
     listNode *first_node = c->repl_data->ref_repl_buf_node;

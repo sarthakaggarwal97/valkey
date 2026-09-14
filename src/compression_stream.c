@@ -474,10 +474,12 @@ streamPushReaderFeedCodec(streamPushReader *reader, const uint8_t *in, size_t le
         const uint8_t *feed_input = in ? in + off : NULL;
         produced = streamDecompressorFeed(&reader->decompressor, (uint8_t *)*out + used, room, feed_input, len - off,
                                           &consumed);
-        if (produced < 0 || (size_t)produced > room || consumed > len - off) {
+        if (produced < 0) {
             *input_consumed = off;
             return STREAM_PUSH_READER_ERR;
         }
+        serverAssert((size_t)produced <= room);
+        serverAssert(consumed <= len - off);
         if (produced > 0) {
             sdsIncrLen(*out, (size_t)produced);
             *budget -= (size_t)produced;
@@ -570,7 +572,7 @@ bool streamPushReaderHasPendingDecode(const streamPushReader *reader) {
 
 streamPushReaderResult streamPushReaderFeed(streamPushReader *reader, const void *src, size_t len, sds *out, size_t output_budget) {
     bool resuming = streamPushReaderHasPendingDecode(reader);
-    if (len > 0 && resuming) return STREAM_PUSH_READER_ERR;
+    serverAssert(len == 0 || !resuming);
 
     const uint8_t *input = src;
     size_t input_len = len;
@@ -584,7 +586,7 @@ streamPushReaderResult streamPushReaderFeed(streamPushReader *reader, const void
 
     size_t consumed = 0;
     streamPushReaderResult result = streamPushReaderFeedInput(reader, input, input_len, &consumed, out, output_budget);
-    if (consumed > input_len) return STREAM_PUSH_READER_ERR;
+    serverAssert(consumed <= input_len);
 
     if (reader->pending_input) {
         reader->pending_input_pos += consumed;

@@ -117,10 +117,10 @@ static bool replicaCompressionNeedsRenegotiation(client *replica) {
 
 /* Runtime repl-compression changes converge by reconnect, since a live link
  * cannot switch between plaintext and compressed mid-stream; the reconnects
- * renegotiate via partial resync, so no snapshot is retransferred. Both
- * reconcile steps run from replicationCron: that is always after the CONFIG
- * SET that requested them has finished, and they pause during a failover so
- * a transport change never disconnects the failover target. */
+ * attempt partial resync before falling back to a full sync. Both reconcile
+ * steps run from replicationCron: that is always after the CONFIG SET that
+ * requested them has finished, and they pause during a failover so a transport
+ * change never disconnects the failover target. */
 
 /* Disconnect at most one online replica whose transport mismatches the
  * current setting. Stateless and idempotent, called every cron tick: at most
@@ -135,6 +135,7 @@ static void reconcileReplicaCompression(void) {
     while ((ln = listNext(&li))) {
         client *replica = ln->value;
         if (replica->repl_data->repl_state != REPLICA_STATE_ONLINE) continue;
+        if (replica->repl_data->repl_start_cmd_stream_on_ack || replica->flag.close_asap) continue;
         if (!replicaCompressionNeedsRenegotiation(replica)) continue;
 
         serverLog(LL_NOTICE, "Disconnecting replica %s to renegotiate replication compression (now %s)",
@@ -144,12 +145,14 @@ static void reconcileReplicaCompression(void) {
     }
 }
 
-/* Drop the upstream primary link when its advertised capability no longer
- * matches the current configuration. Before the capability is sent, the
- * in-progress handshake will use the current configuration directly. */
+/* Drop an established upstream link when its advertised capability no longer
+ * matches the current configuration. A change made during handshake or full
+ * sync waits until the link is connected, preserving the in-progress sync. */
 static void reconcileUpstreamCompression(void) {
-    if (!server.primary_host) return;
+    if (!server.primary_host || server.repl_state != REPL_STATE_CONNECTED) return;
     if (server.repl_compression_advertised == REPL_COMPRESSION_CAPA_UNKNOWN) return;
+    serverAssert(server.primary != NULL);
+    if (server.primary->flag.close_asap) return;
 
     int compression_enabled = replCompressionAlgorithm() != ALGO_NONE;
     if (compression_enabled == server.repl_compression_advertised) return;
@@ -158,18 +161,12 @@ static void reconcileUpstreamCompression(void) {
      * Disabling compression then needs no reconnect; a future handshake will
      * advertise the new setting. Keep probing or compressed links eligible for
      * reconnect because their transport may still need to change. */
-    if (!compression_enabled && server.primary && !server.repl_stream_reader) return;
+    if (!compression_enabled && !server.repl_stream_reader) return;
 
-    if (server.primary) {
-        serverLog(LL_NOTICE, "Disconnecting from primary to renegotiate replication compression (now %s)",
-                  compression_enabled ? "enabled" : "disabled");
-        server.repl_compression_advertised = REPL_COMPRESSION_CAPA_UNKNOWN;
-        freeClientAsync(server.primary);
-    } else if (cancelReplicationHandshake(1)) {
-        serverLog(LL_NOTICE, "Restarting sync with primary to renegotiate replication compression (now %s)",
-                  compression_enabled ? "enabled" : "disabled");
-        server.repl_compression_advertised = REPL_COMPRESSION_CAPA_UNKNOWN;
-    }
+    serverLog(LL_NOTICE, "Disconnecting from primary to renegotiate replication compression (now %s)",
+              compression_enabled ? "enabled" : "disabled");
+    server.repl_compression_advertised = REPL_COMPRESSION_CAPA_UNKNOWN;
+    freeClientAsync(server.primary);
 }
 
 /* Enable framed transport compression for a replica at PSYNC completion when
@@ -208,14 +205,14 @@ static void replFreeStreamReader(void) {
     }
 }
 
-/* (Re)create the replica-side push reader for a fresh primary stream. The stream
- * may be compressed (VCS envelope) or plaintext (the primary compresses only
- * if its own config is enabled) and is classified from its leading bytes, so
- * the reader never depends on what the handshake advertised. Classification
- * is unambiguous: a plaintext replication stream is RESP, whose first byte is
- * never 'V'. */
+/* (Re)create the replica-side push reader for a fresh primary stream. A primary
+ * can compress only when this replica advertised LZ4 in the current handshake,
+ * so keep the ordinary read path when it did not. When LZ4 was advertised, the
+ * primary may still choose plaintext; classify that from the leading bytes. */
 static void replResetStreamReader(void) {
     replFreeStreamReader();
+    serverAssert(server.repl_compression_advertised != REPL_COMPRESSION_CAPA_UNKNOWN);
+    if (!server.repl_compression_advertised) return;
     server.repl_stream_reader = zmalloc(sizeof(*server.repl_stream_reader));
     streamPushReaderInit(server.repl_stream_reader, VCS_STREAM_REPL);
 }
@@ -1547,8 +1544,8 @@ void initClientReplicationData(client *c) {
 
 void freeClientReplicationData(client *c) {
     if (!c->repl_data) return;
+    serverAssert(!clientHasPendingIO(c));
     if (c->repl_data->repl_compression) {
-        serverAssert(!clientHasPendingIO(c));
         replicaCompressionState *compression = c->repl_data->repl_compression;
         streamCompressorFree(&compression->compressor);
         sdsfree(compression->out_buf);
@@ -3832,7 +3829,7 @@ void dualChannelSyncSuccess(void) {
         /* Verify sync is still in progress */
         if (server.repl_rdb_channel_state != REPL_DUAL_CHANNEL_STATE_NONE) {
             replicationAbortDualChannelSyncTransfer();
-            replicationUnsetPrimary();
+            freeClientAsync(server.primary);
         }
         return;
     }

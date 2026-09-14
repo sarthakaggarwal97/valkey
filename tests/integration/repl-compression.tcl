@@ -25,6 +25,24 @@ proc start_fake_primary_with_stream {rdb_payload stream_payload} {
     return [list $pid $port]
 }
 
+# Start a fake dual-channel primary that sends a valid RDB on the RDB channel
+# and the supplied buffered command-stream bytes on the main channel.
+proc start_fake_dual_channel_primary_with_stream {rdb_payload stream_payload} {
+    set rdb_file [tmpfile fake-dual-primary-rdb]
+    set stream_file [tmpfile fake-dual-primary-stream]
+    write_binary_file $rdb_file $rdb_payload
+    write_binary_file $stream_file $stream_payload
+    set port [find_available_port $::baseport $::portcount]
+    set pid [exec [info nameofexecutable] tests/helpers/fake_dual_channel_primary.tcl \
+                 $port $rdb_file $stream_file &]
+    wait_for_condition 50 50 {
+        [ping_server 127.0.0.1 $port]
+    } else {
+        fail "Failed to start fake dual-channel primary"
+    }
+    return [list $pid $port]
+}
+
 # ============================================================
 # Config CRUD — single-server tests, no replication needed
 # ============================================================
@@ -490,6 +508,53 @@ start_server {tags {"repl"} overrides {save ""}} {
                 $primary config set repl-compression no
             }
         }
+
+        test {Corrupt buffered dual-channel stream retries without promoting the replica} {
+            $primary config set repl-compression lz4
+            $primary flushall
+            $primary set dual-corrupt:baseline baseline_val
+            $primary save
+
+            set rdb_payload [read_binary_file [server_rdb_path $primary]]
+            set corrupt_stream [binary format H* 56435301010002]
+            append corrupt_stream [string repeat "\x00" 64]
+
+            set fake_pid ""
+            with_cleanup {
+                lassign [start_fake_dual_channel_primary_with_stream $rdb_payload $corrupt_stream] fake_pid fake_port
+
+                start_server {overrides {save "" repl-compression lz4 dual-channel-replication-enabled yes repl-diskless-load swapdb}} {
+                    set replica [srv 0 client]
+                    set replica_loglines [count_log_lines 0]
+                    $replica replicaof 127.0.0.1 $fake_port
+
+                    wait_for_log_messages 0 {"*Dual-channel replication stream decompression failure*"} \
+                        $replica_loglines 100 100
+                    wait_for_condition 50 100 {
+                        [lindex [$replica role] 0] eq {slave} &&
+                        [s 0 master_host] eq {127.0.0.1} &&
+                        [s 0 master_port] == $fake_port &&
+                        [s 0 master_link_status] eq {down}
+                    } else {
+                        fail "Replica did not retain its configured primary after buffered stream corruption"
+                    }
+                    assert_equal {baseline_val} [$replica get dual-corrupt:baseline]
+
+                    $replica replicaof $primary_host $primary_port
+                    wait_for_condition 50 200 {
+                        [s 0 master_link_status] eq {up} &&
+                        [$replica get dual-corrupt:baseline] eq {baseline_val}
+                    } else {
+                        fail "Replica did not recover after dual-channel stream corruption"
+                    }
+
+                    $replica replicaof no one
+                }
+            } {
+                if {$fake_pid ne ""} {catch {exec kill $fake_pid}}
+                $primary config set repl-compression no
+            }
+        }
     }
 
     test {Replica with repl-compression lz4 handles a plaintext primary (passthrough)} {
@@ -535,6 +600,48 @@ start_server {tags {"repl"} overrides {save ""}} {
 
             $replica replicaof no one
         }
+    }
+
+    test {Replica config change waits for an in-progress full sync} {
+        $primary config set repl-compression lz4
+        $primary config set rdb-key-save-delay 1000
+        $primary flushall
+        $primary debug populate 5000 sync-config: 100
+
+        set full_before [status $primary sync_full]
+        set partial_before [status $primary sync_partial_ok]
+        set _code [catch {
+            start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
+                set replica [srv 0 client]
+                $replica replicaof $primary_host $primary_port
+
+                wait_for_condition 100 100 {
+                    [s 0 master_sync_in_progress] == 1 &&
+                    [status $primary sync_full] == $full_before + 1
+                } else {
+                    fail "Full sync did not start"
+                }
+
+                $replica config set repl-compression no
+                after 1500
+                assert_equal 1 [s 0 master_sync_in_progress]
+                assert_equal [expr {$full_before + 1}] [status $primary sync_full]
+
+                wait_for_condition 200 100 {
+                    [s 0 master_link_status] eq {up} &&
+                    [regexp -all {compression=lz4} [$primary info replication]] == 0 &&
+                    [status $primary sync_partial_ok] == $partial_before + 1
+                } else {
+                    fail "Replica did not renegotiate after the full sync completed"
+                }
+                assert_equal [expr {$full_before + 1}] [status $primary sync_full]
+
+                $replica replicaof no one
+            }
+        } _res _opts]
+        $primary config set rdb-key-save-delay 0
+        $primary config set repl-compression no
+        return -options $_opts $_res
     }
 
     test {Replica repl-compression flips renegotiate upstream in both directions} {
