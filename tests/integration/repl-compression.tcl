@@ -868,7 +868,7 @@ start_server {tags {"repl"} overrides {save ""}} {
                 }
 
                 # The command-stream decision is fixed at +CONTINUE. Traffic
-                # buffered before the flip must survive the put-online resync.
+                # buffered before the flip must survive cron reconciliation.
                 for {set i 0} {$i < 20} {incr i} {
                     $primary set "during_load:$i" "value_$i"
                 }

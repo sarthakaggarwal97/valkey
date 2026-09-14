@@ -108,8 +108,7 @@ static compressionAlgo replicaNegotiatedCompressionAlgorithm(client *replica) {
 }
 
 /* True when the replica's live transport no longer matches what the current
- * config would negotiate for it. Shared by the cron reconcile scan and the
- * put-online convergence check so the two can never drift. */
+ * config would negotiate for it. */
 static bool replicaCompressionNeedsRenegotiation(client *replica) {
     compressionAlgo active = replica->repl_data->repl_compression ? replica->repl_data->repl_compression->compressor.algo : ALGO_NONE;
     return replicaNegotiatedCompressionAlgorithm(replica) != active;
@@ -125,8 +124,8 @@ static bool replicaCompressionNeedsRenegotiation(client *replica) {
 /* Disconnect at most one online replica whose transport mismatches the
  * current setting. Stateless and idempotent, called every cron tick: at most
  * one link converges per tick, so a config change never disconnects the
- * whole fleet at once. Still-syncing replicas keep their frozen decision;
- * the put-online convergence check reconnects them. */
+ * whole fleet at once. Still-syncing replicas keep their frozen decision and
+ * become eligible for reconciliation after they are online. */
 static void reconcileReplicaCompression(void) {
     listIter li;
     listNode *ln;
@@ -1731,7 +1730,7 @@ void replconfCommand(client *c) {
                 checkChildrenDone();
             if (c->repl_data->repl_start_cmd_stream_on_ack && c->repl_data->repl_state == REPLICA_STATE_ONLINE) replicaStartCommandStream(c);
             if (c->repl_data->repl_state == REPLICA_STATE_BG_RDB_LOAD) {
-                replicaPutOnline(c);
+                if (!replicaPutOnline(c)) freeClientAsync(c);
             }
             /* Note: this command does not reply anything! */
             return;
@@ -1853,24 +1852,11 @@ int replicaPutOnline(client *replica) {
     /* A dual-channel command stream started at +CONTINUE while the RDB was
      * loading; that decision is live and cannot switch mid-flight. Any other
      * path reaches here with no command stream yet, so decide now. */
-    bool command_stream_started = replica->repl_data->repl_state == REPLICA_STATE_BG_RDB_LOAD;
+    bool command_stream_already_started = replica->repl_data->repl_state == REPLICA_STATE_BG_RDB_LOAD;
     replica->repl_data->repl_state = REPLICA_STATE_ONLINE;
     replica->repl_data->repl_ack_time = server.unixtime; /* Prevent false timeout. */
 
-    if (!command_stream_started) {
-        if (replicaEnableCompressionIfNegotiated(replica) != C_OK) {
-            freeClientAsync(replica);
-            return 0;
-        }
-    } else if (replicaCompressionNeedsRenegotiation(replica)) {
-        /* repl-compression changed while the sync was in flight; the frozen
-         * decision kept the stream consistent. Reconnect so the link
-         * renegotiates with the current config via a partial resync. */
-        serverLog(LL_NOTICE, "Reconnecting replica %s to renegotiate replication compression",
-                  replicationGetReplicaName(replica));
-        freeClientAsync(replica);
-        return 0;
-    }
+    if (!command_stream_already_started && replicaEnableCompressionIfNegotiated(replica) != C_OK) return 0;
 
     refreshGoodReplicasCount();
     /* Fire the replica change modules event. */

@@ -6592,15 +6592,9 @@ size_t getClientOutputBufferMemoryUsage(client *c) {
             repl_buf_size = last->repl_offset + last->size - cur->repl_offset;
             repl_node_num = last->id - cur->id + 1;
         }
-        size_t compression_size = 0;
-        /* Skip while an IO thread owns the compression state; the write job may realloc
-         * out_buf. The shared-buffer lag term still drives COB enforcement.
-         * Codec context memory is small and fixed; only the staging SDS is measured. */
-        if (c->repl_data->repl_compression && c->io_write_state != CLIENT_PENDING_IO) {
-            replicaCompressionState *compression = c->repl_data->repl_compression;
-            compression_size = sizeof(*compression) + sdsalloc(compression->out_buf);
-        }
-        return repl_buf_size + (repl_node_size * repl_node_num) + compression_size;
+        /* A compressed batch keeps this cursor pinned until the staged output
+         * drains, so repl_buf_size already represents all unsent data. */
+        return repl_buf_size + (repl_node_size * repl_node_num);
     }
 
     size_t list_item_size = sizeof(listNode) + sizeof(clientReplyBlock);
@@ -6625,6 +6619,14 @@ size_t getClientMemoryUsage(client *c, size_t *output_buffer_mem_usage) {
     mem += c->querybuf ? sdsAllocSize(c->querybuf) : 0;
     mem += zmalloc_size(c);
     mem += c->buf_usable_size;
+    /* Compression staging capacity is retained for reuse, so account it as
+     * client memory rather than pending output. Skip while an IO thread may
+     * reallocate the buffer. */
+    if (getClientType(c) == CLIENT_TYPE_REPLICA && c->repl_data->repl_compression &&
+        c->io_write_state != CLIENT_PENDING_IO) {
+        replicaCompressionState *compression = c->repl_data->repl_compression;
+        mem += zmalloc_size(compression) + sdsAllocSize(compression->out_buf);
+    }
     /* For efficiency (less work keeping track of the argv memory), it doesn't include the used memory
      * i.e. unused sds space and internal fragmentation, just the string length. but this is enough to
      * spot problematic clients. */
