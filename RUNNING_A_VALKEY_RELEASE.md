@@ -2,7 +2,7 @@
 
 Four release-control decisions:
 
-1. Dispatch **Prepare Release**.
+1. Run [Prepare Release][prepare-release].
 2. Merge the preparation PR.
 3. Approve `release`.
 4. Approve `release-publish`.
@@ -29,11 +29,9 @@ to find every open tracker.
 - Run only one active release per `M.m` branch. This is an operating rule, not
   an automation-enforced lock.
 
-## 1. Dispatch Prepare Release
+## 1. Run [Prepare Release][prepare-release]
 
-Open
-[Prepare Release](https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-prepare.yml)
-in `valkey-ci-agent`.
+Open [Prepare Release][prepare-release] in `valkey-ci-agent`.
 
 | Input | Value |
 | --- | --- |
@@ -76,14 +74,14 @@ to remain branch HEAD.
 
 ## 3. Wait for qualification
 
-[Refresh Release Progress](https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-progress.yml)
-detects the merged PR and dispatches
-[Publish Release](https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-publish.yml)
-for its exact merge commit. Dispatch Refresh manually if you do not want to wait
+[Refresh Release Progress][refresh-release] detects the merged PR and dispatches
+[Publish Release][publish-release] for its exact merge commit. Run
+[Refresh Release Progress][refresh-release] manually if you do not want to wait
 for the periodic run.
 
-Publish Release rechecks the branch HEAD, preparation PR, version, notes, tag
-state, and release-tag ruleset, then runs a no-publish qualification:
+[Publish Release][publish-release] rechecks the branch HEAD, preparation PR,
+version, notes, tag state, and release-tag ruleset, then runs a no-publish
+qualification:
 
 - RC: binary archive matrix;
 - GA or patch: binary archives plus the RPM and DEB build-and-test matrix.
@@ -93,7 +91,8 @@ technical publication gate.
 
 ## 4. Approve `release`
 
-Open the waiting **Publish Release** run and review its release plan:
+Open the waiting [Publish Release][publish-release] run and review its release
+plan:
 
 - tag and candidate SHA;
 - release type and latest-release decision; and
@@ -106,12 +105,10 @@ Release.
 
 ## 5. Approve `release-publish`
 
-The GitHub Release triggers
-[Build Release](https://github.com/valkey-io/valkey-release-automation/actions/workflows/build-release.yml).
-Before approving, confirm that the run names the expected version and that
-**Process Inputs** succeeded. That job resolves the release tag and rejects a
-source-SHA mismatch before approval is offered. Then approve
-`release-publish`.
+The GitHub Release triggers [Build Release][build-release]. Before approving,
+confirm that the run names the expected version and that **Process Inputs**
+succeeded. That job resolves the release tag and rejects a source-SHA mismatch
+before approval is offered. Then approve `release-publish`.
 
 Expected outputs:
 
@@ -141,25 +138,27 @@ The tracker links each applicable downstream target.
    container image exists.
 4. For the first GA on a new line, complete the backport-onboarding issue and
    merge the generated `repos.yml` PR in `valkey-ci-agent`. If neither appears,
-   inspect the Publish Release run.
+   inspect the [Publish Release][publish-release] run.
 5. Close the tracker only after all applicable outputs are verified.
 
 ## If something goes wrong
 
-- **Tracker is stale:** dispatch **Refresh Release Progress**.
+- **Tracker is stale:** run [Refresh Release Progress][refresh-release].
 - **Prepare fails:** follow the error. Check team membership,
   `release_policy.yml`, the Valkey `M.m` branch, and whether existing tags allow
   the requested intent.
 - **Qualification fails:** fix the cause. If Valkey source changes, cut a fresh
-  preparation PR; otherwise rerun or redispatch Publish Release for the same
-  candidate.
+  preparation PR; otherwise rerun or redispatch
+  [Publish Release][publish-release] for the same candidate.
 - **`M.m` moved after the prep merge:** cut and merge a fresh preparation PR.
 - **Validation or approval is invalidated:** restore the release-tag ruleset if
   necessary, review the new plan, and approve again.
-- **Publish stopped after creating the tag:** redispatch Publish Release with
-  the branch and original 40-character candidate SHA.
-- **No Build Release run appears:** rerun Valkey's **Trigger Build Release** for
-  the published version and `prod`.
+- **Publish stopped after creating the tag:** rerun
+  [Publish Release][publish-release] with the branch and original 40-character
+  candidate SHA.
+- **No Build Release run appears:** run
+  [Trigger Build Release][trigger-build-release] for the published version and
+  `prod`.
 - **Production or downstream work fails:** inspect partial results, fix and
   rerun the failed work, then refresh the tracker. If Bundle is waiting, merge
   the container PR and wait for the exact public image tags.
@@ -167,15 +166,18 @@ The tracker links each applicable downstream target.
 ## Stopping a release
 
 Before the GitHub Release is published, close the tracker and any unmerged
-preparation PR, cancel active Prepare/Publish runs, and reject any waiting
-`release` approval. Closing the tracker prevents future reconciliation but does
-not cancel work already running.
+preparation PR, cancel active [Prepare Release][prepare-release] or
+[Publish Release][publish-release] runs, and reject any waiting `release`
+approval. Closing the tracker prevents future reconciliation but does not
+cancel work already running.
 
 After the GitHub Release is published, the version cannot be abandoned. During
-an incident, reject `release-publish` or cancel Build Release to contain further
-writes, then recover forward and complete or repair the remaining outputs.
+an incident, reject `release-publish` or cancel
+[Build Release][build-release] to contain further writes, then recover forward
+and complete or repair the remaining outputs.
 
-Disabling **Refresh Release Progress** stops future refreshes, not active runs.
+Disabling [Refresh Release Progress][refresh-release] stops future refreshes,
+not active runs.
 
 ## Do not
 
@@ -184,3 +186,9 @@ Disabling **Refresh Release Progress** stops future refreshes, not active runs.
 - Merge into `M.m` between preparation merge and GitHub Release publication.
 - Edit tracker metadata or paste marker-like text into tracker comments.
 - Use this process for an embargoed security release.
+
+[prepare-release]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-prepare.yml
+[refresh-release]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-progress.yml
+[publish-release]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-publish.yml
+[build-release]: https://github.com/valkey-io/valkey-release-automation/actions/workflows/build-release.yml
+[trigger-build-release]: https://github.com/valkey-io/valkey/actions/workflows/trigger-build-release.yml
