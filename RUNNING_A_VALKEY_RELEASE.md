@@ -16,13 +16,14 @@ to find every open tracker.
 
 ## Before you start
 
-- Make sure your membership in `valkey-io/valkey-committers` or
-  `valkey-io/valkey-release` is active. A pending invitation is not enough. The
-  same membership covers both approvals.
+- Make sure your membership in
+  [`valkey-io/valkey-committers`][team-committers] or
+  [`valkey-io/valkey-release`][team-release] is active. A pending invitation is
+  not enough. The same membership covers both approvals.
 - For a new major or minor line, create `M.m` from `unstable`, then add it to
-  `release_policy.yml` in `valkey-ci-agent`. Prepare checks the policy file,
-  but it does not check that the Valkey branch exists. If the branch is
-  missing, the notes cut will fail later.
+  [`release_policy.yml`][release-policy] in `valkey-ci-agent`. Prepare checks
+  the policy file, but it does not check that the Valkey branch exists. If the
+  branch is missing, the notes cut will fail later.
 - Merge all backports intended for the release into `M.m`.
 - Leave `src/version.h` alone; the preparation PR updates it.
 - Do not use this public process for an embargoed security fix. Use `SECURITY`
@@ -146,8 +147,8 @@ Work through the links in the tracker:
 
 - **Tracker is stale:** run [Refresh Release Progress][refresh-release].
 - **Prepare fails:** read the error first. Check team membership,
-  `release_policy.yml`, the Valkey `M.m` branch, and whether the existing tags
-  allow the requested intent.
+  [`release_policy.yml`][release-policy], the Valkey `M.m` branch, and whether
+  the existing tags allow the requested intent.
 - **Qualification fails:** fix the cause. If the Valkey source changes, cut a
   fresh preparation PR. Otherwise rerun or redispatch
   [Publish Release][publish-release] for the same candidate.
@@ -198,3 +199,6 @@ refreshes, not active runs.
 [publish-release]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-publish.yml
 [build-release]: https://github.com/valkey-io/valkey-release-automation/actions/workflows/build-release.yml
 [trigger-build-release]: https://github.com/valkey-io/valkey/actions/workflows/trigger-build-release.yml
+[team-committers]: https://github.com/orgs/valkey-io/teams/valkey-committers
+[team-release]: https://github.com/orgs/valkey-io/teams/valkey-release
+[release-policy]: https://github.com/valkey-io/valkey-ci-agent/blob/main/release_policy.yml
