@@ -10,7 +10,9 @@ Four release-control decisions:
 The automation advances the release between those decisions. Downstream PRs
 still require maintainer review and merge. Start from the `Release <tag>`
 tracking issue; it links the runs, approvals, and follow-up work. The tracker
-displays live state but authorizes nothing.
+displays live state but authorizes nothing. Use the
+[active-release filter](https://github.com/valkey-io/valkey/issues?q=is%3Aissue+is%3Aopen+label%3Arelease-tracking)
+to find every open tracker.
 
 ## Before you start
 
@@ -29,7 +31,9 @@ displays live state but authorizes nothing.
 
 ## 1. Dispatch Prepare Release
 
-Open `valkey-ci-agent` → **Actions** → **Prepare Release**.
+Open
+[Prepare Release](https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-prepare.yml)
+in `valkey-ci-agent`.
 
 | Input | Value |
 | --- | --- |
@@ -39,8 +43,14 @@ Open `valkey-ci-agent` → **Actions** → **Prepare Release**.
 | `dry_run` | Derive the version without creating a PR or tracker |
 
 The version is derived from the branch and existing tags; you never enter it.
-A real run opens the `Release <tag>` tracker and the
-`agent/release-cut/...` preparation PR.
+A real run opens two items in parallel:
+
+- a new `Release <tag>` issue in `valkey-io/valkey`, labeled
+  `release-tracking`; and
+- the `agent/release-cut/...` preparation PR.
+
+The issue is the release dashboard. Bookmark it and use it to follow the
+release.
 
 ## 2. Review and merge the preparation PR
 
@@ -66,9 +76,11 @@ to remain branch HEAD.
 
 ## 3. Wait for qualification
 
-**Refresh Release Progress** detects the merged PR and dispatches
-**Publish Release** for its exact merge commit. Dispatch Refresh manually if
-you do not want to wait for the periodic run.
+[Refresh Release Progress](https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-progress.yml)
+detects the merged PR and dispatches
+[Publish Release](https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-publish.yml)
+for its exact merge commit. Dispatch Refresh manually if you do not want to wait
+for the periodic run.
 
 Publish Release rechecks the branch HEAD, preparation PR, version, notes, tag
 state, and release-tag ruleset, then runs a no-publish qualification:
@@ -94,11 +106,12 @@ Release.
 
 ## 5. Approve `release-publish`
 
-The GitHub Release triggers **Build Release** in
-`valkey-release-automation`. Before approving, confirm that the run names the
-expected version and that **Process Inputs** succeeded. That job resolves the
-release tag and rejects a source-SHA mismatch before approval is offered. Then
-approve `release-publish`.
+The GitHub Release triggers
+[Build Release](https://github.com/valkey-io/valkey-release-automation/actions/workflows/build-release.yml).
+Before approving, confirm that the run names the expected version and that
+**Process Inputs** succeeded. That job resolves the release tag and rejects a
+source-SHA mismatch before approval is offered. Then approve
+`release-publish`.
 
 Expected outputs:
 
