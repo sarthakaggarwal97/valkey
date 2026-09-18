@@ -86,7 +86,7 @@ void replicationEmptyDbCallback(hashtable *ht);
 
 /* Resolve the configured policy to an algorithm. The `yes` policy follows the
  * default algorithm, while explicit algorithm names remain pinned. */
-static compressionAlgo rdbCompressionAlgorithm(rdb_compression_mode mode) {
+compressionAlgo rdbCompressionAlgorithm(rdb_compression_mode mode) {
     switch (mode) {
     case RDB_COMPRESSION_NO:
         return ALGO_NONE;
@@ -1594,9 +1594,6 @@ werr:
     return C_ERR;
 }
 
-static int rdbCompressionInit(rio *rdb, streamWriter *writer, compressionAlgo algo, bool codec_checksum);
-static void rdbCompressionFree(rio *rdb, streamWriter *writer);
-
 /* This helper function is only used for diskless replication.
  * This is just a wrapper to rdbSaveRio() that additionally adds a prefix
  * and a suffix to the generated RDB dump. The prefix is:
@@ -1658,16 +1655,16 @@ static int rdbCompressionWrite(void *ctx, const uint8_t *data, size_t len) {
     return rioWriteRaw((rio *)ctx, data, len) ? C_OK : C_ERR;
 }
 
-static int rdbCompressionInit(rio *rdb,
-                              streamWriter *writer,
-                              compressionAlgo algo,
-                              bool codec_checksum) {
+int rdbCompressionInit(rio *rdb,
+                       streamWriter *writer,
+                       compressionAlgo algo,
+                       bool codec_checksum) {
     if (streamWriterInit(writer, algo, codec_checksum, rdbCompressionWrite, rdb) == C_ERR) return C_ERR;
     rioAttachStreamWriter(rdb, writer);
     return C_OK;
 }
 
-static void rdbCompressionFree(rio *rdb, streamWriter *writer) {
+void rdbCompressionFree(rio *rdb, streamWriter *writer) {
     rioDetachStreamWriter(rdb);
     streamWriterFree(writer);
 }

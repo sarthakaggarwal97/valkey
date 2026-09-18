@@ -230,6 +230,9 @@ int rdbLoadRioWithLoadingCtxScopedRdb(rio *rdb, int rdbflags, rdbSaveInfo *rsi, 
 bool rdbRioHasCorruptCompressedInput(rio *rdb);
 bool rdbRioHasInternalStreamReaderError(rio *rdb);
 void rdbReportCorruptCompressedStream(const char *source);
+compressionAlgo rdbCompressionAlgorithm(rdb_compression_mode mode);
+int rdbCompressionInit(rio *rdb, streamWriter *writer, compressionAlgo algo, bool codec_checksum);
+void rdbCompressionFree(rio *rdb, streamWriter *writer);
 
 typedef enum {
     RDB_STREAM_READER_INIT_ERROR = -1,

@@ -68,9 +68,9 @@ proc write_rdb_test_dataset {client prefix} {
     $client xadd "${prefix}:stream" * f1 s2 f2 tail
 }
 
-proc assert_rdb_test_dataset {client prefix} {
+proc assert_rdb_test_dataset {client prefix {expected_size 17}} {
     assert_equal [string repeat "${prefix}:value:0 " 16] [$client get "${prefix}:str:0"]
-    assert_equal 17 [$client dbsize]
+    assert_equal $expected_size [$client dbsize]
     assert_equal 5 [$client llen "${prefix}:list"]
     assert_equal 3 [$client scard "${prefix}:set"]
     assert_equal 3 [$client zcard "${prefix}:zset"]
@@ -488,6 +488,95 @@ start_server {overrides {save "" enable-debug-command local}} {
         }
     }
 
+}
+
+start_server {overrides {save "" enable-debug-command local forkless-infrastructure-enabled yes bgsave-default-method forkless}} {
+    foreach mode {lz4 zstd} {
+        if {$mode eq "zstd" && !$::rdbcompression_zstd_supported} continue
+
+        test "Forkless BGSAVE freezes and round-trips a $mode streaming-compressed RDB" {
+            with_cleanup {
+                r config set rdbcompression $mode
+                r config set rdb-key-save-delay 10000
+                set prefix "forkless-$mode"
+                write_rdb_test_dataset r $prefix
+                for {set i 0} {$i < 128} {incr i} {
+                    r set "$prefix:slow:$i" [string repeat "payload:$i " 64]
+                }
+                set digest [debug_digest]
+
+                assert_match {*Background saving started*} [r bgsave]
+                wait_for_condition 100 10 {
+                    [s rdb_bgsave_in_progress] == 1
+                } else {
+                    fail "$mode forkless BGSAVE did not start"
+                }
+
+                # The in-flight writer retains the codec selected at start.
+                r config set rdbcompression yes
+                waitForBgsave r
+                assert_equal "ok" [s rdb_last_bgsave_status]
+                assert_equal "forkless" [s rdb_last_bgsave_type]
+                if {$mode eq "zstd"} {
+                    assert_zstd_rdb_envelope r
+                } else {
+                    assert_lz4_rdb_envelope r
+                }
+
+                assert_equal "OK" [r debug reload nosave]
+                assert_equal $digest [debug_digest]
+                assert_rdb_test_dataset r $prefix 145
+            } {
+                catch {r config set rdb-key-save-delay 0}
+                catch {r config set rdbcompression yes}
+            }
+        }
+    }
+
+    test {Cancelled compressed forkless BGSAVE releases state before the next save} {
+        set mode [expr {$::rdbcompression_zstd_supported ? "zstd" : "lz4"}]
+        with_cleanup {
+            r config set rdbcompression $mode
+            r config set rdb-key-save-delay 100000
+            r flushall
+            for {set i 0} {$i < 256} {incr i} {
+                r set "forkless-cancel:$i" [string repeat "payload:$i " 64]
+            }
+
+            assert_match {*Background saving started*} [r bgsave]
+            wait_for_condition 100 10 {
+                [s rdb_bgsave_in_progress] == 1
+            } else {
+                fail "compressed forkless BGSAVE did not start"
+            }
+
+            # FLUSHALL cancels the in-flight snapshot. Its unfinished frame
+            # must be discarded without poisoning a later writer.
+            r flushall
+            r config set rdb-key-save-delay 0
+            wait_for_condition 100 10 {
+                [s rdb_bgsave_in_progress] == 0
+            } else {
+                fail "compressed forkless BGSAVE did not cancel"
+            }
+            assert {[s rdb_last_bgsave_status] ne "err"}
+
+            r set forkless-cancel:survivor value
+            assert_match {*Background saving started*} [r bgsave]
+            waitForBgsave r
+            assert_equal "ok" [s rdb_last_bgsave_status]
+            if {$mode eq "zstd"} {
+                assert_zstd_rdb_envelope r
+            } else {
+                assert_lz4_rdb_envelope r
+            }
+            assert_equal "OK" [r debug reload nosave]
+            assert_equal value [r get forkless-cancel:survivor]
+        } {
+            catch {r config set rdb-key-save-delay 0}
+            catch {r config set rdbcompression yes}
+        }
+    }
 }
 
 start_server {config "minimal.conf" args {"--rdbcompression lz4"}} {

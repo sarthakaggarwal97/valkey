@@ -10,7 +10,9 @@ static const int SNAPSHOT_FILE_CLOSE_MONITOR_INTERVAL_MS = 200;
 
 typedef struct {
     rio save_rio; /* Must be 1st to permit cast from rio back to forklessSaveInfo */
-    int cur_db;   /* Last selectDb issued */
+    streamWriter compression_writer;
+    bool compression_initialized;
+    int cur_db; /* Last selectDb issued */
     bgIterator *iterator;
     uint64_t bytes_written;
     int err_code;
@@ -22,6 +24,12 @@ typedef struct {
 
 /* Keep a global indicator of the current iterator (for cancellation purposes). */
 static forklessSaveInfo *currentForklessSave = NULL;
+
+static void forklessSaveFreeCompression(forklessSaveInfo *saveInfo) {
+    if (!saveInfo->compression_initialized) return;
+    rdbCompressionFree(&saveInfo->save_rio, &saveInfo->compression_writer);
+    saveInfo->compression_initialized = false;
+}
 
 /* rio check_abort_between_writes callback: checks if the forkless save iterator is being terminated. */
 static int forklessSaveShouldAbort(rio *r) {
@@ -248,7 +256,13 @@ void forklessSaveComplete(bool terminated, void *privdata) {
     /* For file based forkless save, we need to generate the RDB end marker. and complete the save */
     if (!saveInfo->terminated && saveInfo->err_code == C_OK) {
         saveInfo->err_code = rdbWriteFooter(&saveInfo->save_rio, REPLICA_REQ_NONE) == C_ERR ? C_ERR : C_OK;
+        if (saveInfo->err_code == C_OK && saveInfo->compression_initialized &&
+            streamWriterFinish(&saveInfo->compression_writer) == C_ERR) {
+            saveInfo->save_rio.flags |= RIO_FLAG_WRITE_ERROR;
+            saveInfo->err_code = C_ERR;
+        }
     }
+    forklessSaveFreeCompression(saveInfo);
 
     /* Done writing, capture bytes written (regardless of pass/fail) */
     saveInfo->bytes_written = saveInfo->save_rio.processed_bytes;
@@ -271,6 +285,19 @@ static int forklessSaveCommonStart(forklessSaveInfo *saveInfo) {
     serverLog(LL_NOTICE, "Using forkless save for next backup");
     rdbRecordStartMetrics(RDB_BGSAVE_TYPE_FORKLESS);
     startSaving(RDBFLAGS_FORKLESS_SAVE);
+
+    compressionAlgo compression_algo = rdbCompressionAlgorithm(server.rdb_compression);
+    if (compression_algo == ALGO_LZ4 || compression_algo == ALGO_ZSTD) {
+        if (rdbCompressionInit(&saveInfo->save_rio, &saveInfo->compression_writer,
+                               compression_algo, server.rdb_checksum) == C_ERR) {
+            return C_ERR;
+        }
+        saveInfo->compression_initialized = true;
+        /* The codec frame checksum replaces the logical RDB CRC64. */
+        saveInfo->save_rio.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
+        saveInfo->save_rio.update_cksum = NULL;
+        saveInfo->save_rio.cksum = 0;
+    }
 
     rdbSaveInfo rsi, *rsiptr = rdbPopulateSaveInfo(&rsi);
     if (rdbWriteHeader(&saveInfo->save_rio, REPLICA_REQ_NONE, RDB_VERSION, RDBFLAGS_NONE, rsiptr) == C_ERR) return C_ERR;
@@ -352,6 +379,7 @@ int forklessSaveToDisk(const char *filename) {
 
 werr:
     saveInfo->err_code = C_ERR;
+    forklessSaveFreeCompression(saveInfo);
     rdbRecordEndMetrics(RDB_BGSAVE_TYPE_FORKLESS, C_ERR, time(NULL));
     rdbClearSaveState(time(NULL));
     serverLog(LL_WARNING, "forkless-save: forkless save failed. %lld seconds.", (long long)server.rdb_save_time_last);
