@@ -163,6 +163,19 @@ ssize_t streamDecompressorFeed(streamDecompressor *decompressor,
     }
 }
 
+int streamDecompressorReset(streamDecompressor *decompressor) {
+    switch (decompressor->algo) {
+    case ALGO_ZSTD:
+#ifdef HAVE_ZSTD
+        return compressionZstdDecompressorReset(decompressor);
+#else
+        return C_ERR;
+#endif
+    default:
+        return C_ERR;
+    }
+}
+
 void streamDecompressorFree(streamDecompressor *decompressor) {
     switch (decompressor->algo) {
     case ALGO_NONE:

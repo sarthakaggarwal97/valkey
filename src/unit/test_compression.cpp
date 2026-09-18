@@ -232,6 +232,71 @@ TEST(CompressionTest, zstdStreamCompressorDecompressorRoundTrip) {
 #endif
 }
 
+TEST(CompressionTest, zstdCodecContextMemoryIsTracked) {
+#ifndef HAVE_ZSTD
+    GTEST_SKIP() << "Zstandard support is not compiled in";
+#else
+    const size_t input_len = 64 * 1024;
+    uint8_t *input = (uint8_t *)zmalloc(input_len);
+    for (size_t i = 0; i < input_len; i++) input[i] = (uint8_t)((i * 131 + 17) % 251);
+
+    streamCompressor compressor;
+    ASSERT_EQ(streamCompressorInit(&compressor, ALGO_ZSTD, 0, STREAM_CHECKSUM_CONTENT), C_OK);
+    EXPECT_GT(compressor.ctx_memory, 0u);
+    size_t bound = streamCompressorOutputBound(&compressor, input_len);
+    uint8_t *compressed = (uint8_t *)zmalloc(bound);
+    ssize_t compressed_len = streamCompressorFeed(&compressor, compressed, bound,
+                                                  input, input_len, COMPRESS_FLUSH_END);
+    ASSERT_GT(compressed_len, 0);
+    EXPECT_GT(compressor.ctx_memory, 0u);
+    streamCompressorFree(&compressor);
+    EXPECT_EQ(compressor.ctx_memory, 0u);
+
+    streamDecompressor decompressor;
+    ASSERT_EQ(streamDecompressorInit(&decompressor, ALGO_ZSTD, false), C_OK);
+    EXPECT_GT(decompressor.ctx_memory, 0u);
+    uint8_t *decoded = (uint8_t *)zmalloc(input_len);
+    ASSERT_EQ(decompressAll(&decompressor, compressed, (size_t)compressed_len,
+                            decoded, input_len),
+              (ssize_t)input_len);
+    EXPECT_EQ(memcmp(decoded, input, input_len), 0);
+    streamDecompressorFree(&decompressor);
+    EXPECT_EQ(decompressor.ctx_memory, 0u);
+
+    zfree(decoded);
+    zfree(compressed);
+    zfree(input);
+#endif
+}
+
+TEST(CompressionTest, zstdRejectsInvalidBufferArguments) {
+#ifndef HAVE_ZSTD
+    GTEST_SKIP() << "Zstandard support is not compiled in";
+#else
+    streamCompressor compressor;
+    ASSERT_EQ(streamCompressorInit(&compressor, ALGO_ZSTD, 0, 0), C_OK);
+    size_t bound = streamCompressorOutputBound(&compressor, 1);
+    uint8_t *output = (uint8_t *)zmalloc(bound);
+    EXPECT_EQ(streamCompressorFeed(&compressor, output, bound, NULL, 1,
+                                   COMPRESS_FLUSH_CONTINUE),
+              -1);
+    EXPECT_EQ(streamCompressorFeed(&compressor, NULL, bound, (const uint8_t *)"x", 1,
+                                   COMPRESS_FLUSH_CONTINUE),
+              -1);
+    streamCompressorFree(&compressor);
+
+    streamDecompressor decompressor;
+    ASSERT_EQ(streamDecompressorInit(&decompressor, ALGO_ZSTD, false), C_OK);
+    size_t consumed = 0;
+    EXPECT_EQ(streamDecompressorFeed(&decompressor, output, bound, NULL, 1, &consumed), -1);
+    EXPECT_EQ(streamDecompressorFeed(&decompressor, NULL, bound,
+                                     (const uint8_t *)"x", 1, &consumed),
+              -1);
+    streamDecompressorFree(&decompressor);
+    zfree(output);
+#endif
+}
+
 TEST(CompressionTest, streamCompressorOutputBound) {
     const size_t input_sizes[] = {0, 1, 1024, 64 * 1024};
     const compressFlushMode flush_modes[] = {
@@ -1475,46 +1540,92 @@ TEST(CompressionTest, rioCompressionWriterFinishIdempotent) {
     sdsfree(buffer_rio.io.buffer.ptr);
 }
 
-/* The reader stops at the frame boundary so callers can manage subsequent
- * bytes on a long-lived stream. */
-TEST(CompressionTest, streamReaderFinishStopsAtFrameEndBeforeTrailingBytes) {
+/* File-style readers accept trailing bytes after one verified frame. LZ4 can
+ * stop its source reads exactly at the boundary; Zstd may already have the
+ * trailer buffered when it reports the frame end. */
+TEST(CompressionTest, streamReaderFinishAllowsTrailingBytesWhenConfigured) {
     const char *payload = "stream-reader-frame-end";
     const size_t payload_len = strlen(payload);
     const char *trailer = "TRAILER-BYTES-AFTER-FRAME";
     const size_t trailer_len = strlen(trailer);
+    const compressionAlgo algos[] = {
+        ALGO_LZ4,
+#ifdef HAVE_ZSTD
+        ALGO_ZSTD,
+#endif
+    };
+
+    for (size_t i = 0; i < sizeof(algos) / sizeof(algos[0]); i++) {
+        DynamicBuf db;
+        dynamicBufInit(&db);
+        streamWriter w;
+        ASSERT_EQ(streamWriterInit(&w, algos[i], true, emitToDynamicBuf, &db), C_OK);
+        ASSERT_EQ(streamWriterWrite(&w, payload, payload_len), C_OK);
+        ASSERT_EQ(streamWriterFinish(&w), C_OK);
+        streamWriterFree(&w);
+        size_t frame_len = sdslen((const char *)db.data);
+
+        sds input = sdsnewlen(db.data, frame_len);
+        input = sdscatlen(input, trailer, trailer_len);
+
+        MemReader mr = {};
+        mr.data = (const uint8_t *)input;
+        mr.len = sdslen(input);
+        streamReaderConfig rcfg = makeReaderConfig(false, STREAM_READER_BUFFER_SIZE_MIN, false);
+        rcfg.allow_trailing_data = true;
+        streamReader r;
+        ASSERT_EQ(streamReaderInit(&r, &rcfg, memReaderRead, &mr, NULL), C_OK);
+
+        char out[128];
+        memset(out, 0, sizeof(out));
+        ASSERT_EQ(streamReaderRead(&r, out, payload_len), (ssize_t)payload_len);
+        EXPECT_EQ(memcmp(out, payload, payload_len), 0);
+
+        ASSERT_EQ(streamReaderFinish(&r), C_OK);
+        ASSERT_EQ(r.error_kind, STREAM_READER_ERROR_NONE);
+        ASSERT_GE(mr.pos, frame_len);
+        ASSERT_LE(mr.pos, frame_len + trailer_len);
+
+        streamReaderFree(&r);
+        sdsfree(input);
+        dynamicBufFree(&db);
+    }
+}
+
+TEST(CompressionTest, streamReaderFinishRejectsTrailingCompressedPayloadByDefault) {
+#ifndef HAVE_ZSTD
+    GTEST_SKIP() << "Zstandard support is not compiled in";
+#else
+    const char *payload = "strict-stream-reader-frame-end";
+    const size_t payload_len = strlen(payload);
+    const char *trailer = "TRAILER-BYTES-AFTER-FRAME";
 
     DynamicBuf db;
     dynamicBufInit(&db);
     streamWriter w;
-    ASSERT_EQ(streamWriterInit(&w, ALGO_LZ4, true, emitToDynamicBuf, &db), C_OK);
+    ASSERT_EQ(streamWriterInit(&w, ALGO_ZSTD, true, emitToDynamicBuf, &db), C_OK);
     ASSERT_EQ(streamWriterWrite(&w, payload, payload_len), C_OK);
     ASSERT_EQ(streamWriterFinish(&w), C_OK);
     streamWriterFree(&w);
-    size_t frame_len = sdslen((const char *)db.data);
 
     sds input = sdsnewlen(db.data, sdslen((const char *)db.data));
-    input = sdscatlen(input, trailer, trailer_len);
-
+    input = sdscat(input, trailer);
     MemReader mr = {};
     mr.data = (const uint8_t *)input;
     mr.len = sdslen(input);
-    mr.max_chunk = 0;
     streamReaderConfig rcfg = makeReaderConfig(false, STREAM_READER_BUFFER_SIZE_MIN, false);
     streamReader r;
     ASSERT_EQ(streamReaderInit(&r, &rcfg, memReaderRead, &mr, NULL), C_OK);
 
     char out[128];
-    memset(out, 0, sizeof(out));
     ASSERT_EQ(streamReaderRead(&r, out, payload_len), (ssize_t)payload_len);
-    EXPECT_EQ(memcmp(out, payload, payload_len), 0);
-
-    ASSERT_EQ(streamReaderFinish(&r), C_OK);
-    ASSERT_EQ(r.error_kind, STREAM_READER_ERROR_NONE);
-    ASSERT_EQ(mr.pos, frame_len) << "streamReader must not consume bytes after the LZ4 frame";
+    ASSERT_EQ(streamReaderFinish(&r), C_ERR);
+    ASSERT_EQ(r.error_kind, STREAM_READER_ERROR_CORRUPT);
 
     streamReaderFree(&r);
     sdsfree(input);
     dynamicBufFree(&db);
+#endif
 }
 
 /* Classify damaged frames: clean EOF before the frame end is recoverable
@@ -1648,13 +1759,19 @@ static void fillIncompressible(unsigned char *buf, size_t n, uint32_t seed) {
 typedef struct {
     streamCompressor compressor;
     sds output;
+    bool envelope_written;
 } ReplTestStream;
 
-static int initReplTestStream(ReplTestStream *stream) {
+static int initReplTestStreamWithAlgo(ReplTestStream *stream, compressionAlgo algo) {
     memset(stream, 0, sizeof(*stream));
-    if (streamCompressorInit(&stream->compressor, ALGO_LZ4, 0, STREAM_CHECKSUM_BLOCK) != C_OK) return C_ERR;
+    uint8_t checksum_flags = algo == ALGO_ZSTD ? STREAM_CHECKSUM_CONTENT : STREAM_CHECKSUM_BLOCK;
+    if (streamCompressorInit(&stream->compressor, algo, 0, checksum_flags) != C_OK) return C_ERR;
     stream->output = sdsempty();
     return C_OK;
+}
+
+static int initReplTestStream(ReplTestStream *stream) {
+    return initReplTestStreamWithAlgo(stream, ALGO_LZ4);
 }
 
 static void freeReplTestStream(ReplTestStream *stream) {
@@ -1664,10 +1781,11 @@ static void freeReplTestStream(ReplTestStream *stream) {
 
 /* Build a replication-kind VCS stream without depending on the networking adapter. */
 static int compressReplTestStream(ReplTestStream *stream, const void *buf, size_t len, compressFlushMode flush_mode) {
-    if (!stream->compressor.stream_started) {
+    if (!stream->envelope_written) {
         uint8_t envelope[VCS_ENVELOPE_SIZE];
         if (vcsBuildEnvelope(envelope, stream->compressor.algo, VCS_STREAM_REPL) == C_ERR) return C_ERR;
         stream->output = sdscatlen(stream->output, envelope, sizeof(envelope));
+        stream->envelope_written = true;
     }
     size_t bound = streamCompressorOutputBound(&stream->compressor, len);
     if (bound == 0) return C_ERR;
@@ -1740,6 +1858,81 @@ TEST(replCompression, replFrameOmitsContentChecksum) {
     streamPushReaderFree(&reader);
     sdsfree(out);
     freeReplTestStream(&test_stream);
+}
+
+TEST(replCompression, zstdUsesChecksummedConcatenatedFrames) {
+#ifndef HAVE_ZSTD
+    GTEST_SKIP() << "Zstandard support is not compiled in";
+#else
+    ReplTestStream test_stream;
+    ASSERT_EQ(initReplTestStreamWithAlgo(&test_stream, ALGO_ZSTD), C_OK);
+
+    const size_t first_len = 48 * 1024;
+    const size_t second_len = 40 * 1024;
+    unsigned char *first = (unsigned char *)zmalloc(first_len);
+    unsigned char *second = (unsigned char *)zmalloc(second_len);
+    fillIncompressible(first, first_len, 0xA51C92E3u);
+    memset(second, 'z', second_len);
+
+    ASSERT_EQ(compressReplTestStream(&test_stream, first, first_len, COMPRESS_FLUSH_CONTINUE), C_OK);
+    ASSERT_EQ(compressReplTestStream(&test_stream, NULL, 0, COMPRESS_FLUSH_END), C_OK);
+    size_t second_frame_offset = sdslen(test_stream.output);
+    ASSERT_EQ(compressReplTestStream(&test_stream, second, second_len, COMPRESS_FLUSH_CONTINUE), C_OK);
+    ASSERT_EQ(compressReplTestStream(&test_stream, NULL, 0, COMPRESS_FLUSH_END), C_OK);
+
+    const unsigned char *wire = (const unsigned char *)test_stream.output;
+    ASSERT_GT(second_frame_offset, (size_t)VCS_ENVELOPE_SIZE + 5);
+    EXPECT_EQ(wire[VCS_OFFSET_CODEC], VCS_CODEC_ZSTD);
+    /* Zstd magic and frame-header checksum bit for both batch frames. */
+    const unsigned char zstd_magic[] = {0x28, 0xB5, 0x2F, 0xFD};
+    EXPECT_EQ(memcmp(wire + VCS_ENVELOPE_SIZE, zstd_magic, sizeof(zstd_magic)), 0);
+    EXPECT_NE(wire[VCS_ENVELOPE_SIZE + sizeof(zstd_magic)] & 0x04, 0);
+    EXPECT_EQ(memcmp(wire + second_frame_offset, zstd_magic, sizeof(zstd_magic)), 0);
+    EXPECT_NE(wire[second_frame_offset + sizeof(zstd_magic)] & 0x04, 0);
+
+    streamPushReader reader;
+    streamPushReaderInit(&reader, VCS_STREAM_REPL);
+    sds out = sdsempty();
+    streamPushReaderResult result =
+        streamPushReaderFeed(&reader, wire, sdslen(test_stream.output), &out, 1024);
+    while (result == STREAM_PUSH_READER_NEED_OUTPUT) {
+        result = streamPushReaderFeed(&reader, NULL, 0, &out, 1024);
+    }
+    ASSERT_EQ(result, STREAM_PUSH_READER_OK);
+    ASSERT_EQ(sdslen(out), first_len + second_len);
+    EXPECT_EQ(memcmp(out, first, first_len), 0);
+    EXPECT_EQ(memcmp(out + first_len, second, second_len), 0);
+
+    streamPushReaderFree(&reader);
+    sdsfree(out);
+    zfree(second);
+    zfree(first);
+    freeReplTestStream(&test_stream);
+#endif
+}
+
+TEST(replCompression, zstdRejectsCorruptBatchChecksum) {
+#ifndef HAVE_ZSTD
+    GTEST_SKIP() << "Zstandard support is not compiled in";
+#else
+    ReplTestStream test_stream;
+    ASSERT_EQ(initReplTestStreamWithAlgo(&test_stream, ALGO_ZSTD), C_OK);
+    const char payload[] = "zstd replication checksum payload";
+    ASSERT_EQ(compressReplTestStream(&test_stream, payload, sizeof(payload), COMPRESS_FLUSH_CONTINUE), C_OK);
+    ASSERT_EQ(compressReplTestStream(&test_stream, NULL, 0, COMPRESS_FLUSH_END), C_OK);
+    ASSERT_GT(sdslen(test_stream.output), (size_t)VCS_ENVELOPE_SIZE);
+    test_stream.output[sdslen(test_stream.output) - 1] ^= 1;
+
+    streamPushReader reader;
+    streamPushReaderInit(&reader, VCS_STREAM_REPL);
+    sds out = sdsempty();
+    EXPECT_EQ(streamPushReaderFeed(&reader, test_stream.output, sdslen(test_stream.output), &out, 1024 * 1024),
+              STREAM_PUSH_READER_ERR);
+
+    streamPushReaderFree(&reader);
+    sdsfree(out);
+    freeReplTestStream(&test_stream);
+#endif
 }
 
 TEST(replCompression, rdbFrameKeepsContentChecksum) {

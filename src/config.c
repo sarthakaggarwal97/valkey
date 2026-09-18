@@ -199,6 +199,9 @@ configEnum cluster_replica_no_failover_enum[] = {{"no", CLUSTER_REPLICA_NO_FAILO
 configEnum repl_compression_enum[] = {{"no", REPL_COMPRESSION_NO},
                                       {"yes", REPL_COMPRESSION_YES},
                                       {"lz4", REPL_COMPRESSION_LZ4},
+#ifdef HAVE_ZSTD
+                                      {"zstd", REPL_COMPRESSION_ZSTD},
+#endif
                                       {NULL, 0}};
 
 /* Output buffer limits presets. */

@@ -11,7 +11,21 @@ proc rdb_is_compressed {client} {
     return [expr {$header eq "VCS"}]
 }
 
-# Compressible, multi-type dataset so an LZ4 frame is actually produced.
+proc rdb_compression_codec {client} {
+    binary scan [read_binary_file_prefix [server_rdb_path $client] 5] cu* bytes
+    return [lindex $bytes 4]
+}
+
+proc fullsync_compression_supported {client mode} {
+    set old [lindex [$client config get rdbcompression] 1]
+    set supported [expr {[catch {$client config set rdbcompression $mode}] == 0}]
+    catch {$client config set rdbcompression $old}
+    return $supported
+}
+
+set ::fullsync_zstd_supported 0
+
+# Compressible, multi-type dataset so a streaming frame is actually produced.
 proc populate_compressible_dataset {client prefix {n 300}} {
     $client flushall
     for {set i 0} {$i < $n} {incr i} {
@@ -90,6 +104,7 @@ start_server {tags {"repl rdb-compression external:skip needs:debug"} overrides 
     set primary [srv 0 client]
     set primary_host [srv 0 host]
     set primary_port [srv 0 port]
+    set ::fullsync_zstd_supported [fullsync_compression_supported $primary zstd]
 
     $primary config set repl-diskless-sync no
     $primary config set rdbcompression lz4
@@ -166,6 +181,92 @@ start_server {tags {"repl rdb-compression external:skip needs:debug"} overrides 
             wait_for_value_to_propagate_to_replica $primary $replica diskmaster:post
 
             $replica replicaof no one
+        }
+    }
+}
+
+if {$::fullsync_zstd_supported} {
+    start_server {tags {"repl rdb-compression external:skip needs:debug"} overrides {save "" enable-debug-command local}} {
+        set primary [srv 0 client]
+        set primary_host [srv 0 host]
+        set primary_port [srv 0 port]
+
+        $primary config set repl-diskless-sync no
+        $primary config set rdbcompression zstd
+        $primary config set repl-compression no
+        $primary config set rdb-del-sync-files no
+
+        foreach load_mode {disabled swapdb} {
+            start_server [list overrides [list save "" enable-debug-command local repl-compression zstd repl-diskless-load $load_mode]] {
+                set replica [srv 0 client]
+
+                test "ZSTD disk full sync produces and loads a compressed RDB (repl-diskless-load $load_mode)" {
+                    populate_compressible_dataset $primary "zstd-disk-$load_mode"
+                    set primary_loglines [count_log_lines -1]
+                    set replica_loglines [count_log_lines 0]
+
+                    $replica replicaof $primary_host $primary_port
+                    assert_replica_synced $primary $replica "(zstd disk $load_mode)"
+
+                    assert {[file exists [server_rdb_path $primary]]}
+                    assert_equal 1 [rdb_is_compressed $primary]
+                    assert_equal 2 [rdb_compression_codec $primary]
+                    wait_for_log_messages -1 {"*Disk-based full sync with compression: zstd*"} \
+                        $primary_loglines 50 100
+                    if {$load_mode eq "swapdb"} {
+                        wait_for_log_messages 0 {"*Loading compressed RDB (algo=zstd) from primary*"} \
+                            $replica_loglines 50 100
+                    } else {
+                        wait_for_log_messages 0 {"*Loading compressed RDB (algo=zstd) from *.rdb*"} \
+                            $replica_loglines 50 100
+                    }
+
+                    $primary set "zstd-disk-$load_mode:post" after
+                    wait_for_value_to_propagate_to_replica \
+                        $primary $replica "zstd-disk-$load_mode:post"
+                    $replica replicaof no one
+                }
+            }
+        }
+    }
+
+    # Exact-codec cohort policy: an LZ4-only member must downgrade a grouped
+    # ZSTD disk save to plaintext for every replica.
+    start_server {tags {"repl rdb-compression external:skip needs:debug"} overrides {save "" enable-debug-command local}} {
+        set primary [srv 0 client]
+        set primary_host [srv 0 host]
+        set primary_port [srv 0 port]
+
+        $primary config set repl-diskless-sync no
+        $primary config set rdbcompression zstd
+        $primary config set rdb-del-sync-files no
+        populate_compressible_dataset $primary "zstd-mixed" 800
+
+        start_server {overrides {save "" enable-debug-command local repl-compression zstd}} {
+            set zstd_replica [srv 0 client]
+
+            start_server {overrides {save "" enable-debug-command local repl-compression lz4}} {
+                set lz4_replica [srv 0 client]
+
+                test {ZSTD disk full sync with an LZ4-only cohort member is plaintext for all} {
+                    set rounds_before [count_log_message -2 {Starting BGSAVE for SYNC}]
+                    set primary_loglines [count_log_lines -2]
+
+                    park_replicas_for_grouped_bgsave \
+                        $primary $zstd_replica $lz4_replica $primary_host $primary_port
+
+                    assert_replica_synced $primary $zstd_replica "(zstd mixed capable)"
+                    assert_replica_synced $primary $lz4_replica "(zstd mixed lz4-only)"
+                    assert_equal 1 [expr {
+                        [count_log_message -2 {Starting BGSAVE for SYNC}] - $rounds_before
+                    }]
+                    assert_equal 0 [rdb_is_compressed $primary]
+                    verify_no_log_message -2 "*Disk-based full sync with compression: zstd*" $primary_loglines
+
+                    $lz4_replica replicaof no one
+                    $zstd_replica replicaof no one
+                }
+            }
         }
     }
 }
@@ -305,6 +406,43 @@ start_server {tags {"repl rdb-compression external:skip needs:debug"} overrides 
 # ============================================================================
 
 tags {"repl external:skip"} {
+
+if {$::fullsync_zstd_supported} {
+    start_server {overrides {save "" rdbcompression no repl-compression zstd repl-diskless-sync yes repl-diskless-sync-delay 0}} {
+        set primary [srv 0 client]
+        set primary_host [srv 0 host]
+        set primary_port [srv 0 port]
+
+        foreach load_mode {disabled swapdb} {
+            test "ZSTD diskless full sync loads correctly (repl-diskless-load $load_mode)" {
+                set primary_loglines [count_log_lines 0]
+                populate_compressible_dataset $primary "zstd-diskless-$load_mode"
+
+                start_server [list overrides [list save "" repl-compression zstd repl-diskless-load $load_mode]] {
+                    set replica [srv 0 client]
+                    set replica_loglines [count_log_lines 0]
+                    $replica replicaof $primary_host $primary_port
+
+                    assert_replica_synced $primary $replica "(zstd diskless $load_mode)"
+                    wait_for_log_messages -1 {"*Diskless full sync with compression: zstd*"} \
+                        $primary_loglines 50 100
+                    if {$load_mode eq "swapdb"} {
+                        wait_for_log_messages 0 {"*Loading compressed RDB (algo=zstd) from primary*"} \
+                            $replica_loglines 50 100
+                    } else {
+                        wait_for_log_messages 0 {"*Loading compressed RDB (algo=zstd) from *.rdb*"} \
+                            $replica_loglines 50 100
+                    }
+
+                    $primary set "zstd-diskless-$load_mode:post" after
+                    wait_for_value_to_propagate_to_replica \
+                        $primary $replica "zstd-diskless-$load_mode:post"
+                    $replica replicaof no one
+                }
+            }
+        }
+    }
+}
 
 # --- dual-channel: ONE shared primary fixture ------------------------------
 # The byte-accounting test raises repl-diskless-sync-delay and

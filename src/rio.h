@@ -256,6 +256,10 @@ static inline void rioClearErrors(rio *r) {
 void rioInitWithFile(rio *r, FILE *fp);
 void rioInitWithBuffer(rio *r, sds s);
 void rioInitWithConn(rio *r, connection *conn, size_t read_limit);
+/* Re-expose the most recently consumed connection bytes to the next raw read.
+ * Returns 1 on success, 0 when the bytes are no longer buffered or the
+ * request is invalid. */
+int rioRewindConnRead(rio *r, size_t len);
 void rioInitWithFd(rio *r, int fd);
 void rioAttachStreamWriter(rio *r, struct streamWriter *writer);
 void rioDetachStreamWriter(rio *r);

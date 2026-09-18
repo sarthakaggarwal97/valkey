@@ -352,6 +352,21 @@ void rioInitWithConn(rio *r, connection *conn, size_t read_limit) {
     sdsclear(r->io.conn.buf);
 }
 
+int rioRewindConnRead(rio *r, size_t len) {
+    if (r->read != rioConnRead ||
+        r->io.conn.pos < 0 ||
+        len > (size_t)r->io.conn.pos ||
+        len > r->io.conn.read_so_far ||
+        len > r->stream_processed_bytes) {
+        return 0;
+    }
+
+    r->io.conn.pos -= len;
+    r->io.conn.read_so_far -= len;
+    r->stream_processed_bytes -= len;
+    return 1;
+}
+
 /* Release the RIO stream. Optionally returns the unread buffered data
  * when the SDS pointer 'remaining' is passed. */
 void rioFreeConn(rio *r, sds *remaining) {

@@ -59,7 +59,8 @@ for all functions (including static functions), use libbacktrace:
     % make USE_LIBBACKTRACE=yes
 
 Valkey auto-detects a static Zstandard 1.4.7 or newer library for streaming RDB
-compression.
+and replication compression. The static archive is required because the
+implementation uses Zstandard's static-linking-only streaming APIs.
 To require or disable it explicitly, use `make BUILD_ZSTD=yes` or
 `make BUILD_ZSTD=no`. For CMake builds, use `-DBUILD_ZSTD=yes` or
 `-DBUILD_ZSTD=no`.

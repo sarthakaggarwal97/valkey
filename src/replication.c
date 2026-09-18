@@ -89,7 +89,17 @@ static compressionAlgo replCompressionAlgorithm(void) {
     case REPL_COMPRESSION_NO: return ALGO_NONE;
     case REPL_COMPRESSION_YES:
     case REPL_COMPRESSION_LZ4: return ALGO_LZ4;
+    case REPL_COMPRESSION_ZSTD: return ALGO_ZSTD;
     default: serverPanic("Unknown repl compression mode: %d", server.repl_compression);
+    }
+}
+
+static const char *replCompressionCapabilityName(compressionAlgo algo) {
+    switch (algo) {
+    case ALGO_NONE: return NULL;
+    case ALGO_LZ4: return REPLICA_CAPA_LZ4_STR;
+    case ALGO_ZSTD: return REPLICA_CAPA_ZSTD_STR;
+    default: serverPanic("Unsupported replication compression algorithm: %d", algo);
     }
 }
 
@@ -98,6 +108,7 @@ static bool replicaAcceptsCompressionAlgorithm(int replica_capa, compressionAlgo
     switch (compression_algo) {
     case ALGO_NONE: return true;
     case ALGO_LZ4: return replica_capa & REPLICA_CAPA_LZ4;
+    case ALGO_ZSTD: return replica_capa & REPLICA_CAPA_ZSTD;
     default: return false;
     }
 }
@@ -138,7 +149,7 @@ static void reconcileReplicaCompression(void) {
         if (!replicaCompressionNeedsRenegotiation(replica)) continue;
 
         serverLog(LL_NOTICE, "Disconnecting replica %s to renegotiate replication compression (now %s)",
-                  replicationGetReplicaName(replica), server.repl_compression != REPL_COMPRESSION_NO ? "enabled" : "disabled");
+                  replicationGetReplicaName(replica), compressionAlgoName(replCompressionAlgorithm()));
         freeClientAsync(replica);
         return;
     }
@@ -153,27 +164,21 @@ static void reconcileUpstreamCompression(void) {
     serverAssert(server.primary != NULL);
     if (server.primary->flag.close_asap) return;
 
-    int compression_enabled = replCompressionAlgorithm() != ALGO_NONE;
-    if (compression_enabled == server.repl_compression_advertised) return;
-
-    /* A retired reader means the live stream was classified as plaintext.
-     * Disabling compression then needs no reconnect; a future handshake will
-     * advertise the new setting. Keep probing or compressed links eligible for
-     * reconnect because their transport may still need to change. */
-    if (!compression_enabled && !server.repl_stream_reader) return;
+    compressionAlgo configured_algo = replCompressionAlgorithm();
+    compressionAlgo advertised_algo = (compressionAlgo)server.repl_compression_advertised;
+    if (configured_algo == advertised_algo) return;
 
     serverLog(LL_NOTICE, "Disconnecting from primary to renegotiate replication compression (now %s)",
-              compression_enabled ? "enabled" : "disabled");
+              compressionAlgoName(configured_algo));
     server.repl_compression_advertised = REPL_COMPRESSION_CAPA_UNKNOWN;
     freeClientAsync(server.primary);
 }
 
 /* Enable framed transport compression for a replica at PSYNC completion when
- * both sides opted in: repl-compression is enabled here and the replica
- * advertised the capability. The write path emits the VCS envelope with the
- * first compressed batch. No-ops when the link stays plaintext or is already
- * compressed (dual-channel reaches both the +CONTINUE and put-online paths).
- * Returns C_ERR when initialization failed; the caller drops the link. */
+ * both sides selected the same codec. The write path emits the VCS envelope
+ * with the first compressed batch. No-ops when the link stays plaintext or is
+ * already compressed (dual-channel reaches both the +CONTINUE and put-online
+ * paths). Returns C_ERR when initialization failed; the caller drops the link. */
 static int replicaEnableCompressionIfNegotiated(client *replica) {
     compressionAlgo algo = replicaNegotiatedCompressionAlgorithm(replica);
     if (algo == ALGO_NONE) return C_OK;
@@ -182,7 +187,8 @@ static int replicaEnableCompressionIfNegotiated(client *replica) {
     serverAssert(replica->io_write_state == CLIENT_IDLE);
 
     replicaCompressionState *compression = zcalloc(sizeof(*compression));
-    if (streamCompressorInit(&compression->compressor, algo, 0, STREAM_CHECKSUM_BLOCK) != C_OK) {
+    uint8_t checksum_flags = algo == ALGO_ZSTD ? STREAM_CHECKSUM_CONTENT : STREAM_CHECKSUM_BLOCK;
+    if (streamCompressorInit(&compression->compressor, algo, 0, checksum_flags) != C_OK) {
         zfree(compression);
         serverLog(LL_WARNING, "Failed to initialize compression for replica %s", replicationGetReplicaName(replica));
         return C_ERR;
@@ -205,13 +211,13 @@ static void replFreeStreamReader(void) {
 }
 
 /* (Re)create the replica-side push reader for a fresh primary stream. A primary
- * can compress only when this replica advertised LZ4 in the current handshake,
- * so keep the ordinary read path when it did not. When LZ4 was advertised, the
+ * can compress only with the codec this replica advertised in the current
+ * handshake, so keep the ordinary read path when it advertised none. The
  * primary may still choose plaintext; classify that from the leading bytes. */
 static void replResetStreamReader(void) {
     replFreeStreamReader();
     serverAssert(server.repl_compression_advertised != REPL_COMPRESSION_CAPA_UNKNOWN);
-    if (!server.repl_compression_advertised) return;
+    if (server.repl_compression_advertised == ALGO_NONE) return;
     server.repl_stream_reader = zmalloc(sizeof(*server.repl_stream_reader));
     streamPushReaderInit(server.repl_stream_reader, VCS_STREAM_REPL);
 }
@@ -1185,8 +1191,16 @@ need_full_resync:
 compressionAlgo replSelectFullSyncCompression(int replica_capa, bool socket_target) {
     /* Diskless full sync follows repl-compression. A disk-based sync follows
      * rdbcompression because it also creates the persisted snapshot. */
-    compressionAlgo configured_algo =
-        socket_target ? replCompressionAlgorithm() : (server.rdb_compression == RDB_COMPRESSION_LZ4 ? ALGO_LZ4 : ALGO_NONE);
+    compressionAlgo configured_algo;
+    if (socket_target) {
+        configured_algo = replCompressionAlgorithm();
+    } else {
+        switch ((rdb_compression_mode)server.rdb_compression) {
+        case RDB_COMPRESSION_LZ4: configured_algo = ALGO_LZ4; break;
+        case RDB_COMPRESSION_ZSTD: configured_algo = ALGO_ZSTD; break;
+        default: configured_algo = ALGO_NONE; break;
+        }
+    }
     return replicaAcceptsCompressionAlgorithm(replica_capa, configured_algo) ? configured_algo : ALGO_NONE;
 }
 
@@ -1476,9 +1490,9 @@ void syncCommand(client *c) {
          * capabilities of the replica that triggered the current BGSAVE and its
          * exact requirements. Compression is asymmetric: a plain running save is
          * joinable by anyone, but a compressed one only by a capable replica.
-         * The LZ4 capability is masked out of the capability superset check so a
-         * capable newcomer can still join a plain running save. */
-        int trigger_capa = ln ? (replica->repl_data->replica_capa & ~REPLICA_CAPA_LZ4) : 0;
+         * Compression capabilities are masked out of the capability superset
+         * check so a capable newcomer can still join a plain running save. */
+        int trigger_capa = ln ? (replica->repl_data->replica_capa & ~REPLICA_CAPA_COMPRESSION_MASK) : 0;
         if (ln && ((c->repl_data->replica_capa & trigger_capa) == trigger_capa) &&
             c->repl_data->replica_req == replica->repl_data->replica_req &&
             replicaAcceptsCompressionAlgorithm(c->repl_data->replica_capa, server.rdb_child_sync_algo)) {
@@ -1612,7 +1626,7 @@ void freeClientReplicationData(client *c) {
  * the primary can accurately lists replicas and their listening ports in the
  * INFO output.
  *
- * - capa <eof|psync2|dual-channel|skip-rdb-checksum|lz4>
+ * - capa <eof|psync2|dual-channel|skip-rdb-checksum|lz4|zstd>
  * What is the capabilities of this instance.
  * eof: supports EOF-style RDB transfer for diskless replication.
  * psync2: supports PSYNC v2, so understands +CONTINUE <new repl ID>.
@@ -1620,6 +1634,7 @@ void freeClientReplicationData(client *c) {
  * skip-rdb-checksum: supports skipping RDB checksum calculations during diskless sync using
  *                    a connection that has integrity checks (such as TLS).
  * lz4: accepts LZ4 streaming-compressed replication payloads.
+ * zstd: accepts Zstd streaming-compressed replication payloads.
  *
  * - ack <offset> [fack <aofofs>]
  * Replica informs the primary the amount of replication stream that it
@@ -1704,6 +1719,9 @@ void replconfCommand(client *c) {
             /* "lz4": the replica accepts LZ4 streaming-compressed replication payloads. */
             else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_LZ4_STR))
                 c->repl_data->replica_capa |= REPLICA_CAPA_LZ4;
+            /* "zstd": the replica accepts Zstd streaming-compressed replication payloads. */
+            else if (!strcasecmp(objectGetVal(c->argv[j + 1]), REPLICA_CAPA_ZSTD_STR))
+                c->repl_data->replica_capa |= REPLICA_CAPA_ZSTD;
         } else if (!strcasecmp(objectGetVal(c->argv[j]), "ack")) {
             /* REPLCONF ACK is used by replica to inform the primary the amount
              * of replication stream that it processed so far. It is an
@@ -3434,10 +3452,11 @@ static int dualChannelReplHandleHandshake(connection *conn, sds *err) {
     }
     /* Send replica listening port to primary for clarification */
     sds portstr = getReplicaPortString();
-    /* Also inform the primary of our version and advertise LZ4 when enabled. */
-    if (replCompressionAlgorithm() != ALGO_NONE) {
+    /* Also inform the primary of our version and advertise the selected codec. */
+    const char *compression_capa = replCompressionCapabilityName(replCompressionAlgorithm());
+    if (compression_capa) {
         *err = sendCommand(conn, "REPLCONF", "capa", "eof", "rdb-only", "1", "rdb-channel", "1", "listening-port",
-                           portstr, "version", VALKEY_VERSION, "capa", REPLICA_CAPA_LZ4_STR, NULL);
+                           portstr, "version", VALKEY_VERSION, "capa", compression_capa, NULL);
     } else {
         *err = sendCommand(conn, "REPLCONF", "capa", "eof", "rdb-only", "1", "rdb-channel", "1", "listening-port",
                            portstr, "version", VALKEY_VERSION, NULL);
@@ -4303,19 +4322,19 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
         lens[argc] = strlen("dual-channel");
         argc++;
     }
-    /* Advertise LZ4 only when this replica enables replication compression. */
-    int advertise_lz4 = replCompressionAlgorithm() != ALGO_NONE;
-    if (advertise_lz4) {
+    compressionAlgo advertised_algo = replCompressionAlgorithm();
+    const char *compression_capa = replCompressionCapabilityName(advertised_algo);
+    if (compression_capa) {
         argv[argc] = "capa";
         lens[argc] = strlen("capa");
         argc++;
-        argv[argc] = REPLICA_CAPA_LZ4_STR;
-        lens[argc] = strlen(REPLICA_CAPA_LZ4_STR);
+        argv[argc] = (char *)compression_capa;
+        lens[argc] = strlen(compression_capa);
         argc++;
     }
     err = sendCommandArgv(conn, argc, argv, lens);
     if (err) goto err;
-    server.repl_compression_advertised = advertise_lz4;
+    server.repl_compression_advertised = advertised_algo;
 
     /* Inform the primary of our (replica) version. */
     err = sendCommand(conn, "REPLCONF", "version", VALKEY_VERSION, NULL);

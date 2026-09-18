@@ -95,6 +95,7 @@ typedef struct {
     bool skip_codec_checksum_validation;
     size_t buffer_size;
     bool eof_mid_frame_is_truncation; /* Set for sources that can deliver the rest later. */
+    bool allow_trailing_data;         /* Ignore compressed bytes buffered after one valid frame. */
 } streamReaderConfig;
 
 typedef enum {
@@ -122,6 +123,7 @@ typedef struct streamReader {
     size_t probe_replay_pos; /* Passthrough bytes left to replay from probe. */
     size_t buffer_size;
     bool eof_mid_frame_is_truncation;
+    bool allow_trailing_data;
     streamReaderErrorKind error_kind;
     streamReaderState state;
 
@@ -146,9 +148,8 @@ int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, stream
  * output is reported on the next call. */
 ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len);
 /* Completes and validates a compressed frame after the logical parser has
- * consumed its payload. It stops at the frame boundary without requiring
- * physical EOF, matching the plain RDB loader's treatment of trailing bytes.
- * Returns C_OK/C_ERR. */
+ * consumed its payload. Buffered bytes after the frame are accepted only when
+ * allow_trailing_data is configured. Returns C_OK/C_ERR. */
 int streamReaderFinish(streamReader *reader);
 void streamReaderFree(streamReader *reader);
 

@@ -188,6 +188,7 @@ int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, stream
                               ? STREAM_READER_BUFFER_SIZE_MIN
                               : cfg->buffer_size;
     reader->eof_mid_frame_is_truncation = cfg->eof_mid_frame_is_truncation;
+    reader->allow_trailing_data = cfg->allow_trailing_data;
     compressionAlgo algo = ALGO_NONE;
     while (true) {
         size_t need = reader->probe.header_len < VCS_MAGIC_SIZE
@@ -420,7 +421,7 @@ int streamReaderFinish(streamReader *reader) {
         }
     }
 
-    if (reader->compressed_buf_len > 0) {
+    if (reader->compressed_buf_len > 0 && !reader->allow_trailing_data) {
         streamReaderSetError(reader, STREAM_READER_ERROR_CORRUPT);
         return C_ERR;
     }
@@ -495,9 +496,23 @@ streamPushReaderFeedCodec(streamPushReader *reader, const uint8_t *in, size_t le
             *budget -= (size_t)produced;
         }
         off += consumed;
-        /* Report the frame end; for a long-lived stream this means the
-         * source ended it unexpectedly. */
+        /* Zstd replication uses one checksummed frame per output batch.
+         * Continue at the next concatenated frame without re-reading a VCS
+         * envelope. Other live codecs keep one frame open, so an end marker
+         * remains a protocol error for them. */
         if (reader->decompressor.frame_done) {
+            if (reader->expected_stream_kind == VCS_STREAM_REPL &&
+                reader->decompressor.algo == ALGO_ZSTD) {
+                if (streamDecompressorReset(&reader->decompressor) != C_OK) {
+                    *input_consumed = off;
+                    return STREAM_PUSH_READER_ERR;
+                }
+                if (off == len) {
+                    *input_consumed = off;
+                    return STREAM_PUSH_READER_OK;
+                }
+                continue;
+            }
             *input_consumed = off;
             return STREAM_PUSH_READER_FRAME_DONE;
         }

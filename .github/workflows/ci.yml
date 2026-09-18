@@ -220,6 +220,8 @@ jobs:
         run: |
           ./runtest --verbose --single integration/rdb-compression --dump-logs
           ./runtest --verbose --single integration/valkey-check-rdb --dump-logs
+          ./runtest --verbose --single integration/repl-compression --dump-logs
+          ./runtest --verbose --single integration/repl-fullsync-compression --dump-logs
 
   build-macos-latest:
     runs-on: macos-latest

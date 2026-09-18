@@ -72,6 +72,9 @@ ssize_t streamDecompressorFeed(streamDecompressor *decompressor,
                                const uint8_t *input,
                                size_t input_len,
                                size_t *input_consumed);
+/* Start the next frame while retaining codec allocations. Only codecs whose
+ * wire format permits concatenated frames implement this operation. */
+int streamDecompressorReset(streamDecompressor *decompressor);
 void streamDecompressorFree(streamDecompressor *decompressor);
 
 #endif /* COMPRESSION_H */

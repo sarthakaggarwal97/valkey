@@ -19,27 +19,37 @@
 
 #define ZSTD_FRAME_OVERHEAD_MAX 22 /* 18-byte frame header + 4-byte content checksum. */
 
+/* Zstd allocates its streaming tables lazily. Keep the owning stream's
+ * counter equal to the usable bytes held by the codec context so client
+ * memory accounting includes those allocations. */
 static void *zstdZmalloc(void *opaque, size_t size) {
-    (void)opaque;
-    return zmalloc(size);
+    void *ptr = zmalloc(size);
+    *(size_t *)opaque += zmalloc_size(ptr);
+    return ptr;
 }
 
 static void zstdZfree(void *opaque, void *address) {
-    (void)opaque;
+    if (address == NULL) return;
+    *(size_t *)opaque -= zmalloc_size(address);
     zfree(address);
 }
 
-static const ZSTD_customMem zstd_mem = {
-    .customAlloc = zstdZmalloc,
-    .customFree = zstdZfree,
-    .opaque = NULL,
-};
+/* The counter's address is captured by the context for its whole lifetime, so
+ * the owning stream struct must not move between init and free. */
+static ZSTD_customMem zstdCustomMem(size_t *ctx_memory) {
+    ZSTD_customMem mem = {
+        .customAlloc = zstdZmalloc,
+        .customFree = zstdZfree,
+        .opaque = ctx_memory,
+    };
+    return mem;
+}
 
 int compressionZstdCompressorInit(streamCompressor *sc) {
     ZSTD_CCtx *cctx = NULL;
     if (!sc) return C_ERR;
 
-    cctx = ZSTD_createCCtx_advanced(zstd_mem);
+    cctx = ZSTD_createCCtx_advanced(zstdCustomMem(&sc->ctx_memory));
     if (!cctx) return C_ERR;
 
     sc->ctx = cctx;
@@ -56,15 +66,15 @@ int compressionZstdDecompressorInit(streamDecompressor *sd) {
     ZSTD_DCtx *dctx = NULL;
     if (!sd) return C_ERR;
 
-    dctx = ZSTD_createDCtx_advanced(zstd_mem);
+    dctx = ZSTD_createDCtx_advanced(zstdCustomMem(&sd->ctx_memory));
     if (!dctx) return C_ERR;
 
     if (sd->skip_codec_checksum_validation) {
         size_t ret = ZSTD_DCtx_setParameter(dctx, ZSTD_d_forceIgnoreChecksum, ZSTD_d_ignoreChecksum);
-        if (ZSTD_isError(ret)) {
-            ZSTD_freeDCtx(dctx);
-            return C_ERR;
-        }
+        /* This advanced parameter is best effort. If the linked library
+         * rejects it, keep normal checksum validation instead of failing an
+         * otherwise valid stream. */
+        if (ZSTD_isError(ret)) sd->skip_codec_checksum_validation = false;
     }
 
     sd->ctx = dctx;
@@ -93,7 +103,7 @@ ssize_t compressionZstdCompressFeed(streamCompressor *sc,
                                     const uint8_t *input,
                                     size_t input_len,
                                     compressFlushMode flush_mode) {
-    if (!sc || !sc->ctx) return -1;
+    if (!sc || !sc->ctx || (!input && input_len != 0) || (!output && output_capacity != 0)) return -1;
     size_t bound = compressionZstdOutputBound(input_len);
     if (bound == 0 || output_capacity < bound) {
         return -1;
@@ -103,6 +113,7 @@ ssize_t compressionZstdCompressFeed(streamCompressor *sc,
     ZSTD_EndDirective directive;
     switch (flush_mode) {
     case COMPRESS_FLUSH_CONTINUE: directive = ZSTD_e_continue; break;
+    case COMPRESS_FLUSH_SYNC: directive = ZSTD_e_flush; break;
     case COMPRESS_FLUSH_END: directive = ZSTD_e_end; break;
     default: assert(0 && "invalid compressFlushMode"); return -1;
     }
@@ -112,7 +123,8 @@ ssize_t compressionZstdCompressFeed(streamCompressor *sc,
         if (ZSTD_isError(ret)) goto zstd_error;
         ret = ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, sc->level);
         if (ZSTD_isError(ret)) goto zstd_error;
-        ret = ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, sc->codec_checksum ? 1 : 0);
+        ret = ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag,
+                                     sc->checksum_flags & STREAM_CHECKSUM_CONTENT ? 1 : 0);
         if (ZSTD_isError(ret)) goto zstd_error;
         sc->stream_started = true;
     }
@@ -150,7 +162,11 @@ ssize_t compressionZstdDecompressFeed(streamDecompressor *sd,
                                       const uint8_t *input,
                                       size_t input_len,
                                       size_t *input_consumed) {
-    if (!sd || !sd->ctx || !input_consumed) return -1;
+    if (!sd || !sd->ctx || !input_consumed ||
+        (!input && input_len != 0) ||
+        (!output && output_capacity != 0)) {
+        return -1;
+    }
 
     ZSTD_DCtx *dctx = (ZSTD_DCtx *)sd->ctx;
     uint8_t empty_sentinel = 0;
@@ -173,4 +189,13 @@ ssize_t compressionZstdDecompressFeed(streamDecompressor *sd,
     if (ret == 0) sd->frame_done = true;
     if (out_buf.pos > (size_t)SSIZE_MAX) return -1;
     return (ssize_t)out_buf.pos;
+}
+
+int compressionZstdDecompressorReset(streamDecompressor *sd) {
+    if (!sd || !sd->ctx) return C_ERR;
+    size_t ret = ZSTD_DCtx_reset((ZSTD_DCtx *)sd->ctx, ZSTD_reset_session_only);
+    if (ZSTD_isError(ret)) return C_ERR;
+    sd->frame_done = false;
+    sd->input_hint = ZSTD_DStreamInSize();
+    return C_OK;
 }

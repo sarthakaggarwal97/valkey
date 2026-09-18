@@ -7,6 +7,22 @@ proc replica_line_uncompressed_bytes {primary} {
     return $uncompressed_bytes
 }
 
+proc replcompression_supported {client mode} {
+    set old [lindex [$client config get repl-compression] 1]
+    set supported [expr {[catch {$client config set repl-compression $mode}] == 0}]
+    catch {$client config set repl-compression $old}
+    return $supported
+}
+
+proc replcompression_algorithm {mode} {
+    if {$mode eq "yes"} {
+        return "lz4"
+    }
+    return $mode
+}
+
+set ::replcompression_zstd_supported 0
+
 # Start a fake primary that completes a size-framed full sync, then sends the
 # supplied steady-state replication bytes and waits for the replica to close.
 proc start_fake_primary_with_stream {rdb_payload stream_payload} {
@@ -48,6 +64,7 @@ proc start_fake_dual_channel_primary_with_stream {rdb_payload stream_payload} {
 # ============================================================
 
 start_server {overrides {save "" repl-compression no}} {
+    set ::replcompression_zstd_supported [replcompression_supported r zstd]
 
     test {repl-compression config: default, set, and survives CONFIG REWRITE and restart} {
         assert_equal "no" [lindex [r config get repl-compression] 1]
@@ -56,13 +73,36 @@ start_server {overrides {save "" repl-compression no}} {
         assert_equal "yes" [lindex [r config get repl-compression] 1]
         r config set repl-compression lz4
         assert_equal "lz4" [lindex [r config get repl-compression] 1]
+        set rewritten_mode lz4
+        if {$::replcompression_zstd_supported} {
+            r config set repl-compression zstd
+            assert_equal "zstd" [lindex [r config get repl-compression] 1]
+            set rewritten_mode zstd
+        }
         r config rewrite
 
         restart_server 0 true false
 
-        assert_equal "lz4" [lindex [r config get repl-compression] 1]
+        assert_equal $rewritten_mode [lindex [r config get repl-compression] 1]
 
         r config set repl-compression no
+    }
+
+    test {Invalid repl-compression config is rejected without changing the setting} {
+        set previous [lindex [r config get repl-compression] 1]
+        assert_error {*argument(s) must be one of the following:*} {
+            r config set repl-compression snappy
+        }
+        assert_equal $previous [lindex [r config get repl-compression] 1]
+    }
+
+    test {ZSTD replication compression config is rejected when unsupported} {
+        if {$::replcompression_zstd_supported} {
+            skip "zstd is supported by this build"
+        }
+        assert_error {*argument(s) must be one of the following: no, yes, lz4*} {
+            r config set repl-compression zstd
+        }
     }
 }
 
@@ -78,12 +118,18 @@ start_server {tags {"repl"} overrides {save ""}} {
     # Negotiation and the compressed incremental stream are load-mode
     # independent. Keep both explicit LZ4 load modes and prove that "yes"
     # selects the current default algorithm (LZ4).
-    foreach {compression_mode diskless_load} {
-        lz4 swapdb
-        lz4 disabled
-        yes swapdb
-    } {
+    set negotiation_cases {
+        {lz4 swapdb}
+        {lz4 disabled}
+        {yes swapdb}
+    }
+    if {$::replcompression_zstd_supported} {
+        lappend negotiation_cases {zstd swapdb} {zstd disabled}
+    }
+    foreach negotiation_case $negotiation_cases {
+        lassign $negotiation_case compression_mode diskless_load
         test "Replica negotiates $compression_mode compression (repl-diskless-load $diskless_load)" {
+            set expected_algo [replcompression_algorithm $compression_mode]
             $primary config set repl-compression $compression_mode
             set _code [catch {
                 start_server [list overrides [list save "" repl-compression $compression_mode repl-diskless-load $diskless_load]] {
@@ -99,7 +145,7 @@ start_server {tags {"repl"} overrides {save ""}} {
                     # The same negotiated capability covers diskless full sync
                     # and the post-sync incremental stream.
                     wait_for_condition 50 100 {
-                        [regexp -all "repl_compression=lz4" [$primary info replication]] >= 1
+                        [regexp -all "repl_compression=$expected_algo" [$primary info replication]] >= 1
                     } else {
                         fail "Compression not negotiated"
                     }
@@ -123,52 +169,59 @@ start_server {tags {"repl"} overrides {save ""}} {
         }
     }
 
-    test {Compressed replication handles compressible and incompressible values across batch boundaries} {
-        $primary config set repl-compression lz4
-        $primary flushall
+    set stream_modes {lz4}
+    if {$::replcompression_zstd_supported} {
+        lappend stream_modes zstd
+    }
+    foreach mode $stream_modes {
+        test "Compressed replication with $mode handles compressible and incompressible values across batch boundaries" {
+            $primary config set repl-compression $mode
+            $primary flushall
 
-        start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
+            start_server [list overrides [list save "" repl-compression $mode repl-diskless-load swapdb]] {
+                set replica [srv 0 client]
+                $replica replicaof $primary_host $primary_port
 
-            wait_for_condition 50 200 {
-                [s 0 master_link_status] eq {up} &&
-                [regexp {state=online.*repl_compression=lz4,repl_compressed_bytes=[0-9]+,repl_uncompressed_bytes=[0-9]+} \
-                    [$primary info replication]]
-            } else {
-                fail "Compressed replication not established"
-            }
-
-            # The compressible value spans several 1 MiB raw batches.
-            set bigval [string repeat "abcdefghij0123456789" 209715]
-            $primary set batch:compressible $bigval
-            wait_for_condition 50 200 {
-                [$replica get batch:compressible] eq $bigval
-            } else {
-                fail "Compressible value did not replicate intact"
-            }
-
-            # A deterministic ratio≈1 payload exercises worst-case compressed
-            # output sizing across multiple raw batches.
-            expr {srand(424242)}
-            set payload ""
-            while {[string length $payload] < 1572864} {
-                set chunk ""
-                for {set i 0} {$i < 4096} {incr i} {
-                    append chunk [format %c [expr {int(rand()*256)}]]
+                wait_for_condition 50 200 {
+                    [s 0 master_link_status] eq {up} &&
+                    [regexp "state=online.*repl_compression=$mode,repl_compressed_bytes=\[0-9\]+,repl_uncompressed_bytes=\[0-9\]+" \
+                        [$primary info replication]]
+                } else {
+                    fail "$mode replication compression not established"
                 }
-                append payload $chunk
-            }
-            $primary set batch:incompressible $payload
-            wait_for_condition 50 200 {
-                [$replica get batch:incompressible] eq $payload
-            } else {
-                fail "Incompressible value did not replicate intact"
-            }
 
-            $replica replicaof no one
+                # The compressible value spans several 1 MiB raw batches.
+                set bigval [string repeat "abcdefghij0123456789" 209715]
+                $primary set batch:compressible $bigval
+                wait_for_condition 50 200 {
+                    [$replica get batch:compressible] eq $bigval
+                } else {
+                    fail "Compressible value did not replicate intact with $mode"
+                }
+
+                # A deterministic ratio≈1 payload exercises worst-case
+                # compressed output sizing across multiple raw batches.
+                expr {srand(424242)}
+                set payload ""
+                while {[string length $payload] < 1572864} {
+                    set chunk ""
+                    for {set i 0} {$i < 4096} {incr i} {
+                        append chunk [format %c [expr {int(rand()*256)}]]
+                    }
+                    append payload $chunk
+                }
+                $primary set batch:incompressible $payload
+                wait_for_condition 50 200 {
+                    [$replica get batch:incompressible] eq $payload
+                } else {
+                    fail "Incompressible value did not replicate intact with $mode"
+                }
+
+                assert_equal [$primary debug digest] [$replica debug digest]
+                $replica replicaof no one
+            }
+            $primary config set repl-compression no
         }
-        $primary config set repl-compression no
     }
 
     test {Backlog cursor stays pinned until the compressed batch fully drains} {
@@ -347,259 +400,350 @@ start_server {tags {"repl"} overrides {save ""}} {
         $primary config set client-output-buffer-limit "replica 256mb 64mb 60"
     }
 
-    test {Compressed partial resync preserves data and decoded ACK offsets} {
-        $primary config set repl-compression lz4
-        $primary flushall
+    foreach mode $stream_modes {
+        test "Compressed partial resync with $mode preserves data and decoded ACK offsets" {
+            $primary config set repl-compression $mode
+            $primary flushall
 
-        start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
+            start_server [list overrides [list save "" repl-compression $mode repl-diskless-load swapdb]] {
+                set replica [srv 0 client]
+                $replica replicaof $primary_host $primary_port
 
-            wait_for_condition 50 200 {
-                [s 0 master_link_status] eq {up} &&
-                [string match {*state=online*repl_compression=lz4*} [$primary info replication]]
-            } else {
-                fail "Compressed replication not established"
+                wait_for_condition 50 200 {
+                    [s 0 master_link_status] eq {up} &&
+                    [string match "*state=online*repl_compression=$mode*" [$primary info replication]]
+                } else {
+                    fail "$mode replication compression not established"
+                }
+
+                $primary set key1 value1
+                wait_for_condition 50 100 {
+                    [$replica get key1] eq {value1}
+                } else {
+                    fail "Initial replication failed with $mode"
+                }
+
+                # Killing the primary-side connection preserves the replica's
+                # cached offset and exercises a compressed partial resync.
+                set full_before [status $primary sync_full]
+                set partial_before [status $primary sync_partial_ok]
+                $primary client kill type replica
+
+                wait_for_condition 50 200 {
+                    [s 0 master_link_status] eq {up} &&
+                    [string match "*state=online*repl_compression=$mode*" [$primary info replication]] &&
+                    [status $primary sync_partial_ok] == $partial_before + 1
+                } else {
+                    fail "$mode partial resync did not complete"
+                }
+                assert_equal $full_before [status $primary sync_full]
+
+                # WAIT compares logical RESP offsets. A highly compressible
+                # write only reaches the target if the replica advances by
+                # decoded bytes, not by the smaller number of wire bytes.
+                set ack_payload [string repeat x 262144]
+                $primary set key2 value2
+                $primary set key3 $ack_payload
+                assert_equal 1 [$primary wait 1 5000]
+                assert_equal value1 [$replica get key1]
+                assert_equal value2 [$replica get key2]
+                assert_equal $ack_payload [$replica get key3]
+
+                $replica replicaof no one
             }
-
-            $primary set key1 value1
-            wait_for_condition 50 100 {
-                [$replica get key1] eq {value1}
-            } else {
-                fail "Initial replication failed"
-            }
-
-            # Killing the primary-side connection preserves the replica's
-            # cached offset and exercises a compressed partial resync.
-            set full_before [status $primary sync_full]
-            set partial_before [status $primary sync_partial_ok]
-            $primary client kill type replica
-
-            wait_for_condition 50 200 {
-                [s 0 master_link_status] eq {up} &&
-                [string match {*state=online*repl_compression=lz4*} [$primary info replication]] &&
-                [status $primary sync_partial_ok] == $partial_before + 1
-            } else {
-                fail "Compressed partial resync did not complete"
-            }
-            assert_equal $full_before [status $primary sync_full]
-
-            # WAIT compares logical RESP offsets. A highly compressible write
-            # only reaches the target if the replica advances by decoded bytes,
-            # not by the much smaller number of wire bytes.
-            set ack_payload [string repeat x 262144]
-            $primary set key2 value2
-            $primary set key3 $ack_payload
-            assert_equal 1 [$primary wait 1 5000]
-            assert_equal value1 [$replica get key1]
-            assert_equal value2 [$replica get key2]
-            assert_equal $ack_payload [$replica get key3]
-
-            $replica replicaof no one
+            $primary config set repl-compression no
         }
-        $primary config set repl-compression no
     }
 
-    test {Compressed replication survives an interrupted frame and reconverges} {
-        # A replication frame remains open for the life of its connection, so
-        # dropping the link interrupts the frame without a closing marker.
-        $primary config set repl-compression lz4
-        $primary flushall
+    foreach mode $stream_modes {
+        test "Compressed replication with $mode survives an interrupted link and reconverges" {
+            $primary config set repl-compression $mode
+            $primary flushall
 
-        start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
+            start_server [list overrides [list save "" repl-compression $mode repl-diskless-load swapdb]] {
+                set replica [srv 0 client]
+                $replica replicaof $primary_host $primary_port
 
-            wait_for_condition 50 200 {
-                [s 0 master_link_status] eq {up} &&
-                [string match {*state=online*repl_compression=lz4*} [$primary info replication]]
-            } else {
-                fail "Compressed replication not established"
-            }
-
-            # Baseline sync so recovery is a clean reconverge from a known point.
-            $primary set trunc:baseline baseline_val
-            wait_for_ofs_sync $primary $replica
-            set full_before [status $primary sync_full]
-            set partial_before [status $primary sync_partial_ok]
-
-            # Keep writing after the disconnect so either a partial or full
-            # resynchronization must converge to a newer offset.
-            set bigval [string repeat "abcdefghij0123456789" 52429] ;# ~1 MiB
-            for {set i 0} {$i < 60} {incr i} {
-                $primary set "trunc:load:$i" $bigval
-                if {$i == 30} {
-                    # Kill from the primary side while the stream frame is open.
-                    $primary client kill type replica
+                wait_for_condition 50 200 {
+                    [s 0 master_link_status] eq {up} &&
+                    [string match "*state=online*repl_compression=$mode*" [$primary info replication]]
+                } else {
+                    fail "$mode replication compression not established"
                 }
+
+                # Baseline sync so recovery is a clean reconverge from a known point.
+                $primary set trunc:baseline baseline_val
+                wait_for_ofs_sync $primary $replica
+                set full_before [status $primary sync_full]
+                set partial_before [status $primary sync_partial_ok]
+
+                # Keep writing after the disconnect so either a partial or full
+                # resynchronization must converge to a newer offset.
+                set bigval [string repeat "abcdefghij0123456789" 13108] ;# ~256 KiB
+                for {set i 0} {$i < 24} {incr i} {
+                    $primary set "trunc:load:$i" $bigval
+                    if {$i == 12} {
+                        $primary client kill type replica
+                    }
+                }
+
+                # The interrupted link forces the replica to reconnect and
+                # resync (partial or full) and re-establish the selected codec.
+                $primary set trunc:final final_val
+                wait_for_condition 100 200 {
+                    [s 0 master_link_status] eq {up} &&
+                    [string match "*state=online*repl_compression=$mode*" [$primary info replication]] &&
+                    [status $primary sync_full] + [status $primary sync_partial_ok] > $full_before + $partial_before
+                } else {
+                    fail "Replica did not reconnect with $mode after link interruption"
+                }
+
+                assert_equal 0 [count_log_message 0 "*=== ASSERTION FAILED ===*"]
+                assert_equal 0 [count_log_message 0 "*crashed by signal*"]
+
+                wait_for_ofs_sync $primary $replica
+                assert_equal [$primary debug digest] [$replica debug digest]
+
+                $replica replicaof no one
             }
-
-            # The truncated link forces the replica to reconnect and resync
-            # (partial or full, either is fine) and re-establish compression.
-            $primary set trunc:final final_val
-            wait_for_condition 100 200 {
-                [s 0 master_link_status] eq {up} &&
-                [string match {*state=online*repl_compression=lz4*} [$primary info replication]] &&
-                [status $primary sync_full] + [status $primary sync_partial_ok] > $full_before + $partial_before
-            } else {
-                fail "Replica did not reconnect with compression after mid-frame truncation"
-            }
-
-            # (a) The replica survived the truncated frame: no assertion or
-            # crash was logged.
-            assert_equal 0 [count_log_message 0 "*=== ASSERTION FAILED ===*"]
-            assert_equal 0 [count_log_message 0 "*crashed by signal*"]
-
-            # (b) The link is back up (asserted in the wait above) and (c) the
-            # datasets converge byte-identically once offsets align.
-            wait_for_ofs_sync $primary $replica
-            assert_equal [$primary debug digest] [$replica debug digest]
-
-            $replica replicaof no one
+            $primary config set repl-compression no
         }
-        $primary config set repl-compression no
     }
 
     if {!$::tls} {
-        test {Corrupt compressed replication stream disconnects cleanly and recovers} {
-            $primary config set repl-compression lz4
-            $primary flushall
-            $primary set corrupt:baseline baseline_val
-            $primary save
+        foreach mode $stream_modes {
+            test "Corrupt $mode replication stream disconnects cleanly and recovers" {
+                $primary config set repl-compression $mode
+                $primary flushall
+                $primary set corrupt:baseline baseline_val
+                $primary save
 
-            set rdb_payload [read_binary_file [server_rdb_path $primary]]
-            # Valid VCS replication envelope followed by an invalid LZ4 frame.
-            set corrupt_stream [binary format H* 56435301010002]
-            append corrupt_stream [string repeat "\x00" 64]
+                set rdb_payload [read_binary_file [server_rdb_path $primary]]
+                set codec_hex [expr {$mode eq "zstd" ? "02" : "01"}]
+                # Valid VCS replication envelope followed by an invalid codec frame.
+                set corrupt_stream [binary format H* "56435301${codec_hex}0002"]
+                append corrupt_stream [string repeat "\x00" 64]
 
-            set fake_pid ""
-            with_cleanup {
-                lassign [start_fake_primary_with_stream $rdb_payload $corrupt_stream] fake_pid fake_port
+                set fake_pid ""
+                with_cleanup {
+                    lassign [start_fake_primary_with_stream $rdb_payload $corrupt_stream] fake_pid fake_port
 
-                start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-                    set replica [srv 0 client]
-                    set replica_loglines [count_log_lines 0]
-                    $replica replicaof 127.0.0.1 $fake_port
+                    start_server [list overrides [list save "" repl-compression $mode repl-diskless-load swapdb]] {
+                        set replica [srv 0 client]
+                        set replica_loglines [count_log_lines 0]
+                        $replica replicaof 127.0.0.1 $fake_port
 
-                    wait_for_log_messages 0 {"*replication stream decompression failure*"} \
-                        $replica_loglines 100 100
-                    wait_for_condition 50 100 {
-                        [s 0 master_link_status] eq {down}
-                    } else {
-                        fail "Replica did not disconnect from the corrupt compressed stream"
+                        wait_for_log_messages 0 {"*replication stream decompression failure*"} \
+                            $replica_loglines 100 100
+                        wait_for_condition 50 100 {
+                            [s 0 master_link_status] eq {down}
+                        } else {
+                            fail "Replica did not disconnect from the corrupt $mode stream"
+                        }
+                        assert_equal {PONG} [$replica ping]
+                        assert_equal {baseline_val} [$replica get corrupt:baseline]
+
+                        # A fresh replication session must not retain decoder
+                        # state from the failed link.
+                        $replica replicaof $primary_host $primary_port
+                        wait_for_condition 50 200 {
+                            [s 0 master_link_status] eq {up} &&
+                            [$replica get corrupt:baseline] eq {baseline_val} &&
+                            [string match "*state=online*repl_compression=$mode*" [$primary info replication]]
+                        } else {
+                            fail "Replica did not recover after $mode stream corruption"
+                        }
+
+                        $replica replicaof no one
                     }
-                    assert_equal {PONG} [$replica ping]
-                    assert_equal {baseline_val} [$replica get corrupt:baseline]
-
-                    # A fresh replication session must not retain any corrupt
-                    # decoder state from the failed link.
-                    $replica replicaof $primary_host $primary_port
-                    wait_for_condition 50 200 {
-                        [s 0 master_link_status] eq {up} &&
-                        [$replica get corrupt:baseline] eq {baseline_val} &&
-                        [string match {*state=online*repl_compression=lz4*} [$primary info replication]]
-                    } else {
-                        fail "Replica did not recover after compressed stream corruption"
-                    }
-
-                    $replica replicaof no one
+                } {
+                    if {$fake_pid ne ""} {catch {exec kill $fake_pid}}
+                    $primary config set repl-compression no
                 }
-            } {
-                if {$fake_pid ne ""} {catch {exec kill $fake_pid}}
-                $primary config set repl-compression no
             }
         }
 
-        test {Corrupt buffered dual-channel stream retries without promoting the replica} {
-            $primary config set repl-compression lz4
-            $primary flushall
-            $primary set dual-corrupt:baseline baseline_val
-            $primary save
+        foreach mode $stream_modes {
+            test "Corrupt buffered $mode dual-channel stream retries without promoting the replica" {
+                $primary config set repl-compression $mode
+                $primary flushall
+                $primary set dual-corrupt:baseline baseline_val
+                $primary save
 
-            set rdb_payload [read_binary_file [server_rdb_path $primary]]
-            set corrupt_stream [binary format H* 56435301010002]
-            append corrupt_stream [string repeat "\x00" 64]
+                set rdb_payload [read_binary_file [server_rdb_path $primary]]
+                set codec_hex [expr {$mode eq "zstd" ? "02" : "01"}]
+                set corrupt_stream [binary format H* "56435301${codec_hex}0002"]
+                append corrupt_stream [string repeat "\x00" 64]
 
-            set fake_pid ""
-            with_cleanup {
-                lassign [start_fake_dual_channel_primary_with_stream $rdb_payload $corrupt_stream] fake_pid fake_port
+                set fake_pid ""
+                with_cleanup {
+                    lassign [start_fake_dual_channel_primary_with_stream $rdb_payload $corrupt_stream] fake_pid fake_port
 
-                start_server {overrides {save "" repl-compression lz4 dual-channel-replication-enabled yes repl-diskless-load swapdb}} {
-                    set replica [srv 0 client]
-                    set replica_loglines [count_log_lines 0]
-                    $replica replicaof 127.0.0.1 $fake_port
+                    start_server [list overrides [list save "" repl-compression $mode dual-channel-replication-enabled yes repl-diskless-load swapdb]] {
+                        set replica [srv 0 client]
+                        set replica_loglines [count_log_lines 0]
+                        $replica replicaof 127.0.0.1 $fake_port
 
-                    wait_for_log_messages 0 {"*Dual-channel replication stream decompression failure*"} \
-                        $replica_loglines 100 100
-                    wait_for_condition 50 100 {
-                        [lindex [$replica role] 0] eq {slave} &&
-                        [s 0 master_host] eq {127.0.0.1} &&
-                        [s 0 master_port] == $fake_port &&
-                        [s 0 master_link_status] eq {down}
-                    } else {
-                        fail "Replica did not retain its configured primary after buffered stream corruption"
+                        wait_for_log_messages 0 {"*Dual-channel replication stream decompression failure*"} \
+                            $replica_loglines 100 100
+                        wait_for_condition 50 100 {
+                            [lindex [$replica role] 0] eq {slave} &&
+                            [s 0 master_host] eq {127.0.0.1} &&
+                            [s 0 master_port] == $fake_port &&
+                            [s 0 master_link_status] eq {down}
+                        } else {
+                            fail "Replica did not retain its primary after buffered $mode stream corruption"
+                        }
+                        assert_equal {baseline_val} [$replica get dual-corrupt:baseline]
+
+                        $replica replicaof $primary_host $primary_port
+                        wait_for_condition 50 200 {
+                            [s 0 master_link_status] eq {up} &&
+                            [$replica get dual-corrupt:baseline] eq {baseline_val} &&
+                            [string match "*state=online*repl_compression=$mode*" [$primary info replication]]
+                        } else {
+                            fail "Replica did not recover after dual-channel $mode stream corruption"
+                        }
+
+                        $replica replicaof no one
                     }
-                    assert_equal {baseline_val} [$replica get dual-corrupt:baseline]
-
-                    $replica replicaof $primary_host $primary_port
-                    wait_for_condition 50 200 {
-                        [s 0 master_link_status] eq {up} &&
-                        [$replica get dual-corrupt:baseline] eq {baseline_val}
-                    } else {
-                        fail "Replica did not recover after dual-channel stream corruption"
-                    }
-
-                    $replica replicaof no one
+                } {
+                    if {$fake_pid ne ""} {catch {exec kill $fake_pid}}
+                    $primary config set repl-compression no
                 }
-            } {
-                if {$fake_pid ne ""} {catch {exec kill $fake_pid}}
-                $primary config set repl-compression no
             }
         }
     }
 
-    test {Replica with repl-compression lz4 handles a plaintext primary (passthrough)} {
-        # Primary has compression OFF, replica ON: the replica advertises the
-        # capability but the primary sends plaintext, so the replica must pass
-        # the stream through untouched rather than expecting a VCS envelope.
-        $primary config set repl-compression no
-        $primary flushall
+    foreach mode $stream_modes {
+        test "Replica with repl-compression $mode handles a plaintext primary and renegotiates opt-out" {
+            # Primary has compression OFF, replica ON: the replica advertises
+            # one codec but must pass a plaintext stream through untouched.
+            $primary config set repl-compression no
+            $primary flushall
 
-        start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
+            start_server [list overrides [list save "" repl-compression $mode repl-diskless-load swapdb]] {
+                set replica [srv 0 client]
+                $replica replicaof $primary_host $primary_port
 
-            wait_for_condition 50 100 {
-                [s 0 master_link_status] eq {up}
-            } else {
-                fail "Replication not started (primary plaintext, replica compression on)"
+                wait_for_condition 50 100 {
+                    [s 0 master_link_status] eq {up}
+                } else {
+                    fail "Replication not started (primary plaintext, replica $mode)"
+                }
+
+                for {set i 0} {$i < 50} {incr i} {
+                    $primary set "pt:$i" [string repeat "payload$i " 20]
+                }
+                wait_for_condition 50 100 {
+                    [$replica get pt:49] eq [string repeat "payload49 " 20]
+                } else {
+                    fail "$mode-capable replica did not receive plaintext data"
+                }
+                assert_equal [$primary dbsize] [$replica dbsize]
+                assert_equal 0 [string match "*repl_compression=$mode*" [$primary info replication]]
+
+                # Capability changes always reconnect: otherwise the primary
+                # retains a stale advertised codec and may compress later.
+                set full_before [status $primary sync_full]
+                set partial_before [status $primary sync_partial_ok]
+                $replica config set repl-compression no
+                wait_for_condition 50 200 {
+                    [s 0 master_link_status] eq {up} &&
+                    [status $primary sync_partial_ok] == $partial_before + 1
+                } else {
+                    fail "Replica did not renegotiate after opting out of $mode"
+                }
+                assert_equal $full_before [status $primary sync_full]
+
+                $primary set pt:after-opt-out delivered
+                wait_for_condition 50 100 {
+                    [$replica get pt:after-opt-out] eq {delivered}
+                } else {
+                    fail "Plaintext replication stopped after $mode opt-out"
+                }
+
+                $replica replicaof no one
             }
+        }
+    }
 
-            # Incremental writes arrive as plaintext; passthrough must deliver them.
-            for {set i 0} {$i < 50} {incr i} {
-                $primary set "pt:$i" [string repeat "payload$i " 20]
+    if {$::replcompression_zstd_supported} {
+        test {LZ4 and ZSTD capabilities match exactly and codec changes renegotiate} {
+            $primary config set repl-compression lz4
+            $primary flushall
+
+            start_server {overrides {save "" repl-compression zstd repl-diskless-load swapdb}} {
+                set replica [srv 0 client]
+                $replica replicaof $primary_host $primary_port
+
+                wait_for_condition 50 200 {
+                    [s 0 master_link_status] eq {up}
+                } else {
+                    fail "Mismatched LZ4/ZSTD replication did not establish plaintext fallback"
+                }
+                assert_equal 0 [regexp -all {repl_compression=(lz4|zstd)} [$primary info replication]]
+
+                $primary set exact:plaintext initial
+                wait_for_condition 50 100 {
+                    [$replica get exact:plaintext] eq {initial}
+                } else {
+                    fail "Plaintext fallback did not replicate data"
+                }
+
+                set full_before [status $primary sync_full]
+                set partial_before [status $primary sync_partial_ok]
+
+                # Matching the replica's advertised codec upgrades the link.
+                $primary config set repl-compression zstd
+                wait_for_condition 50 200 {
+                    [s 0 master_link_status] eq {up} &&
+                    [regexp -all {repl_compression=zstd} [$primary info replication]] == 1 &&
+                    [status $primary sync_partial_ok] == $partial_before + 1
+                } else {
+                    fail "Primary did not renegotiate plaintext to ZSTD"
+                }
+
+                $primary set exact:zstd delivered
+                wait_for_condition 50 100 {
+                    [$replica get exact:zstd] eq {delivered}
+                } else {
+                    fail "ZSTD link did not replicate data"
+                }
+
+                # Switching only the primary back to LZ4 downgrades because
+                # the replica still advertises only ZSTD.
+                $primary config set repl-compression lz4
+                wait_for_condition 50 200 {
+                    [s 0 master_link_status] eq {up} &&
+                    [regexp -all {repl_compression=(lz4|zstd)} [$primary info replication]] == 0 &&
+                    [status $primary sync_partial_ok] == $partial_before + 2
+                } else {
+                    fail "Mismatched ZSTD/LZ4 link did not downgrade to plaintext"
+                }
+
+                # Changing the replica to the exact same codec upgrades again.
+                $replica config set repl-compression lz4
+                wait_for_condition 50 200 {
+                    [s 0 master_link_status] eq {up} &&
+                    [regexp -all {repl_compression=lz4} [$primary info replication]] == 1 &&
+                    [status $primary sync_partial_ok] == $partial_before + 3
+                } else {
+                    fail "Replica did not renegotiate plaintext to LZ4"
+                }
+                assert_equal $full_before [status $primary sync_full]
+
+                $primary set exact:lz4 delivered
+                wait_for_condition 50 100 {
+                    [$replica get exact:lz4] eq {delivered}
+                } else {
+                    fail "LZ4 link did not replicate data after codec transition"
+                }
+                assert_equal [$primary debug digest] [$replica debug digest]
+
+                $replica replicaof no one
             }
-            wait_for_condition 50 100 {
-                [$replica get pt:49] eq [string repeat "payload49 " 20]
-            } else {
-                fail "Replica did not receive plaintext data via passthrough"
-            }
-            assert_equal [$primary dbsize] [$replica dbsize]
-
-            # The link remained plaintext.
-            assert_equal 0 [string match {*repl_compression=lz4*} [$primary info replication]]
-
-            # Disabling a link already classified as plaintext must not cause
-            # an unnecessary reconnect.
-            set full_before [status $primary sync_full]
-            set partial_before [status $primary sync_partial_ok]
-            $replica config set repl-compression no
-            after 1500
-            assert_equal $full_before [status $primary sync_full]
-            assert_equal $partial_before [status $primary sync_partial_ok]
-            assert_equal up [s 0 master_link_status]
-
-            $replica replicaof no one
+            $primary config set repl-compression no
         }
     }
 
@@ -776,93 +920,176 @@ start_server {tags {"repl"} overrides {save ""}} {
         }
     }
 
-    test {Dual-channel full sync with compression delivers writes made during load} {
-        $primary config set repl-compression lz4
-        $primary config set dual-channel-replication-enabled yes
-        $primary config set rdb-key-save-delay 100
-        $primary flushall
-        $primary debug populate 10000 dc: 100
+    if {$::replcompression_zstd_supported} {
+        test {Primary codec flips preserve exact LZ4, ZSTD, and plaintext replica capabilities} {
+            $primary config set repl-compression no
+            $primary flushall
 
-        start_server {overrides {save "" repl-compression lz4 dual-channel-replication-enabled yes}} {
-            set replica [srv 0 client]
-            $replica replicaof $primary_host $primary_port
+            start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
+                set lz4_replica [srv 0 client]
+                $lz4_replica replicaof $primary_host $primary_port
+                wait_for_sync $lz4_replica
 
-            # rdb-key-save-delay stretches the RDB stage; catch the sync window.
-            wait_for_condition 500 10 {
-                [s 0 master_sync_in_progress] == 1 &&
-                [string match {*state=bg_transfer*repl_compression=lz4*} [$primary info replication]]
-            } else {
-                fail "Dual-channel sync did not start"
+                start_server {overrides {save "" repl-compression zstd repl-diskless-load swapdb}} {
+                    set zstd_replica [srv 0 client]
+                    $zstd_replica replicaof $primary_host $primary_port
+                    wait_for_sync $zstd_replica
+
+                    start_server {overrides {save "" repl-compression no repl-diskless-load swapdb}} {
+                        set plain_replica [srv 0 client]
+                        $plain_replica replicaof $primary_host $primary_port
+                        wait_for_sync $plain_replica
+
+                        set full_before [status $primary sync_full]
+                        set partial_before [status $primary sync_partial_ok]
+
+                        # Only the ZSTD-capable replica reconnects and upgrades.
+                        $primary config set repl-compression zstd
+                        wait_for_condition 100 200 {
+                            [regexp -all {repl_compression=zstd} [$primary info replication]] == 1 &&
+                            [regexp -all {repl_compression=lz4} [$primary info replication]] == 0 &&
+                            [status $primary sync_partial_ok] == $partial_before + 1
+                        } else {
+                            fail "Mixed capability replicas did not converge to ZSTD"
+                        }
+
+                        # Moving to LZ4 downgrades the ZSTD link and upgrades
+                        # the LZ4 link. Reconciliation intentionally handles one
+                        # replica per cron iteration.
+                        $primary config set repl-compression lz4
+                        wait_for_condition 100 200 {
+                            [regexp -all {repl_compression=lz4} [$primary info replication]] == 1 &&
+                            [regexp -all {repl_compression=zstd} [$primary info replication]] == 0 &&
+                            [status $primary sync_partial_ok] == $partial_before + 3
+                        } else {
+                            fail "Mixed capability replicas did not converge from ZSTD to LZ4"
+                        }
+                        assert_equal $full_before [status $primary sync_full]
+
+                        $primary set mixed-codecs:final delivered
+                        wait_for_condition 50 100 {
+                            [$lz4_replica get mixed-codecs:final] eq {delivered} &&
+                            [$zstd_replica get mixed-codecs:final] eq {delivered} &&
+                            [$plain_replica get mixed-codecs:final] eq {delivered}
+                        } else {
+                            fail "Data did not reach every exact-capability replica"
+                        }
+                        assert_equal [$primary debug digest] [$lz4_replica debug digest]
+                        assert_equal [$primary debug digest] [$zstd_replica debug digest]
+                        assert_equal [$primary debug digest] [$plain_replica debug digest]
+
+                        $plain_replica replicaof no one
+                    }
+                    $zstd_replica replicaof no one
+                }
+                $lz4_replica replicaof no one
             }
-
-            # Writes made during load reach the replica via the compressed main
-            # channel: +CONTINUE starts compression, put-online must not restart
-            # it (a second init would emit a new envelope mid-frame).
-            for {set i 0} {$i < 200} {incr i} {
-                $primary set "during_load:$i" "value_$i"
-            }
-            # This compresses below one socket read but expands past one decode
-            # budget, exercising streamReplDataBufToDb's resumable decode loop.
-            set during_load_payload [string repeat x [expr {2 * 1024 * 1024}]]
-            $primary set during_load:large $during_load_payload
-            assert_equal 1 [s 0 master_sync_in_progress]
-            assert_match {*state=bg_transfer*repl_compression=lz4*} [$primary info replication]
-
-            wait_for_condition 100 100 {
-                [s 0 master_link_status] eq {up}
-            } else {
-                fail "Replication not up after dual-channel sync"
-            }
-
-            wait_for_condition 50 100 {
-                [$replica get "during_load:199"] eq {value_199}
-            } else {
-                fail "Writes made during load did not reach the replica"
-            }
-            for {set i 0} {$i < 200} {incr i} {
-                assert_equal "value_$i" [$replica get "during_load:$i"]
-            }
-            assert_equal $during_load_payload [$replica get during_load:large]
-            assert_match "*repl_compression=lz4*" [$primary info replication]
-            wait_for_ofs_sync $primary $replica
-
-            # A double init would emit a second envelope mid-frame on the first
-            # post-online write, corrupting the replica and forcing a resync.
-            # Stable sync counters prove the link survived that first write.
-            set sync_full_before [s -1 sync_full]
-            set sync_partial_before [s -1 sync_partial_ok]
-            $primary set post_online_probe delivered
-            wait_for_condition 50 100 {
-                [$replica get post_online_probe] eq {delivered}
-            } else {
-                fail "Post-online write did not reach the replica"
-            }
-            assert_equal $sync_full_before [s -1 sync_full]
-            assert_equal $sync_partial_before [s -1 sync_partial_ok]
-
-            $replica replicaof no one
+            $primary config set repl-compression no
         }
-        $primary config set rdb-key-save-delay 0
-        $primary config set dual-channel-replication-enabled no
-        $primary config set repl-compression no
     }
 
-    foreach {initial final expected_compressed} {no lz4 1 lz4 no 0} {
-        test "Dual-channel load converges after primary repl-compression $initial->$final" {
+    foreach mode $stream_modes {
+        test "Dual-channel full sync with $mode delivers writes made during load" {
+            $primary config set repl-compression $mode
+            $primary config set dual-channel-replication-enabled yes
+            $primary config set rdb-key-save-delay 100
+            $primary flushall
+            $primary debug populate 10000 dc: 100
+
+            start_server [list overrides [list save "" repl-compression $mode dual-channel-replication-enabled yes]] {
+                set replica [srv 0 client]
+                $replica replicaof $primary_host $primary_port
+
+                # rdb-key-save-delay stretches the RDB stage; catch the sync window.
+                wait_for_condition 500 10 {
+                    [s 0 master_sync_in_progress] == 1 &&
+                    [string match "*state=bg_transfer*repl_compression=$mode*" [$primary info replication]]
+                } else {
+                    fail "Dual-channel $mode sync did not start"
+                }
+
+                # Writes made during load reach the replica via the compressed
+                # main channel. The envelope is emitted only once even when
+                # ZSTD closes and restarts checksummed batch frames.
+                for {set i 0} {$i < 200} {incr i} {
+                    $primary set "during_load:$i" "value_$i"
+                }
+                # This compresses below one socket read but expands past one
+                # decode budget, exercising resumable buffered decoding.
+                set during_load_payload [string repeat x [expr {2 * 1024 * 1024}]]
+                $primary set during_load:large $during_load_payload
+                assert_equal 1 [s 0 master_sync_in_progress]
+                assert_match "*state=bg_transfer*repl_compression=$mode*" [$primary info replication]
+
+                wait_for_condition 100 100 {
+                    [s 0 master_link_status] eq {up}
+                } else {
+                    fail "Replication not up after dual-channel $mode sync"
+                }
+
+                wait_for_condition 50 100 {
+                    [$replica get "during_load:199"] eq {value_199}
+                } else {
+                    fail "Writes made during $mode load did not reach the replica"
+                }
+                for {set i 0} {$i < 200} {incr i} {
+                    assert_equal "value_$i" [$replica get "during_load:$i"]
+                }
+                assert_equal $during_load_payload [$replica get during_load:large]
+                assert_match "*repl_compression=$mode*" [$primary info replication]
+                wait_for_ofs_sync $primary $replica
+
+                # Stable sync counters prove the first post-online batch did not
+                # re-emit an envelope or otherwise corrupt the stream.
+                set sync_full_before [s -1 sync_full]
+                set sync_partial_before [s -1 sync_partial_ok]
+                $primary set post_online_probe delivered
+                wait_for_condition 50 100 {
+                    [$replica get post_online_probe] eq {delivered}
+                } else {
+                    fail "Post-online $mode write did not reach the replica"
+                }
+                assert_equal $sync_full_before [s -1 sync_full]
+                assert_equal $sync_partial_before [s -1 sync_partial_ok]
+
+                $replica replicaof no one
+            }
+            $primary config set rdb-key-save-delay 0
+            $primary config set dual-channel-replication-enabled no
+            $primary config set repl-compression no
+        }
+    }
+
+    set dual_transition_cases {
+        {no lz4 lz4}
+        {lz4 no lz4}
+    }
+    if {$::replcompression_zstd_supported} {
+        lappend dual_transition_cases \
+            {no zstd zstd} \
+            {zstd no zstd} \
+            {lz4 zstd zstd} \
+            {zstd lz4 lz4}
+    }
+    foreach transition_case $dual_transition_cases {
+        lassign $transition_case initial final replica_mode
+        test "Dual-channel load converges after primary repl-compression $initial->$final with $replica_mode replica" {
+            set initial_compressed [expr {$initial eq $replica_mode && $initial ne "no"}]
+            set final_compressed [expr {$final eq $replica_mode && $final ne "no"}]
             $primary config set repl-compression $initial
             $primary config set dual-channel-replication-enabled yes
             $primary config set rdb-key-save-delay 100
             $primary flushall
-            $primary debug populate 10000 midload: 100
+            $primary debug populate 5000 midload: 100
 
-            start_server {overrides {save "" repl-compression lz4 dual-channel-replication-enabled yes}} {
+            start_server [list overrides [list save "" repl-compression $replica_mode dual-channel-replication-enabled yes]] {
                 set replica [srv 0 client]
                 $replica replicaof $primary_host $primary_port
 
                 wait_for_condition 500 10 {
                     [s 0 master_sync_in_progress] == 1 &&
                     [string match {*state=bg_transfer*} [$primary info replication]] &&
-                    [regexp -all {repl_compression=lz4} [$primary info replication]] == [expr {$initial eq "lz4"}]
+                    [regexp -all {repl_compression=(lz4|zstd)} [$primary info replication]] == $initial_compressed
                 } else {
                     fail "Dual-channel $initial stream did not reach the load window"
                 }
@@ -877,15 +1104,18 @@ start_server {tags {"repl"} overrides {save ""}} {
                 $primary config set repl-compression $final
                 assert_equal 1 [s 0 master_sync_in_progress]
                 assert_match {*state=bg_transfer*} [$primary info replication]
-                assert_equal [expr {$initial eq "lz4"}] \
-                    [regexp -all {repl_compression=lz4} [$primary info replication]]
+                assert_equal $initial_compressed \
+                    [regexp -all {repl_compression=(lz4|zstd)} [$primary info replication]]
 
                 wait_for_condition 100 100 {
                     [status $primary sync_partial_ok] == $partial_before + 1 &&
                     [s 0 master_link_status] eq {up} &&
-                    [regexp -all {repl_compression=lz4} [$primary info replication]] == $expected_compressed
+                    [regexp -all {repl_compression=(lz4|zstd)} [$primary info replication]] == $final_compressed
                 } else {
                     fail "Dual-channel link did not renegotiate to $final"
+                }
+                if {$final_compressed} {
+                    assert_equal 1 [regexp -all "repl_compression=$final" [$primary info replication]]
                 }
                 assert_equal $full_before [status $primary sync_full]
 

@@ -3530,6 +3530,12 @@ rdbStreamReaderInitResult rdbInitStreamReader(rio *rdb,
         .buffer_size = STREAM_READER_BUFFER_SIZE_DEFAULT,
         /* A file is fully present, so a short frame there is corruption. */
         .eof_mid_frame_is_truncation = (rioCheckType(rdb) == RIO_TYPE_CONN),
+        /* Match plain RDB files, which ignore data after the logical RDB
+         * footer. Unbounded connections use a plaintext EOF marker after the
+         * frame; fixed-size replication transfers remain strict. */
+        .allow_trailing_data =
+            (rioCheckType(rdb) == RIO_TYPE_FILE) ||
+            (rioCheckType(rdb) == RIO_TYPE_CONN && rdb->io.conn.read_limit == 0),
     };
     compressionAlgo detected_algo = ALGO_NONE;
 
@@ -3568,6 +3574,16 @@ rdbStreamReaderInitResult rdbInitStreamReader(rio *rdb,
 }
 
 void rdbFreeStreamReader(rio *rdb, streamReader *reader) {
+    if (rioCheckType(rdb) == RIO_TYPE_CONN &&
+        reader->allow_trailing_data &&
+        reader->error_kind == STREAM_READER_ERROR_NONE &&
+        reader->decompressor.frame_done &&
+        reader->compressed_buf_len > 0 &&
+        !rioRewindConnRead(rdb, reader->compressed_buf_len)) {
+        /* The framing bytes were consumed from the connection but could not
+         * be restored, so the caller must not continue parsing. */
+        rdb->flags |= RIO_FLAG_READ_ERROR;
+    }
     rioDetachStreamReader(rdb);
     rdb->flags &= ~RIO_FLAG_STREAMING_COMPRESSION;
     streamReaderFree(reader);

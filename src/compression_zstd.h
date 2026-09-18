@@ -28,5 +28,6 @@ ssize_t compressionZstdDecompressFeed(streamDecompressor *sd,
                                       const uint8_t *input,
                                       size_t input_len,
                                       size_t *input_consumed);
+int compressionZstdDecompressorReset(streamDecompressor *sd);
 
 #endif /* COMPRESSION_ZSTD_H */

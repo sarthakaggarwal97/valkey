@@ -2761,16 +2761,18 @@ static bool getReplicaWriteRange(client *c, listNode **last_node, size_t *last_p
 }
 
 /* Append compressed input to the link's staging buffer. The first call emits
- * the replication envelope; a sync flush makes the batch writable without
- * ending the frame. */
+ * the replication envelope. LZ4 keeps one frame open and sync-flushes each
+ * batch; Zstd ends each batch as a checksummed frame and starts the next frame
+ * without repeating the envelope. */
 static int compressReplicaDataToOutputBuffer(replicaCompressionState *compression,
                                              const uint8_t *input,
                                              size_t input_len,
                                              compressFlushMode flush_mode) {
-    if (!compression->compressor.stream_started) {
+    if (!compression->envelope_written) {
         uint8_t envelope[VCS_ENVELOPE_SIZE];
         if (vcsBuildEnvelope(envelope, compression->compressor.algo, VCS_STREAM_REPL) == C_ERR) return C_ERR;
         compression->out_buf = sdscatlen(compression->out_buf, envelope, sizeof(envelope));
+        compression->envelope_written = true;
     }
     size_t bound = streamCompressorOutputBound(&compression->compressor, input_len);
     serverAssert(bound > 0);
@@ -2845,8 +2847,11 @@ static void writeToReplicaCompressed(client *c) {
 
     if (batch_uncompressed_bytes == 0) return;
 
-    /* Drain codec-buffered bytes so the whole batch lands in out_buf. */
-    if (compressReplicaDataToOutputBuffer(compression, NULL, 0, COMPRESS_FLUSH_SYNC) != C_OK) {
+    /* Drain codec-buffered bytes so the whole batch lands in out_buf. Zstd
+     * closes the batch frame to emit and validate its content checksum. */
+    compressFlushMode flush_mode =
+        compression->compressor.algo == ALGO_ZSTD ? COMPRESS_FLUSH_END : COMPRESS_FLUSH_SYNC;
+    if (compressReplicaDataToOutputBuffer(compression, NULL, 0, flush_mode) != C_OK) {
         c->write_flags |= WRITE_FLAGS_COMPRESSION_ERROR | WRITE_FLAGS_WRITE_ERROR;
         return;
     }

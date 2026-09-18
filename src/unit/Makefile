@@ -213,6 +213,13 @@ endif
 $(VALKEY_SERVER_LIB): make-prerequisites
 	cd .. && $(MAKE) libvalkey.a
 
+# Server objects are owned by the parent Makefile, which supplies feature
+# defines and dependency include paths. Without this rule, make can select a
+# built-in rule for an updated ../*.c prerequisite and compile it with bare
+# flags before the parent library build completes.
+$(addprefix ../,$(ENGINE_SERVER_OBJ)): $(VALKEY_SERVER_LIB)
+	@:
+
 # Ensure parent prerequisites are built
 .PHONY: make-prerequisites
 make-prerequisites:
