@@ -25,9 +25,18 @@ scheduling and announcements remain release-team decisions.
    `Done`.
 3. Open and merge a `valkey-ci-agent` PR that adds `M.m` to
    [`release_policy.yml`][release-policy] and adds the branch and project
-   number to [`repos.yml`][backport-registry]. The
-   [Valkey 9.2 project][backport-project-example] shows the expected project
-   setup.
+   number to [`repos.yml`][backport-registry]. You do not need to change the
+   build or validation settings in that file. Under the `valkey-io/valkey`
+   entry's `branches` list, copy the existing pattern:
+
+   ```yaml
+   - branch: "9.2"
+     project_number: 51
+   ```
+
+   Replace `9.2` with `M.m`. Replace `51` with the number at the end of the
+   project's URL; for example, the [Valkey 9.2 project][backport-project-example]
+   ends in `/projects/51`.
 
 Prepare checks the policy file, but it does not check that the Valkey branch
 exists. If the branch is missing, the notes cut will fail later.
@@ -56,7 +65,7 @@ line:
 1. On the merged source PR, set the `Valkey M.m` project status to
    `To be backported`. Add the PR to the project first if its workflow did not.
 2. Run [Backport Sweep][backport-sweep] with `repo` set to
-   `valkey-io/valkey`, `project_number` taken from
+   `valkey-io/valkey`, `project_number` set to the number beside the branch in
    [`repos.yml`][backport-registry], and `dry_run` set to `false`. Leaving
    `dry_run` on only reports what it found; it does not create a backport PR.
 3. Find the generated `[backport] Backport sweep for M.m` PR in the
