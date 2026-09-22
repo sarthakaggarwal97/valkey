@@ -11,7 +11,9 @@ The short version:
 Most of the work between those points is automatic. You still need to review
 and merge the downstream PRs. Prepare opens a `Release <tag>` tracking issue;
 use it as the home page for the release. It links the runs, approvals, and
-follow-up work. Editing the issue does not advance the release. Use the
+follow-up work. Completed stages keep their run links and show when they
+finished, even after later changes land in `valkey-ci-agent`. Editing the issue
+does not advance the release. Use the
 [active-release filter](https://github.com/valkey-io/valkey/issues?q=is%3Aissue+is%3Aopen+label%3Arelease-tracking)
 to find every open tracker. This runbook covers technical publication;
 scheduling and announcements remain release-team decisions.
@@ -172,6 +174,10 @@ waiting run, check that it names the expected version, and confirm that
 **Process Inputs** passed. That job resolves the release tag and stops on a
 source-SHA mismatch. Then approve `release-publish`.
 
+The account that approves `release-publish` becomes the release owner for the
+production run. The generated container, documentation, website, and Helm PRs
+mention that account in a comment when they are opened.
+
 Expected outputs:
 
 | Output | RC | GA | Patch |
@@ -211,7 +217,9 @@ Work through the links in the tracker:
   If you directly dispatch or rerun [Publish Release][publish-release] or
   [Build Release][build-release], you cannot approve that same run. Ask another
   active member of the release teams to approve it.
-- **Tracker is stale:** run [Refresh Release Progress][refresh-release].
+- **Tracker is stale:** run [Refresh Release Progress][refresh-release]. Do not
+  edit the issue to repair it. A completed release should retain its
+  qualification and approval evidence even after `valkey-ci-agent` changes.
 - **Prepare fails:** read the error first. Check team membership,
   [`release_policy.yml`][release-policy], the Valkey `M.m` branch, and whether
   the existing tags allow the requested intent.
