@@ -16,6 +16,22 @@ follow-up work. Editing the issue does not advance the release. Use the
 to find every open tracker. This runbook covers technical publication;
 scheduling and announcements remain release-team decisions.
 
+## Before RC1 on a new line
+
+1. Create `M.m` from the agreed `unstable` cutoff.
+2. Create the `Valkey M.m` project if it does not exist. Make sure it has
+   `To be backported` and `Done` statuses, then change its workflow so PRs
+   merged into `unstable` move to `To be backported` instead of `Merged` or
+   `Done`.
+3. Open and merge a `valkey-ci-agent` PR that adds `M.m` to
+   [`release_policy.yml`][release-policy] and adds the branch and project
+   number to [`repos.yml`][backport-registry]. The
+   [Valkey 9.2 project][backport-project-example] shows the expected project
+   setup.
+
+Prepare checks the policy file, but it does not check that the Valkey branch
+exists. If the branch is missing, the notes cut will fail later.
+
 ## Before every release
 
 - Make sure your membership in
@@ -31,21 +47,6 @@ scheduling and announcements remain release-team decisions.
 - Do not use this public process for an embargoed security fix.
 - Do not run two releases for the same `M.m` branch at once. The automation
   does not enforce this.
-
-## Before RC1 on a new line
-
-1. Create `M.m` from the agreed `unstable` cutoff.
-2. Make sure the `Valkey M.m` project has `To be backported` and `Done`
-   statuses. Change its workflow so PRs merged into `unstable` move to
-   `To be backported` instead of `Merged` or `Done`.
-3. Open and merge a `valkey-ci-agent` PR that adds `M.m` to
-   [`release_policy.yml`][release-policy] and adds the branch and project
-   number to [`repos.yml`][backport-registry]. The
-   [Valkey 9.2 project][backport-project-example] shows the expected project
-   setup.
-
-Prepare checks the policy file, but it does not check that the Valkey branch
-exists. If the branch is missing, the notes cut will fail later.
 
 ## Before RC2, GA, or a patch: update `M.m`
 
