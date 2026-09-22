@@ -6,47 +6,54 @@ The short version:
 2. Merge the preparation PR.
 3. Approve `release`.
 4. Approve `release-publish`.
+5. Finish the follow-up work linked from the tracker.
 
 Most of the work between those points is automatic. You still need to review
 and merge the downstream PRs. Prepare opens a `Release <tag>` tracking issue;
 use it as the home page for the release. It links the runs, approvals, and
 follow-up work. Editing the issue does not advance the release. Use the
 [active-release filter](https://github.com/valkey-io/valkey/issues?q=is%3Aissue+is%3Aopen+label%3Arelease-tracking)
-to find every open tracker.
+to find every open tracker. This runbook covers technical publication;
+scheduling and announcements remain release-team decisions.
 
-## Before you start
+## Before every release
 
 - Make sure your membership in
   [`valkey-io/valkey-committers`][team-committers] or
   [`valkey-io/valkey-release`][team-release] is active. A pending invitation is
   not enough. The same membership covers both approvals.
-- Check the release project before cutting anything. Filter it to the intended
-  RC or GA and confirm that every unfinished item is either complete or
-  explicitly deferred.
-- For a new major or minor line, create `M.m` from `unstable`, then add it to
-  [`release_policy.yml`][release-policy] in `valkey-ci-agent`. Prepare checks
-  the policy file, but it does not check that the Valkey branch exists. If the
-  branch is missing, the notes cut will fail later.
-- Set up backports when the branch is cut, before RC1. Make sure the
-  `Valkey M.m` project has `To be backported` and `Done` statuses, and change
-  its workflow so PRs merged into `unstable` move to `To be backported`
-  instead of `Merged` or `Done`. Then add the branch and project number to
-  [`repos.yml`][backport-registry]. The
-  [Valkey 9.2 project][backport-project-example] is an example.
-- Merge all backports intended for the release into `M.m`.
+- Confirm the release scope. For an RC or GA, filter the release project to
+  that target and make sure every unfinished item is complete or explicitly
+  deferred. For a patch, confirm which fixes are meant to ship.
+- Make sure every selected change is on `M.m`. Use the backport steps below
+  for anything that merged into `unstable` after the release branch was cut.
 - Leave `src/version.h` alone; the preparation PR updates it.
-- Do not use this public process for an embargoed security fix. Use `SECURITY`
-  only for fixes that are already public.
+- Do not use this public process for an embargoed security fix.
 - Do not run two releases for the same `M.m` branch at once. The automation
   does not enforce this.
 
-## Between RCs: backport fixes from `unstable`
+## Before RC1 on a new line
 
-After RC1, fixes normally merge into `unstable` first. The release owner
-decides which of those fixes belong in the next RC:
+1. Create `M.m` from the agreed `unstable` cutoff.
+2. Make sure the `Valkey M.m` project has `To be backported` and `Done`
+   statuses. Change its workflow so PRs merged into `unstable` move to
+   `To be backported` instead of `Merged` or `Done`.
+3. Open and merge a `valkey-ci-agent` PR that adds `M.m` to
+   [`release_policy.yml`][release-policy] and adds the branch and project
+   number to [`repos.yml`][backport-registry]. The
+   [Valkey 9.2 project][backport-project-example] shows the expected project
+   setup.
 
-1. On the merged source PR, add it to the `Valkey M.m` project and set its
-   status to `To be backported`.
+Prepare checks the policy file, but it does not check that the Valkey branch
+exists. If the branch is missing, the notes cut will fail later.
+
+## Before RC2, GA, or a patch: update `M.m`
+
+The release owner decides which fixes from `unstable` belong on the release
+line:
+
+1. On the merged source PR, set the `Valkey M.m` project status to
+   `To be backported`. Add the PR to the project first if its workflow did not.
 2. Run [Backport Sweep][backport-sweep] with `repo` set to
    `valkey-io/valkey`, `project_number` taken from
    [`repos.yml`][backport-registry], and `dry_run` set to `false`. Leaving
@@ -54,16 +61,18 @@ decides which of those fixes belong in the next RC:
 3. Find the generated `[backport] Backport sweep for M.m` PR in the
    [open-backports filter][open-backports]. Review its `Applied` and
    `Needs attention` sections, wait for the required checks, and merge it.
-4. Repeat until every fix intended for the next RC is on `M.m`. The scheduled
-   [Backport Mark Done Poll][backport-mark-done] moves verified project items
-   from `To be backported` to `Done`.
+4. Repeat until every fix intended for the next release is on `M.m`. The
+   scheduled [Backport Mark Done Poll][backport-mark-done] moves verified
+   project items from `To be backported` to `Done`.
 
-If one fix cannot wait for the poll, run [Manual Backport][manual-backport]
-with the source PR URL and target branch, then review and merge the generated
-PR. The automation does the cherry-pick and validation; the release owner
-still chooses what ships and merges the result.
+If one fix needs a standalone backport PR, run
+[Manual Backport][manual-backport] with the source PR URL and target branch,
+then review and merge the result. The automation does the cherry-pick and
+validation; the release owner still chooses what ships.
 
-## 1. Run [Prepare Release][prepare-release]
+## Release flow
+
+### 1. Run [Prepare Release][prepare-release]
 
 Open [Prepare Release][prepare-release] in `valkey-ci-agent`.
 
@@ -72,13 +81,14 @@ Open [Prepare Release][prepare-release] in `valkey-ci-agent`.
 | `branch` | Release line such as `9.1`, never a full version |
 | `intent` | `rc` → next `M.m.0-rcN`; `ga` → `M.m.0`; `patch` → next `M.m.p` |
 | `urgency` | `LOW`, `MODERATE`, `HIGH`, `CRITICAL`, or `SECURITY` |
-| `dry_run` | Derive the version without creating a PR or tracker |
+| `dry_run` | `false` to release; `true` only to preview the derived version |
 
-Urgency is a maintainer decision; the workflow does not assign it. `LOW` is
-the normal choice for a routine release. Use a higher value when the impact
-warrants it, and use `SECURITY` only for already-public security fixes. If the
-preparation PR flags an urgency or security mismatch, resolve it before
-merging and rerun Prepare if the input needs to change.
+Urgency is a maintainer decision; the workflow flags release-impact signals
+but does not assign severity. Use `SECURITY` only for already-public security
+fixes. If the preparation PR reports an urgency or security mismatch, either
+rerun Prepare with the corrected urgency or use inline review comments to add
+or correct the `Security Fixes` content. Do not merge until the warning is
+resolved.
 
 You do not enter a version. The workflow calculates it from the branch and the
 existing tags.
@@ -91,18 +101,18 @@ A real run opens these at the same time:
 
 Bookmark the issue. It is where you follow the release.
 
-## 2. Review and merge the preparation PR
+### 2. Review and merge the preparation PR
 
 Review the change and its PR body:
 
-- the dated `00-RELEASENOTES` section;
-- the `src/version.h` update; and
-- the contributor footer; and
-- the resolved notes range and every omission, triage, release-impact, or
-  security warning.
+- Confirm the resolved notes range and read every omission, triage,
+  release-impact, or security warning.
+- Review the dated `00-RELEASENOTES` section.
+- Check the `src/version.h` update.
+- Check the contributor footer.
 
-If the PR is a draft, read the hold reasons in its body before marking it
-ready.
+If the PR is a draft, resolve its hold reasons. Do not mark it ready merely to
+bypass them.
 
 Want a wording change? Leave an inline review comment on `00-RELEASENOTES`.
 The review poller will apply actionable comments and push an update. It ignores
@@ -114,7 +124,7 @@ The merge commit is the release candidate. Do not merge anything else into
 `M.m` until the GitHub Release is published; the candidate must remain branch
 HEAD.
 
-## 3. Wait for qualification
+### 3. Wait for qualification
 
 The scheduled [Refresh Release Progress][refresh-release] run finds the merged
 PR and starts [Publish Release][publish-release] for the exact merge commit. If
@@ -131,7 +141,7 @@ qualification:
 Candidate `ci.yml` is shown for context but does not block. The no-publish
 qualification is the publication gate.
 
-## 4. Approve `release`
+### 4. Approve `release`
 
 Open the waiting [Publish Release][publish-release] run. Before approving,
 check:
@@ -145,12 +155,12 @@ state, your team membership, and the plan receipt again before it writes
 anything. It then creates the tag at the candidate commit and publishes the
 GitHub Release.
 
-## 5. Approve `release-publish`
+### 5. Approve `release-publish`
 
-Publishing the GitHub Release starts [Build Release][build-release]. Check that
-the run names the expected version and that **Process Inputs** passed. That job
-resolves the release tag and stops on a source-SHA mismatch. Then approve
-`release-publish`.
+Publishing the GitHub Release starts [Build Release][build-release]. Open the
+waiting run, check that it names the expected version, and confirm that
+**Process Inputs** passed. That job resolves the release tag and stops on a
+source-SHA mismatch. Then approve `release-publish`.
 
 Expected outputs:
 
@@ -159,7 +169,7 @@ Expected outputs:
 | Hashes and binary archives | Yes | Yes | Yes |
 | Container PR and exact images | Yes | Yes | Yes |
 | RPM and DEB repositories | No | Yes | Yes |
-| Versioned documentation | No | PR | Tag from the preceding patch |
+| Documentation | No | PR; merge creates tag | Tag at prior docs commit |
 | Website release PR | No | Yes | Yes |
 | Try Valkey | No | Newest stable only | Newest stable only |
 | Helm PR | No | When appVersion advances | When appVersion advances |
@@ -169,13 +179,14 @@ Bundle waits for the exact public container images. Review and merge the
 container PR as soon as it is ready. The production run may stay open until the
 images appear.
 
-## 6. Finish the release
+### 6. Finish the release
 
 Work through the links in the tracker:
 
 1. Review and merge the linked downstream PRs.
 2. Check that the expected archives, packages, images, documentation, and
-   website changes are live.
+   website changes are live. For GA, merging the documentation PR creates its
+   version tag automatically.
 3. Helm PRs start as drafts. Mark one ready after the exact public container
    image exists.
 4. For the first GA on a new line, complete the backport-onboarding issue and
