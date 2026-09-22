@@ -86,9 +86,9 @@ Open [Prepare Release][prepare-release] in `valkey-ci-agent`.
 Urgency is a maintainer decision; the workflow flags release-impact signals
 but does not assign severity. Use `SECURITY` only for already-public security
 fixes. If the preparation PR reports an urgency or security mismatch, either
-rerun Prepare with the corrected urgency or use inline review comments to add
-or correct the `Security Fixes` content. Do not merge until the warning is
-resolved.
+rerun [Prepare Release][prepare-release] with the corrected urgency or use
+inline review comments to add or correct the `Security Fixes` content. Do not
+merge until the warning is resolved.
 
 You do not enter a version. The workflow calculates it from the branch and the
 existing tags.
