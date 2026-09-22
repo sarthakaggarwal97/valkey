@@ -24,12 +24,38 @@ to find every open tracker.
   [`release_policy.yml`][release-policy] in `valkey-ci-agent`. Prepare checks
   the policy file, but it does not check that the Valkey branch exists. If the
   branch is missing, the notes cut will fail later.
+- Set up backports before RC1. Make sure the `Valkey M.m` project has
+  `To be backported` and `Done` statuses, then add the branch and project
+  number to [`repos.yml`][backport-registry]. The
+  [Valkey 9.2 project][backport-project-example] is an example.
 - Merge all backports intended for the release into `M.m`.
 - Leave `src/version.h` alone; the preparation PR updates it.
 - Do not use this public process for an embargoed security fix. Use `SECURITY`
   only for fixes that are already public.
 - Do not run two releases for the same `M.m` branch at once. The automation
   does not enforce this.
+
+## Between RCs: backport fixes from `unstable`
+
+After RC1, fixes normally merge into `unstable` first. The release owner
+decides which of those fixes belong in the next RC:
+
+1. On the merged source PR, add it to the `Valkey M.m` project and set its
+   status to `To be backported`.
+2. Wait for the scheduled [Backport Poll][backport-poll], or run it with
+   `repo` set to `valkey-io/valkey` and `project_number` taken from
+   [`repos.yml`][backport-registry].
+3. Find the generated `[backport] Backport sweep for M.m` PR in the
+   [open-backports filter][open-backports]. Review its `Applied` and
+   `Needs attention` sections, wait for the required checks, and merge it.
+4. Repeat until every fix intended for the next RC is on `M.m`. The scheduled
+   [Backport Mark Done Poll][backport-mark-done] moves verified project items
+   from `To be backported` to `Done`.
+
+If one fix cannot wait for the poll, run [Manual Backport][manual-backport]
+with the source PR URL and target branch, then review and merge the generated
+PR. The automation does the cherry-pick and validation; the release owner
+still chooses what ships and merges the result.
 
 ## 1. Run [Prepare Release][prepare-release]
 
@@ -139,8 +165,9 @@ Work through the links in the tracker:
 3. Helm PRs start as drafts. Mark one ready after the exact public container
    image exists.
 4. For the first GA on a new line, complete the backport-onboarding issue and
-   merge the generated `repos.yml` PR in `valkey-ci-agent`. If neither appears,
-   inspect the [Publish Release][publish-release] run.
+   merge the generated `repos.yml` PR in `valkey-ci-agent` if the line was not
+   registered during the RC cycle. If it is already in
+   [`repos.yml`][backport-registry], no onboarding issue or PR is expected.
 5. Close the tracker after everything that applies has been checked.
 
 ## If something goes wrong
@@ -202,3 +229,9 @@ refreshes, not active runs.
 [team-committers]: https://github.com/orgs/valkey-io/teams/valkey-committers
 [team-release]: https://github.com/orgs/valkey-io/teams/valkey-release
 [release-policy]: https://github.com/valkey-io/valkey-ci-agent/blob/main/release_policy.yml
+[backport-registry]: https://github.com/valkey-io/valkey-ci-agent/blob/main/repos.yml
+[backport-project-example]: https://github.com/orgs/valkey-io/projects/51
+[backport-poll]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/backport-poll.yml
+[backport-mark-done]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/backport-mark-done-poll.yml
+[manual-backport]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/manual-backport.yml
+[open-backports]: https://github.com/valkey-io/valkey/pulls?q=is%3Apr+is%3Aopen+label%3Abackport
