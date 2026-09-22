@@ -20,13 +20,18 @@ to find every open tracker.
   [`valkey-io/valkey-committers`][team-committers] or
   [`valkey-io/valkey-release`][team-release] is active. A pending invitation is
   not enough. The same membership covers both approvals.
+- Check the release project before cutting anything. Filter it to the intended
+  RC or GA and confirm that every unfinished item is either complete or
+  explicitly deferred.
 - For a new major or minor line, create `M.m` from `unstable`, then add it to
   [`release_policy.yml`][release-policy] in `valkey-ci-agent`. Prepare checks
   the policy file, but it does not check that the Valkey branch exists. If the
   branch is missing, the notes cut will fail later.
-- Set up backports before RC1. Make sure the `Valkey M.m` project has
-  `To be backported` and `Done` statuses, then add the branch and project
-  number to [`repos.yml`][backport-registry]. The
+- Set up backports when the branch is cut, before RC1. Make sure the
+  `Valkey M.m` project has `To be backported` and `Done` statuses, and change
+  its workflow so PRs merged into `unstable` move to `To be backported`
+  instead of `Merged` or `Done`. Then add the branch and project number to
+  [`repos.yml`][backport-registry]. The
   [Valkey 9.2 project][backport-project-example] is an example.
 - Merge all backports intended for the release into `M.m`.
 - Leave `src/version.h` alone; the preparation PR updates it.
@@ -69,6 +74,12 @@ Open [Prepare Release][prepare-release] in `valkey-ci-agent`.
 | `urgency` | `LOW`, `MODERATE`, `HIGH`, `CRITICAL`, or `SECURITY` |
 | `dry_run` | Derive the version without creating a PR or tracker |
 
+Urgency is a maintainer decision; the workflow does not assign it. `LOW` is
+the normal choice for a routine release. Use a higher value when the impact
+warrants it, and use `SECURITY` only for already-public security fixes. If the
+preparation PR flags an urgency or security mismatch, resolve it before
+merging and rerun Prepare if the input needs to change.
+
 You do not enter a version. The workflow calculates it from the branch and the
 existing tags.
 
@@ -82,11 +93,13 @@ Bookmark the issue. It is where you follow the release.
 
 ## 2. Review and merge the preparation PR
 
-Review three things:
+Review the change and its PR body:
 
 - the dated `00-RELEASENOTES` section;
 - the `src/version.h` update; and
-- the contributor footer.
+- the contributor footer; and
+- the resolved notes range and every omission, triage, release-impact, or
+  security warning.
 
 If the PR is a draft, read the hold reasons in its body before marking it
 ready.
@@ -173,6 +186,10 @@ Work through the links in the tracker:
 
 ## If something goes wrong
 
+- **Manual approval:** normal Publish and Build runs are dispatched by the bot.
+  If you directly dispatch or rerun [Publish Release][publish-release] or
+  [Build Release][build-release], you cannot approve that same run. Ask another
+  active member of the release teams to approve it.
 - **Tracker is stale:** run [Refresh Release Progress][refresh-release].
 - **Prepare fails:** read the error first. Check team membership,
   [`release_policy.yml`][release-policy], the Valkey `M.m` branch, and whether
