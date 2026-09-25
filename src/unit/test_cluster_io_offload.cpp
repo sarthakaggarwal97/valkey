@@ -20,6 +20,7 @@ extern "C" {
 
 clusterLink *createClusterLink(clusterNode *node);
 int freeClusterLink(clusterLink *link);
+int clusterIsValidPacket(clusterLink *link);
 void testOnlyFreeClusterLinkOnBufferLimitReached(clusterLink *link);
 }
 
@@ -245,6 +246,28 @@ class ClusterIOOffloadTest : public ::testing::Test {
         processIOThreadsResponses();
     }
 };
+
+TEST_F(ClusterIOOffloadTest, ExtensionCountRequiresExtensionDataFlag) {
+    clusterLink *link = makeLink();
+    server.cluster_drop_packet_filter = -1;
+    size_t old_alloc = link->rcvbuf_alloc;
+    link->rcvbuf = (char *)zrealloc(link->rcvbuf, CLUSTERMSG_MIN_LEN);
+    link->rcvbuf_alloc = CLUSTERMSG_MIN_LEN;
+    link->rcvbuf_len = CLUSTERMSG_MIN_LEN;
+    server.stat_cluster_links_memory += link->rcvbuf_alloc - old_alloc;
+
+    clusterMsg *msg = (clusterMsg *)(void *)link->rcvbuf;
+    memset(msg, 0, CLUSTERMSG_MIN_LEN);
+    memcpy(msg->sig, "RCmb", 4);
+    msg->totlen = htonl(CLUSTERMSG_MIN_LEN);
+    msg->ver = htons(CLUSTER_PROTO_VER);
+    msg->type = htons(CLUSTERMSG_TYPE_PING);
+
+    EXPECT_EQ(clusterIsValidPacket(link), 1);
+
+    msg->extensions = htons(1);
+    EXPECT_EQ(clusterIsValidPacket(link), 0);
+}
 
 /* --- Read path -------------------------------------------------------- */
 
