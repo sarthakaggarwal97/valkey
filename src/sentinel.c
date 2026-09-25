@@ -2850,19 +2850,50 @@ void sentinelProcessHelloMessage(char *hello, int hello_len) {
 
         /* Update primary info if received configuration is newer. */
         if (si && primary->config_epoch < primary_config_epoch) {
-            primary->config_epoch = primary_config_epoch;
-            if (primary_port != primary->addr->port || !sentinelAddrEqualsHostname(primary->addr, token[5])) {
-                sentinelAddr *old_addr;
+            int address_changed =
+                primary_port != primary->addr->port || !sentinelAddrEqualsHostname(primary->addr, token[5]);
+            int accept_config_update = 1;
+            sentinelAddr *trusted_addr = NULL;
+            uint64_t old_config_epoch = primary->config_epoch;
 
-                sentinelEvent(LL_WARNING, "+config-update-from", si, "%@");
-                sentinelEvent(LL_WARNING, "+switch-master", primary, "%s %s %d %s %d", primary->name,
-                              announceSentinelAddr(primary->addr), primary->addr->port, token[5], primary_port);
-
-                old_addr = dupSentinelAddr(primary->addr);
-                sentinelResetPrimaryAndChangeAddress(primary, token[5], primary_port);
-                sentinelCallClientReconfScript(primary, SENTINEL_OBSERVER, "start", old_addr, primary->addr);
-                releaseSentinelAddr(old_addr);
+            /* HELLO messages are not authenticated. If the primary requires
+             * authentication, never send its credentials to an arbitrary
+             * address learned only from HELLO. A promoted primary is normally
+             * one of the replicas already discovered through INFO, so use the
+             * stored replica address as the trusted source of the update. */
+            if (address_changed && primary->auth_pass) {
+                sentinelValkeyInstance *replica =
+                    getSentinelValkeyInstanceByAddrAndRunID(primary->replicas, token[5], primary_port, NULL);
+                if (replica == NULL) {
+                    sentinelEvent(LL_NOTICE, "-config-update-from", si,
+                                  "%@ #Ignoring primary address %s:%d because it is not a known replica", token[5],
+                                  primary_port);
+                    accept_config_update = 0;
+                } else {
+                    trusted_addr = dupSentinelAddr(replica->addr);
+                }
             }
+
+            if (accept_config_update) {
+                primary->config_epoch = primary_config_epoch;
+                if (address_changed) {
+                    sentinelAddr *old_addr;
+                    char *new_hostname = trusted_addr ? trusted_addr->hostname : token[5];
+                    int new_port = trusted_addr ? trusted_addr->port : primary_port;
+
+                    old_addr = dupSentinelAddr(primary->addr);
+                    if (sentinelResetPrimaryAndChangeAddress(primary, new_hostname, new_port) == C_OK) {
+                        sentinelEvent(LL_WARNING, "+config-update-from", si, "%@");
+                        sentinelEvent(LL_WARNING, "+switch-master", primary, "%s %s %d %s %d", primary->name,
+                                      announceSentinelAddr(old_addr), old_addr->port, new_hostname, new_port);
+                        sentinelCallClientReconfScript(primary, SENTINEL_OBSERVER, "start", old_addr, primary->addr);
+                    } else {
+                        primary->config_epoch = old_config_epoch;
+                    }
+                    releaseSentinelAddr(old_addr);
+                }
+            }
+            if (trusted_addr) releaseSentinelAddr(trusted_addr);
         }
 
         /* Update the state of the Sentinel. */
