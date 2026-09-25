@@ -639,9 +639,15 @@ void incrementalTrimReplicationBacklog(size_t max_blocks) {
 
 /* Free replication buffer blocks that are referenced by this client. */
 void freeReplicaReferencedReplBuffer(client *replica) {
-    if (replica->flag.repl_rdb_channel) {
+    /* Membership in replicas_waiting_psync owns the registration lifecycle.
+     * Do not infer membership from repl_rdb_channel, since REPLCONF can change
+     * that protocol flag after the client was registered. */
+    if (server.replicas_waiting_psync) {
         uint64_t rdb_cid = htonu64(replica->id);
-        if (raxRemove(server.replicas_waiting_psync, (unsigned char *)&rdb_cid, sizeof(rdb_cid), NULL)) {
+        void *registered_replica = NULL;
+        if (raxFind(server.replicas_waiting_psync, (unsigned char *)&rdb_cid, sizeof(rdb_cid), &registered_replica) &&
+            registered_replica == replica &&
+            raxRemove(server.replicas_waiting_psync, (unsigned char *)&rdb_cid, sizeof(rdb_cid), NULL)) {
             dualChannelServerLog(LL_DEBUG, "Remove psync waiting replica %s with cid %llu from replicas rax.",
                                  replicationGetReplicaName(replica), (long long unsigned int)replica->id);
         }
