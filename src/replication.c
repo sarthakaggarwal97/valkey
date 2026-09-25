@@ -1647,6 +1647,16 @@ void freeClientReplicationData(client *c) {
     c->repl_data = NULL;
 }
 
+static int replconfSetRdbOnly(client *c, long rdb_only) {
+    /* RDB-only is handshake state. Once SYNC/PSYNC admits the client as a
+     * replica, changing it can invalidate assumptions made by the replication
+     * state machine. */
+    if (c->flag.replica) return C_ERR;
+
+    c->flag.repl_rdbonly = rdb_only;
+    return C_OK;
+}
+
 /* REPLCONF <option> <value> <option> <value> ...
  * This command is used by a replica in order to configure the replication
  * process before starting it with the SYNC command.
@@ -1797,10 +1807,10 @@ void replconfCommand(client *c) {
              * RDB snapshot without replication buffer. */
             long rdb_only = 0;
             if (getRangeLongFromObjectOrReply(c, c->argv[j + 1], 0, 1, &rdb_only, NULL) != C_OK) return;
-            if (rdb_only == 1)
-                c->flag.repl_rdbonly = 1;
-            else
-                c->flag.repl_rdbonly = 0;
+            if (replconfSetRdbOnly(c, rdb_only) != C_OK) {
+                addReplyError(c, "REPLCONF rdb-only cannot be changed after replication starts");
+                return;
+            }
         } else if (!strcasecmp(objectGetVal(c->argv[j]), "rdb-filter-only")) {
             /* REPLCONFG RDB-FILTER-ONLY is used to define "include" filters
              * for the RDB snapshot. Currently we only support a single
@@ -1943,6 +1953,10 @@ void replicaStartCommandStream(client *replica) {
     }
 
     putClientInPendingWriteQueue(replica);
+}
+
+int testOnlyReplconfSetRdbOnly(client *c, long rdb_only) {
+    return replconfSetRdbOnly(c, rdb_only);
 }
 
 /* We call this function periodically to remove an RDB file that was
