@@ -66,6 +66,8 @@ static engineManager engineMgr = {
     .total_memory_overhead = 0,
 };
 
+static void scriptingEngineDebuggerShutdownEngine(scriptingEngine *engine);
+
 dictType engineDictType = {
     .entryGetKey = dictEntryGetKey,
     .hashFunction = dictCStrCaseHash,
@@ -173,6 +175,7 @@ int scriptingEngineManagerUnregister(const char *engine_name) {
 
     scriptingEngine *e = dictGetVal(entry);
 
+    scriptingEngineDebuggerShutdownEngine(e);
     functionsRemoveLibFromEngine(e);
     evalRemoveScriptsFromEngine(e);
 
@@ -489,6 +492,7 @@ typedef struct debugState {
     scriptingEngine *engine;         /* The scripting engine. */
     const debuggerCommand *commands; /* The array of debugger commands exported by the scripting engine. */
     size_t commands_len;             /* The length of the commands array. */
+    client *owner;                   /* Client that owns the debugging session. */
     connection *conn;                /* Connection of the debugging client. */
     int active;                      /* Are we debugging EVAL right now? */
     int forked;                      /* Is this a fork()ed debugging session? */
@@ -509,6 +513,7 @@ static inline void freeLogEntry(void *obj) {
 /* Initialize script debugger data structures. */
 void scriptingEngineDebuggerInit(void) {
     ds.engine = NULL;
+    ds.owner = NULL;
     ds.conn = NULL;
     ds.active = 0;
     ds.logs = listCreate();
@@ -526,6 +531,15 @@ void debugScriptFlushLog(list *log) {
 
 /* Enable debug mode of scripts for this client. */
 int scriptingEngineDebuggerEnable(client *c, scriptingEngine *engine, sds *err) {
+    if (ds.owner != NULL && ds.owner != c) {
+        *err = sdsnew("Another client already has an active scripting debugger");
+        return C_ERR;
+    }
+
+    if (ds.owner == c) {
+        scriptingEngineDebuggerDisable(c);
+    }
+
     debuggerEnableRet ret = scriptingEngineCallDebuggerEnable(
         engine,
         VMSE_EVAL,
@@ -544,6 +558,7 @@ int scriptingEngineDebuggerEnable(client *c, scriptingEngine *engine, sds *err) 
         return C_ERR;
     }
     ds.engine = engine;
+    ds.owner = c;
     c->flag.lua_debug = 1;
     debugScriptFlushLog(ds.logs);
     ds.conn = c->conn;
@@ -558,16 +573,40 @@ int scriptingEngineDebuggerEnable(client *c, scriptingEngine *engine, sds *err) 
  * to properly shut down a client debugging session, see scriptingEngineDebuggerEndSession()
  * for more information. */
 void scriptingEngineDebuggerDisable(client *c) {
-    if (ds.engine == NULL) {
-        /* No debug session enabled. */
+    c->flag.lua_debug = 0;
+    c->flag.lua_debug_sync = 0;
+
+    if (ds.owner != c) {
+        /* This client does not own the active debug session. */
         return;
     }
 
     ds.commands = NULL;
     ds.commands_len = 0;
-    c->flag.lua_debug = 0;
-    c->flag.lua_debug_sync = 0;
-    scriptingEngineCallDebuggerDisable(ds.engine, VMSE_EVAL);
+    if (ds.engine != NULL) {
+        scriptingEngineCallDebuggerDisable(ds.engine, VMSE_EVAL);
+    }
+    ds.engine = NULL;
+    ds.owner = NULL;
+    ds.conn = NULL;
+    ds.active = 0;
+    ds.forked = 0;
+    debugScriptFlushLog(ds.logs);
+    sdsclear(ds.cbuf);
+}
+
+/* Disable the debugger before its owning client connection is closed. */
+void scriptingEngineDebuggerClientDisconnect(client *c) {
+    if (ds.owner == c) {
+        scriptingEngineDebuggerDisable(c);
+    }
+}
+
+/* Disable an armed debugger before its scripting engine is unregistered. */
+static void scriptingEngineDebuggerShutdownEngine(scriptingEngine *engine) {
+    if (ds.engine == engine && ds.owner != NULL) {
+        scriptingEngineDebuggerDisable(ds.owner);
+    }
 }
 
 /* Append a log entry to the specified debug state log. */
@@ -640,6 +679,11 @@ void scriptingEngineDebuggerFlushLogs(void) {
  * The caller should call scriptingEngineDebuggerEndSession() only if
  * scriptDebugStartSession() returned 1. */
 int scriptingEngineDebuggerStartSession(client *c) {
+    if (ds.owner != c || ds.conn != c->conn || ds.engine == NULL) {
+        addReplyError(c, "SCRIPT DEBUG session is no longer active");
+        return 0;
+    }
+
     ds.forked = !c->flag.lua_debug_sync;
     if (ds.forked) {
         pid_t cp = serverFork(CHILD_TYPE_LDB);

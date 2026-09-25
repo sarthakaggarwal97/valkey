@@ -473,9 +473,16 @@ start_server {tags {"modules"}} {
         assert_match "*name=HELLO,module=helloengine*" $info
     }
 
-    test {Unload scripting engine module} {
+    test {Unload scripting engine module with pending debugger session} {
+        set debugger [valkey_deferring_client]
+        $debugger script debug sync hello
+        assert_equal OK [$debugger read]
+
         set result [r module unload helloengine]
         assert_equal $result "OK"
+
+        $debugger close
+        assert_equal [r ping] {PONG}
     }
 
     test {Load scripting engine in version before function env reset} {

@@ -1725,6 +1725,36 @@ start_server {tags {"scripting external:skip"}} {
 }
 
 start_server {tags {"scripting needs:debug external:skip"}} {
+    test {Test scripting debugger ownership is released when its client disconnects} {
+        set initial_clients [s connected_clients]
+        set owner [valkey_deferring_client]
+        set other [valkey_deferring_client]
+
+        $owner script debug sync
+        assert_equal OK [$owner read]
+
+        $other script debug sync
+        assert_error {*active scripting debugger*} {$other read}
+
+        $owner close
+        wait_for_condition 50 10 {
+            [s connected_clients] == $initial_clients + 1
+        } else {
+            fail "Scripting debugger owner did not disconnect"
+        }
+
+        $other script debug sync
+        assert_equal OK [$other read]
+        $other close
+        wait_for_condition 50 10 {
+            [s connected_clients] == $initial_clients
+        } else {
+            fail "Replacement scripting debugger owner did not disconnect"
+        }
+
+        assert_equal hello [r eval {return 'hello'} 0]
+    }
+
     test {Test scripting debug protocol parsing} {
         r script debug sync
         r eval {return 'hello'} 0

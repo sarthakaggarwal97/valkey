@@ -2458,6 +2458,7 @@ int freeClient(client *c) {
     /* Unlink the client: this will close the socket, remove the I/O
      * handlers, and remove references of the client from different
      * places where active clients may be referenced. */
+    scriptingEngineDebuggerClientDisconnect(c);
     unlinkClient(c);
 
     freeClientReplicationData(c);

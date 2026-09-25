@@ -113,6 +113,8 @@ int scriptingEngineDebuggerEnable(client *c, scriptingEngine *engine, sds *err);
 
 void scriptingEngineDebuggerDisable(client *c);
 
+void scriptingEngineDebuggerClientDisconnect(client *c);
+
 int scriptingEngineDebuggerStartSession(client *c);
 
 void scriptingEngineDebuggerEndSession(client *c);
