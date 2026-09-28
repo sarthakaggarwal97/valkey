@@ -11,9 +11,7 @@ The short version:
 Most of the work between those points is automatic. You still need to review
 and merge the downstream PRs. Prepare opens a `Release <tag>` tracking issue;
 use it as the home page for the release. It links the runs, approvals, and
-follow-up work. Completed stages keep their run links and show when they
-finished, even after later changes land in `valkey-ci-agent`. Editing the issue
-does not advance the release. Use the
+follow-up work. Editing the issue does not advance the release. Use the
 [active-release filter](https://github.com/valkey-io/valkey/issues?q=is%3Aissue+is%3Aopen+label%3Arelease-tracking)
 to find every open tracker. This runbook covers technical publication;
 scheduling and announcements remain release-team decisions.
@@ -25,7 +23,17 @@ scheduling and announcements remain release-team decisions.
    `To be backported` and `Done` statuses, then change its workflow so PRs
    merged into `unstable` move to `To be backported` instead of `Merged` or
    `Done`.
-3. Open and merge a `valkey-ci-agent` PR that adds `M.m` to
+3. Clear the project's `Merged` column after the cutoff. Treat it as a
+   pre-cut staging state:
+
+   - If a PR's merge commit is already in `M.m`, move it to `Done`. These PRs
+     form the RC1 baseline and do not need to be backported.
+   - If the merge commit is not in `M.m`, move the PR to `To be backported`.
+
+   The scheduled [Backport Mark Done Poll][backport-mark-done] only handles
+   items already in `To be backported`, so it does not perform this initial
+   cleanup.
+4. Open and merge a `valkey-ci-agent` PR that adds `M.m` to
    [`release_policy.yml`][release-policy] and adds the branch and project
    number to [`repos.yml`][backport-registry]. You do not need to change the
    build or validation settings in that file. Under the `valkey-io/valkey`
@@ -217,9 +225,7 @@ Work through the links in the tracker:
   If you directly dispatch or rerun [Publish Release][publish-release] or
   [Build Release][build-release], you cannot approve that same run. Ask another
   active member of the release teams to approve it.
-- **Tracker is stale:** run [Refresh Release Progress][refresh-release]. Do not
-  edit the issue to repair it. A completed release should retain its
-  qualification and approval evidence even after `valkey-ci-agent` changes.
+- **Tracker is stale:** run [Refresh Release Progress][refresh-release].
 - **Prepare fails:** read the error first. Check team membership,
   [`release_policy.yml`][release-policy], the Valkey `M.m` branch, and whether
   the existing tags allow the requested intent.
