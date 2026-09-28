@@ -66,23 +66,30 @@ exists. If the branch is missing, the notes cut will fail later.
 - Do not run two releases for the same `M.m` branch at once. The automation
   does not enforce this.
 
-## Before RC2, GA, or a patch: update `M.m`
+## After the branch cut: keep `M.m` current
 
-The release owner decides which fixes from `unstable` belong on the release
-line:
+Once the release branch is cut, the release owner is responsible for making
+sure fixes selected for the release line actually reach `M.m`. Do not wait
+until the next release to inspect the backport queue.
 
 1. On the merged source PR, set the `Valkey M.m` project status to
    `To be backported`. Add the PR to the project first if its workflow did not.
-2. Run [Backport Sweep][backport-sweep] with `repo` set to
-   `valkey-io/valkey`, `project_number` set to the number beside the branch in
-   [`repos.yml`][backport-registry], and `dry_run` set to `false`. Leaving
-   `dry_run` on only reports what it found; it does not create a backport PR.
-3. Find the generated `[backport] Backport sweep for M.m` PR in the
-   [open-backports filter][open-backports]. Review its `Applied` and
-   `Needs attention` sections, wait for the required checks, and merge it.
-4. Repeat until every fix intended for the next release is on `M.m`. The
+2. Check the [open-backports filter][open-backports] for the
+   `[backport] Backport sweep for M.m` PR. [Backport Sweep][backport-sweep]
+   runs daily and creates or updates that PR. An open sweep PR can grow on
+   later runs, so review it regularly instead of letting candidates accumulate.
+3. Review every entry in `Applied` and `Needs attention`, along with any AI
+   resolution comments and their diffs. Resolve failing checks, obtain the
+   required review, and merge the sweep PR.
+4. If you need an immediate refresh, run [Backport Sweep][backport-sweep] with
+   `repo` set to `valkey-io/valkey`, `project_number` set to the number beside
+   the branch in [`repos.yml`][backport-registry], and `dry_run` set to
+   `false`. Leaving `dry_run` on only reports what it found.
+5. Confirm the selected commits are now on `M.m`. The
    scheduled [Backport Mark Done Poll][backport-mark-done] moves verified
    project items from `To be backported` to `Done`.
+6. Before every later RC, GA, or patch release, repeat until every intended fix
+   is on `M.m` and every remaining project item is explicitly deferred.
 
 If one fix needs a standalone backport PR, run
 [Manual Backport][manual-backport] with the source PR URL and target branch,
