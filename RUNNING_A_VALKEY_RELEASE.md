@@ -56,9 +56,10 @@ exists. If the branch is missing, the notes cut will fail later.
   [`valkey-io/valkey-committers`][team-committers] or
   [`valkey-io/valkey-release`][team-release] is active. A pending invitation is
   not enough. The same membership covers both approvals.
-- Confirm the release scope. For an RC or GA, filter the release project to
-  that target and make sure every unfinished item is complete or explicitly
-  deferred. For a patch, confirm which fixes are meant to ship.
+- Confirm the release scope in the `Valkey M.m` project. The field is `Status`.
+  For RC1, enter `status:"RC1 blocker"` in the project filter and resolve or
+  explicitly defer every item it returns. For every later RC, GA, or patch,
+  review `status:"To be backported"` and decide which fixes must ship.
 - Make sure every selected change is on `M.m`. Use the backport steps below
   for anything that merged into `unstable` after the release branch was cut.
 - Leave `src/version.h` alone; the preparation PR updates it.
@@ -76,15 +77,19 @@ until the next release to inspect the backport queue.
    `To be backported`. Add the PR to the project first if its workflow did not.
 2. Check the [open-backports filter][open-backports] for the
    `[backport] Backport sweep for M.m` PR. [Backport Sweep][backport-sweep]
-   runs daily and creates or updates that PR. An open sweep PR can grow on
-   later runs, so review it regularly instead of letting candidates accumulate.
+   runs daily and creates or updates that PR. Each run adds at most two
+   candidates by default. An open sweep PR can therefore grow on later runs, so
+   review it regularly instead of letting candidates accumulate.
 3. Review every entry in `Applied` and `Needs attention`, along with any AI
    resolution comments and their diffs. Resolve failing checks, obtain the
    required review, and merge the sweep PR.
 4. If you need an immediate refresh, run [Backport Sweep][backport-sweep] with
    `repo` set to `valkey-io/valkey`, `project_number` set to the number beside
-   the branch in [`repos.yml`][backport-registry], and `dry_run` set to
-   `false`. Leaving `dry_run` on only reports what it found.
+   the branch in [`repos.yml`][backport-registry], `max_candidates` set to `0`
+   to include every eligible candidate or to a deliberate batch limit, and
+   `dry_run` set to `false`. The default limit is `2`; repeat the sweep if you
+   use a limit and more intended candidates remain. Leaving `dry_run` on only
+   reports what it found.
 5. Confirm the selected commits are now on `M.m`. The
    scheduled [Backport Mark Done Poll][backport-mark-done] moves verified
    project items from `To be backported` to `Done`.
@@ -235,15 +240,20 @@ Work through the links in the tracker:
 - **Prepare fails:** read the error first. Check team membership,
   [`release_policy.yml`][release-policy], the Valkey `M.m` branch, and whether
   the existing tags allow the requested intent.
-- **Qualification fails:** fix the cause. If the Valkey source changes, cut a
-  fresh preparation PR. Otherwise rerun or redispatch
+- **Qualification fails without a candidate change:** fix the external or
+  transient cause, then rerun or redispatch
   [Publish Release][publish-release] for the same candidate.
-- **`M.m` moved after the prep merge:** cut and merge a fresh preparation PR.
+- **The candidate must change after the preparation PR merged:** before the
+  release tag exists, cancel active publication, revert the preparation PR's
+  merge commit on `M.m` while leaving any later source fixes in place, merge
+  any remaining required changes, then run [Prepare Release][prepare-release]
+  again and merge the replacement preparation PR. Running Prepare again before
+  the revert will fail because `src/version.h` already records that release.
 - **Validation or approval is invalidated:** fix the release-tag ruleset if
   needed, review the new plan, and approve again.
-- **Publish stopped after creating the tag:** rerun
-  [Publish Release][publish-release] with the branch and original 40-character
-  candidate SHA.
+- **Publish stopped after creating the tag:** the version is committed and must
+  be completed. Rerun [Publish Release][publish-release] with the branch and
+  original 40-character candidate SHA.
 - **No Build Release run appears:** run
   [Trigger Build Release][trigger-build-release] for the published version and
   `prod`.
@@ -253,20 +263,21 @@ Work through the links in the tracker:
 
 ## Stopping a release
 
-Before the GitHub Release is published, you can still stop cleanly:
+Before the release tag exists, you can still stop cleanly:
 
-1. Close the tracker and any unmerged preparation PR.
-2. Cancel active [Prepare Release][prepare-release] or
+1. Cancel active [Prepare Release][prepare-release] or
    [Publish Release][publish-release] runs.
+2. Close the tracker and any unmerged preparation PR.
 3. Reject any waiting `release` approval.
 
 Closing the tracker stops future refreshes from advancing the release, but it
 does not cancel a run that has already started.
 
-Once the GitHub Release is published, do not abandon the version. During an
-incident, reject `release-publish` or cancel
-[Build Release][build-release] to stop more writes, then fix forward and finish
-the release.
+Once the release tag exists, do not abandon the version. If the GitHub Release
+is still missing, rerun [Publish Release][publish-release] with the original
+candidate. After the GitHub Release is published, reject `release-publish` or
+cancel [Build Release][build-release] to stop more writes during an incident,
+then fix forward and finish the release.
 
 Disabling [Refresh Release Progress][refresh-release] also stops only future
 refreshes, not active runs.
