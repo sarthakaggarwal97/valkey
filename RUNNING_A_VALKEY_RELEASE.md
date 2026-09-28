@@ -21,10 +21,9 @@ scheduling and announcements remain release-team decisions.
 1. Create `M.m` from the agreed `unstable` cutoff.
 2. Create the `Valkey M.m` project if it does not exist. Make sure it has
    `To be backported` and `Done` statuses, then change its workflow so PRs
-   merged into `unstable` move to `To be backported` instead of `Merged` or
-   `Done`.
-3. Clear the project's `Merged` column after the cutoff. Treat it as a
-   pre-cut staging state:
+   merged into `unstable` move to `To be backported`.
+3. Reconcile the existing project items after the cutoff, regardless of their
+   current status:
 
    - If a PR's merge commit is already in `M.m`, move it to `Done`. These PRs
      form the RC1 baseline and do not need to be backported.
