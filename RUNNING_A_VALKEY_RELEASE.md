@@ -13,8 +13,8 @@ and merge the downstream PRs. Prepare creates or reuses a `Release <tag>`
 tracking issue. Use it as the home page for the release: it links the runs,
 approvals, and follow-up work. Editing the issue does not advance the release.
 Use the [active-release filter][active-release-filter] to find every open
-tracker. This runbook covers technical publication;
-scheduling and announcements remain release-team decisions.
+tracker. Scope: technical publication only; scheduling and announcements remain
+release-team decisions.
 
 ## Prerequisites
 
@@ -31,6 +31,16 @@ scheduling and announcements remain release-team decisions.
   credentials used by the workflows. The release owner does not need the secret
   values.
 
+## Hard rules
+
+- Do not hand-create or move the release tag or GitHub Release.
+- Do not use this public process for an embargoed security fix.
+- Do not edit `src/version.h` or push to the preparation branch.
+- Keep `M.m` frozen between preparation merge and GitHub Release publication,
+  as described in [step 2](#2-review-and-merge-the-preparation-pr).
+- Do not delete or alter the bot-owned tracker status comment. Ordinary
+  discussion comments are not release authority.
+
 ## Before RC1 on a new line
 
 1. Create `M.m` from the agreed `unstable` cutoff.
@@ -43,22 +53,17 @@ scheduling and announcements remain release-team decisions.
 4. Open and merge a `valkey-ci-agent` PR that adds `M.m` to
    [`release_policy.yml`][release-policy] and adds the branch and project
    number to [`repos.yml`][backport-registry]. You do not need to change the
-   build or validation settings in that file. Keep version-like branch names
-   quoted in both files; unquoted `9.3` is parsed as a number and rejected.
-   Under the `valkey-io/valkey` entry's `branches` list, copy the existing
-   pattern:
+   build or validation settings. Keep version-like branch names quoted in both
+   files; unquoted `9.3` is parsed as a number and rejected. Under the
+   `valkey-io/valkey` entry's `branches` list, add:
 
    ```yaml
-   - branch: "9.2"
-     project_number: 51
+   - branch: "M.m"       # keep the quotes
+     project_number: <N> # from the project URL: .../projects/<N>
    ```
 
-   Replace `9.2` with `M.m`. Replace `51` with the number at the end of the
-   project's URL; for example, the [Valkey 9.2 project][backport-project-example]
-   ends in `/projects/51`.
 5. After the registry PR merges, run or wait for
-   [Backport Mark Done Poll][backport-mark-done]. It moves project PRs that it
-   can verify on `M.m` from `To be backported` to `Done`. Manually check any
+   [Backport Mark Done Poll][backport-mark-done], then manually reconcile any
    RC1-baseline items it leaves behind.
 
 Prepare checks the policy file, but it does not check that the Valkey branch
@@ -70,19 +75,16 @@ exists. If the branch is missing, the notes cut will fail later.
   For RC1, enter `status:"RC1 blocker"` in the project filter and resolve or
   explicitly defer every item it returns. For every later RC, GA, or patch,
   review `status:"To be backported"` and decide which fixes must ship.
-- Make sure every selected change is on `M.m`. Use the backport steps below
-  for anything that merged into `unstable` after the release branch was cut.
-- Leave `src/version.h` alone; the preparation PR updates it.
-- Do not use this public process for an embargoed security fix.
+- Complete the [backport steps](#after-the-branch-cut-keep-mm-current) until
+  every selected change is on `M.m`.
 - Do not prepare two release intents for the same branch concurrently. The
   workflows serialize execution and Publish pins the branch HEAD, but
   sequential runs can still leave separate RC and GA preparation PRs open.
 
 ## After the branch cut: keep `M.m` current
 
-Once the release branch is cut, the release owner is responsible for making
-sure fixes selected for the release line actually reach `M.m`. Do not wait
-until the next release to inspect the backport queue.
+Once the release branch is cut, keep its backport queue current between
+releases.
 
 1. On the merged source PR, set the `Valkey M.m` project status to
    `To be backported`. Add the PR to the project first if its workflow did not.
@@ -96,23 +98,20 @@ until the next release to inspect the backport queue.
    contributes nothing to the branch. Backport CI Follow-up also checks hourly
    and may push a fix; review its comment and resulting diff before merging.
    Resolve remaining failures and obtain the required review.
-4. If you need an immediate refresh, run [Backport Sweep][backport-sweep] with
-   `repo` set to `valkey-io/valkey`, `project_number` set to the number beside
-   the branch in [`repos.yml`][backport-registry], `max_candidates` set to `0`
-   to include every eligible candidate or to a deliberate batch limit, and
-   `dry_run` set to `false`. The default limit of `2` counts only successfully
-   applied and validated changes; repeat the sweep if you use a limit and more
-   intended candidates remain. Leaving `dry_run` on only reports what it found.
+4. For an immediate refresh, run [Backport Sweep][backport-sweep] with
+   `repo=valkey-io/valkey`, `project_number=<N>`, `max_candidates=0`, and
+   `dry_run=false`. A limit of `0` includes every eligible candidate. The
+   default limit of `2` counts successful validated changes; repeat a limited
+   sweep while intended candidates remain. The default `dry_run=true` only
+   reports.
 5. Confirm the selected commits are now on `M.m`. The
    scheduled [Backport Mark Done Poll][backport-mark-done] moves verified
-   project items from `To be backported` to `Done`.
-6. Before every later RC, GA, or patch release, repeat until every intended fix
-   is on `M.m` and every remaining project item is explicitly deferred.
+   project items from `To be backported` to `Done`. Explicitly defer every
+   remaining project item that is not intended for the release.
 
 If one fix needs a standalone backport PR, run
 [Manual Backport][manual-backport] with the source PR URL and target branch,
-then review and merge the result. The automation does the cherry-pick and
-validation; the release owner still chooses what ships.
+then review and merge the result.
 
 ## Release flow
 
@@ -148,8 +147,8 @@ covering already-public fixes:
    cleared. Inline edits alone do not recalculate the hold banner or draft
    state.
 
-You do not enter a version. The workflow calculates it from the branch and the
-existing tags. The intent must match them:
+Prepare calculates the version from the branch and existing tags. The intent
+must match them:
 
 - `rc` is allowed only before any final release exists on the line.
 - `ga` requires at least one RC and is refused after a final release exists.
@@ -160,8 +159,6 @@ independently. The first run creates a `Release <tag>` issue in
 `valkey-io/valkey`, labeled `release-tracking`; later runs for the same tag
 reuse or reopen it. The tracker may appear before the `agent/release-cut/...`
 preparation PR and may remain if notes generation fails.
-
-Bookmark the issue. It is where you follow the release.
 
 ### 2. Review and merge the preparation PR
 
@@ -184,10 +181,10 @@ Edits must stay inside the current dated release section. The preparation PR
 must contain only `00-RELEASENOTES` and `src/version.h`; any additional file
 makes the poller refuse the PR.
 
-Do not push to the preparation branch. Do not rerun Prepare or either Cut
-Release Notes workflow after review-poller edits unless you intend to discard
-them: a recut regenerates the notes, force-pushes the preparation branch, and
-may return the PR to draft. Reapply and rereview any wording changes afterward.
+Do not rerun Prepare or either Cut Release Notes workflow after review-poller
+edits unless you intend to discard them: a recut regenerates the notes,
+force-pushes the bot-owned preparation branch, and may return the PR to draft.
+Reapply and rereview any wording changes afterward.
 
 The commit created by merging the preparation PR is the release candidate. Do
 not merge anything else into `M.m` until the GitHub Release is published; the
@@ -197,8 +194,7 @@ candidate must remain branch HEAD.
 
 The scheduled [Refresh Release Progress][refresh-release] run finds the merged
 PR and starts [Publish Release][publish-release] for the exact candidate
-commit. If you do not want to wait for the schedule, run
-[Refresh Release Progress][refresh-release] yourself.
+commit.
 
 [Publish Release][publish-release] checks the branch HEAD, preparation PR,
 version, notes, tag state, and release-tag ruleset. It then runs a no-publish
@@ -213,11 +209,8 @@ qualification is the publication gate.
 ### 4. Approve `release` in `valkey-io/valkey-ci-agent`
 
 Open the waiting [Publish Release][publish-release] run. Before approving,
-check:
-
-- tag and candidate SHA;
-- release type and latest-release decision; and
-- qualification result and automation revision.
+check the tag and candidate SHA, release type and latest-release decision,
+qualification result, and automation revision.
 
 Approve `release` only if the plan is right. The workflow checks the repository
 state, your team membership, the approval receipt, and its bound plan digest
@@ -235,9 +228,9 @@ blocker before registering the line.
 ### 5. Approve `release-publish` in `valkey-io/valkey-release-automation`
 
 Publishing the GitHub Release starts [Build Release][build-release]. Open the
-waiting run, check that it names the expected version, and confirm that
-the `process-inputs` job passed. It resolves the release tag and stops on a
-source-SHA mismatch. Then approve `release-publish`.
+waiting run. Before approving, check the expected version and confirm that the
+`process-inputs` job passed; it stops on a source-SHA mismatch. Then approve
+`release-publish`.
 
 The account that approves `release-publish` becomes the release owner for the
 production run. The generated container, documentation, website, and Helm PRs
@@ -306,9 +299,6 @@ Valkey; those outputs are not all linked from the tracker.
   `valkey-release-automation/main` changes. Refresh may cancel a stale Publish
   run, causing its pending approval to disappear. Open the replacement run from
   current `main`, review the new evidence, and approve again.
-- **Publish stopped after creating the tag:** the version is committed and must
-  be completed. Rerun [Publish Release][publish-release] with the branch and
-  original lowercase 40-character candidate SHA.
 - **No Build Release run appears:** first inspect the corresponding
   [Trigger Build Release][trigger-build-release] run in `valkey`. A production
   dispatch requires the release tag to exist and resolve to a commit. If the
@@ -323,41 +313,23 @@ Valkey; those outputs are not all linked from the tracker.
 
 ## Stopping a release
 
-Before the release tag exists, you can still stop cleanly:
+- **No release tag:** cancel active [Prepare Release][prepare-release],
+  [Cut Release Notes][cut-release-notes],
+  [Cut Release Notes (Advanced)][cut-release-notes-advanced], and
+  [Publish Release][publish-release] runs. Close the tracker and any unmerged
+  preparation PR, and reject a waiting `release` approval. If preparation
+  already merged, revert that merge result while keeping later source fixes.
+  Do not rerun Prepare; it reopens the tracker.
+- **Tag exists, but no GitHub Release:** rerun
+  [Publish Release][publish-release] with the branch and original lowercase
+  40-character candidate SHA, then complete the version.
+- **GitHub Release published:** reject a waiting `release-publish` approval or
+  cancel [Build Release][build-release] to stop further writes during an
+  incident, then fix forward and finish the release.
 
-1. Cancel active [Prepare Release][prepare-release],
-   [Cut Release Notes][cut-release-notes],
-   [Cut Release Notes (Advanced)][cut-release-notes-advanced], or
-   [Publish Release][publish-release] runs.
-2. Close the tracker and any unmerged preparation PR.
-3. Reject any waiting `release` approval.
-
-Closing the tracker stops future refreshes from advancing the release, but it
-does not cancel a run that has already started. If the preparation PR already
-merged, also revert the commit created by merging it; otherwise `src/version.h`
-continues to record the release and another Prepare for that version or stage
-will fail.
-
-A later Prepare for the same tag reopens the tracker. Do not rerun Prepare if
-the release is intentionally stopped.
-
-Once the release tag exists, do not abandon the version. If the GitHub Release
-is still missing, rerun [Publish Release][publish-release] with the original
-candidate. After the GitHub Release is published, reject `release-publish` or
-cancel [Build Release][build-release] to stop more writes during an incident,
-then fix forward and finish the release.
-
-Disabling [Refresh Release Progress][refresh-release] also stops only future
-refreshes, not active runs.
-
-## A few hard rules
-
-- Do not hand-create or move the release tag or GitHub Release.
-- Do not edit `src/version.h` or push to the preparation branch.
-- Do not merge into `M.m` between preparation merge and GitHub Release
-  publication.
-- Do not delete or alter the bot-owned tracker status comment. Ordinary
-  discussion comments are not release authority.
+Closing the tracker stops refreshes from advancing the release; disabling
+[Refresh Release Progress][refresh-release] prevents future refreshes. Neither
+cancels an active run.
 
 [prepare-release]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-prepare.yml
 [cut-release-notes]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-notes-cut.yml
@@ -372,7 +344,6 @@ refreshes, not active runs.
 [active-release-filter]: https://github.com/valkey-io/valkey/issues?q=is%3Aissue+is%3Aopen+label%3Arelease-tracking
 [release-policy]: https://github.com/valkey-io/valkey-ci-agent/blob/main/release_policy.yml
 [backport-registry]: https://github.com/valkey-io/valkey-ci-agent/blob/main/repos.yml
-[backport-project-example]: https://github.com/orgs/valkey-io/projects/51
 [backport-sweep]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/backport-sweep.yml
 [backport-mark-done]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/backport-mark-done-poll.yml
 [manual-backport]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/manual-backport.yml
