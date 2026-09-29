@@ -8,13 +8,10 @@ The short version:
 4. Approve `release-publish` in `valkey-io/valkey-release-automation`.
 5. Finish the tracker and Build Release follow-up work.
 
-Most of the work between those points is automatic. You still need to review
-and merge the downstream PRs. Prepare creates or reuses a `Release <tag>`
-tracking issue. Use it as the home page for the release: it links the runs,
-approvals, and follow-up work. Editing the issue does not advance the release.
-Use the [active-release filter][active-release-filter] to find every open
-tracker. Scope: technical publication only; scheduling and announcements remain
-release-team decisions.
+Most steps are automatic; you review and merge PRs. Prepare creates or reuses a
+`Release <tag>` tracker ([open trackers][active-release-filter]) that links the
+main release runs, approvals, and follow-up work; editing it does not advance
+the release. Scope: technical publication only.
 
 ## Prerequisites
 
@@ -28,14 +25,17 @@ release-team decisions.
 - For a new release line, arrange normal `valkey-ci-agent` maintainer review for
   the `release_policy.yml` and `repos.yml` change.
 - Repository administrators must have configured the Valkeyrie App and AWS
-  credentials used by the workflows. The release owner does not need the secret
-  values.
+  credentials used by the workflows.
 
 ## Hard rules
 
 - Do not hand-create or move the release tag or GitHub Release.
 - Do not use this public process for an embargoed security fix.
 - Do not edit `src/version.h` or push to the preparation branch.
+- Treat [Cut Release Notes][cut-release-notes] and
+  [Cut Release Notes (Advanced)][cut-release-notes-advanced] as
+  release-owner-only controls. They do not check release-team membership; any
+  `valkey-ci-agent` writer can recut and overwrite the preparation PR.
 - Keep `M.m` frozen between preparation merge and GitHub Release publication,
   as described in [step 2](#2-review-and-merge-the-preparation-pr).
 - Do not delete or alter the bot-owned tracker status comment. Ordinary
@@ -48,8 +48,7 @@ release-team decisions.
    field contains `RC1 blocker`, `To be backported`, and `Done`.
 3. Before registering the line, change the project workflow so PRs merged into
    `unstable` move to `To be backported`, then move every existing merged PR in
-   the project to that status. Do not treat an empty RC1 filter as clean until
-   you have verified that the `RC1 blocker` option exists.
+   the project to that status.
 4. Open and merge a `valkey-ci-agent` PR that adds `M.m` to
    [`release_policy.yml`][release-policy] and adds the branch and project
    number to [`repos.yml`][backport-registry]. You do not need to change the
@@ -63,8 +62,11 @@ release-team decisions.
    ```
 
 5. After the registry PR merges, run or wait for
-   [Backport Mark Done Poll][backport-mark-done], then manually reconcile any
-   RC1-baseline items it leaves behind.
+   [Backport Mark Done Poll][backport-mark-done]. It cannot identify a
+   rebase-merged baseline PR whose commits carry no PR number; move those items
+   to `Done` manually. If Backport Poll runs first, the initial sweep may list
+   already-present baseline items under `Skipped`; verify them rather than
+   treating them as missing backports.
 
 Prepare checks the policy file, but it does not check that the Valkey branch
 exists. If the branch is missing, the notes cut will fail later.
@@ -90,14 +92,12 @@ releases.
    `To be backported`. Add the PR to the project first if its workflow did not.
 2. Check the [open-backports filter][open-backports] for the
    `[backport] Backport sweep for M.m` PR. Backport Poll checks hourly and
-   starts a sweep whenever no sweep PR is open, so another may appear soon
-   after the previous one merges. The scheduled [Backport Sweep][backport-sweep]
+   starts one if none is open; the scheduled [Backport Sweep][backport-sweep]
    is a daily fallback.
 3. Review every entry under `Applied`, `Skipped`, and the collapsed
    `Needs attention` section. Confirm that each skipped change genuinely
-   contributes nothing to the branch. Backport CI Follow-up also checks hourly
-   and may push a fix; review its comment and resulting diff before merging.
-   Resolve remaining failures and obtain the required review.
+   contributes nothing. Backport CI Follow-up may push an hourly fix; inspect
+   its comment and diff, resolve remaining failures, and obtain review.
 4. For an immediate refresh, run [Backport Sweep][backport-sweep] with
    `repo=valkey-io/valkey`, `project_number=<N>`, `max_candidates=0`, and
    `dry_run=false`. A limit of `0` includes every eligible candidate. The
@@ -122,43 +122,34 @@ Open [Prepare Release][prepare-release] in `valkey-ci-agent`.
 | Input | Value |
 | --- | --- |
 | `branch` | Release line such as `9.1`, never a full version |
-| `intent` | `rc` → next `M.m.0-rcN`; `ga` → `M.m.0`; `patch` → next `M.m.p` |
-| `urgency` | `LOW`, `MODERATE`, `HIGH`, `CRITICAL`, or `SECURITY` |
-| `dry_run` | `false` to release; `true` only to preview the derived version |
-
-The form initially selects `rc` and `LOW`; verify both before dispatching.
-Prepare defaults `dry_run` to `false`. Its dry run derives only the version and
-tag; it does not preview release notes. Cut Release Notes workflows instead
-default `dry_run` to `true`.
+| `intent` | Default `rc`. `rc` → next `M.m.0-rcN`, only before a final; `ga` → `M.m.0`, requiring an RC and no final; `patch` → next `M.m.p`, requiring a final |
+| `urgency` | Default `LOW`, so verify it. `LOW`, `MODERATE`, `HIGH`, `CRITICAL`, or `SECURITY`; see below for `SECURITY` |
+| `dry_run` | Default `false`. `true` shows the derived tag only, with no notes preview; Cut Release Notes defaults to `true` |
 
 Urgency is a maintainer decision; the workflow flags release-impact signals but
-does not assign severity. Correct a wrong non-security urgency by rerunning
-Prepare before review edits are applied.
+does not assign severity. For a wrong non-security urgency, rerun Prepare before
+any review edits.
 
 `Prepare Release` cannot supply security-fix entries. For a `SECURITY` release
 covering already-public fixes:
 
 1. Run Prepare with `SECURITY` to derive the version and open the tracker.
-2. Run [Cut Release Notes (Advanced)][cut-release-notes-advanced] with
-   `repo` set to `valkey`, `urgency` set to `SECURITY`, the same version and
-   stage, and `dry_run` set to `false`. Supply `security_fixes` or enable
-   `security_from_advisories`.
-3. Review the regenerated preparation PR and confirm that its security hold is
+2. Wait for Prepare's **Open release preparation PR** job to finish. Prepare
+   always starts the basic notes cut. Both cuts share a per-version lock and do
+   not cancel in-progress runs: Advanced may otherwise wait for hours, while an
+   Advanced run that gets there first can be overwritten by Prepare's later
+   cut.
+3. Run [Cut Release Notes (Advanced)][cut-release-notes-advanced] with
+   `repo` set to `valkey`, `urgency` set to `SECURITY`, the same version, and
+   `dry_run` set to `false`. Use the same stage for RC or GA; for a patch,
+   leave `stage` empty so it infers `ga`. Supply `security_fixes` or enable
+   `security_from_advisories`. Never run Advanced before Prepare.
+4. Review the regenerated preparation PR and confirm that its security hold is
    cleared. Inline edits alone do not recalculate the hold banner or draft
    state.
 
-Prepare calculates the version from the branch and existing tags. The intent
-must match them:
-
-- `rc` is allowed only before any final release exists on the line.
-- `ga` requires at least one RC and is refused after a final release exists.
-- `patch` requires an existing final release and derives the next patch number.
-
-After derivation, Prepare starts the notes cut and tracker creation
-independently. The first run creates a `Release <tag>` issue in
-`valkey-io/valkey`, labeled `release-tracking`; later runs for the same tag
-reuse or reopen it. The tracker may appear before the `agent/release-cut/...`
-preparation PR and may remain if notes generation fails.
+The tracker and `agent/release-cut/...` PR are created independently. The
+tracker may appear first, or remain alone if the notes cut fails.
 
 ### 2. Review and merge the preparation PR
 
@@ -175,16 +166,17 @@ non-security review hold, you may use **Ready for review**. A security hold must
 be corrected and recut; do not mark it ready to bypass the hold.
 
 Want a wording change? Leave an inline review comment on `00-RELEASENOTES`.
-The latest human comment in each unresolved, current thread is used, and its
-author must be an active [`valkey-io/contributors`][team-contributors] member.
-Edits must stay inside the current dated release section. The preparation PR
-must contain only `00-RELEASENOTES` and `src/version.h`; any additional file
-makes the poller refuse the PR.
+The review poller requires:
 
-Do not rerun Prepare or either Cut Release Notes workflow after review-poller
-edits unless you intend to discard them: a recut regenerates the notes,
+- the latest comment in an unresolved, current thread;
+- an author who is an active
+  [`valkey-io/contributors`][team-contributors] member;
+- an edit inside the current dated release section; and
+- no changed file other than `00-RELEASENOTES` or `src/version.h`.
+
+Any Prepare, basic, or Advanced recut after poller edits regenerates the notes,
 force-pushes the bot-owned preparation branch, and may return the PR to draft.
-Reapply and rereview any wording changes afterward.
+Recut only if you intend to discard, reapply, and rereview those edits.
 
 The commit created by merging the preparation PR is the release candidate. Do
 not merge anything else into `M.m` until the GitHub Release is published; the
@@ -197,14 +189,13 @@ PR and starts [Publish Release][publish-release] for the exact candidate
 commit.
 
 [Publish Release][publish-release] checks the branch HEAD, preparation PR,
-version, notes, tag state, and release-tag ruleset. It then runs a no-publish
+version, notes, tag state, and release-tag ruleset, then runs a no-publish
 qualification:
 
 - RC: binary archive matrix;
 - GA or patch: binary archives plus the RPM and DEB build-and-test matrix.
 
-Candidate `ci.yml` is shown for context but does not block. The no-publish
-qualification is the publication gate.
+Candidate `ci.yml` is informational; the no-publish qualification is the gate.
 
 ### 4. Approve `release` in `valkey-io/valkey-ci-agent`
 
@@ -219,11 +210,10 @@ commit and publishes the GitHub Release.
 
 For the first GA on a release line, also inspect the
 `Onboard first-GA backport automation` job in this Publish Release run. It is
-best-effort and is not linked from the tracker. If the line is already in
-[`repos.yml`][backport-registry], no action is expected. Otherwise complete the
-generated onboarding issue and review the generated `repos.yml` PR. If the
-project cannot be matched uniquely, only the issue is created; resolve that
-blocker before registering the line.
+best-effort and not tracker-linked. If the line is absent from
+[`repos.yml`][backport-registry], complete its issue and review its generated
+PR. An ambiguous project match creates only the issue; resolve it before
+registration.
 
 ### 5. Approve `release-publish` in `valkey-io/valkey-release-automation`
 
@@ -249,25 +239,18 @@ Expected outputs:
 | Helm PR | No | When appVersion advances | When appVersion advances |
 | Bundle update | `8.1+` | `8.1+` | `8.1+` |
 
-Build Release opens the `valkey-container` update PR; it does not publish the
-images itself. Merge that PR promptly, then wait for external publication and
-verify the exact public tags.
-
-The `trigger-valkey-bundle` job waits for both `${VERSION}-alpine` and
-`${VERSION}-trixie` on Docker Hub. It fails after about 5 hours 50 minutes. If
-it times out, wait until both images are public, then use **Re-run failed jobs**
-on the Build Release run.
+- **Container:** Build Release only opens the update PR; images publish after
+  it merges.
+- **Bundle:** waits for `${VERSION}-alpine` and `${VERSION}-trixie` on Docker
+  Hub and fails after about 5h50m. Rerun failed jobs once both exist.
 
 ### 6. Finish the release
 
-Use the tracker for hashes and linked downstream PRs. Use the Build Release run
-to verify binary archives, RPM/DEB packages, public container images, and Try
-Valkey; those outputs are not all linked from the tracker.
-
 1. Review and merge the linked downstream PRs.
-2. Check that the expected archives, packages, images, documentation, and
-   website changes are live. For GA, follow the documentation PR's instructions
-   and verify that the expected `valkey-doc` version tag exists after merge.
+2. Verify archives, packages, public images, Try Valkey, documentation, and
+   website changes are live. Use the Build Release run for outputs the tracker
+   does not link. For GA, verify the expected `valkey-doc` tag after merging the
+   documentation PR.
 3. Helm PRs start as drafts. Mark one ready after the exact public container
    image exists.
 4. Close the tracker after everything that applies has been checked.
@@ -281,9 +264,8 @@ Valkey; those outputs are not all linked from the tracker.
 - **Tracker is stale:** run [Refresh Release Progress][refresh-release].
 - **Prepare fails:** read the error first. Check team membership,
   [`release_policy.yml`][release-policy], the Valkey `M.m` branch, and whether
-  the existing tags allow the requested intent. The tracker may still have
-  opened. Keep it if you will retry the same release; the rerun refreshes it.
-  If you are abandoning the attempt, close the tracker and any preparation PR.
+  existing tags allow the intent. Keep an opened tracker if retrying the same
+  release; otherwise close it and any preparation PR.
 - **Qualification fails without a candidate change:** fix the external or
   transient cause, then rerun or redispatch
   [Publish Release][publish-release] for the same candidate.
@@ -296,20 +278,20 @@ Valkey; those outputs are not all linked from the tracker.
   Do not rerun Prepare directly even if an older tracker prompt tells you to.
 - **Validation or approval is invalidated:** this can happen when the
   release-tag ruleset, candidate, plan digest, `valkey-ci-agent/main`, or
-  `valkey-release-automation/main` changes. Refresh may cancel a stale Publish
-  run, causing its pending approval to disappear. Open the replacement run from
-  current `main`, review the new evidence, and approve again.
+  `valkey-release-automation/main` changes. Refresh may cancel the stale
+  Publish run and its approval. Review and approve the replacement from current
+  `main`.
 - **No Build Release run appears:** first inspect the corresponding
   [Trigger Build Release][trigger-build-release] run in `valkey`. A production
-  dispatch requires the release tag to exist and resolve to a commit. If the
-  trigger failed, fix it and rerun it for the published version and `prod`. If
-  it succeeded, look for a run titled exactly `Build Release <tag> (prod)`.
+  dispatch requires a tag resolving to a commit. If the trigger failed, fix and
+  rerun it for the published version and `prod`; otherwise find the run titled
+  exactly `Build Release <tag> (prod)`.
 - **Production or downstream work fails:** inspect the Build Release dependency
   chain. A hashes failure prevents container, documentation, Try Valkey,
   website, Helm, and Bundle work from starting, although archives and RPM/DEB
   packages may already have completed. Fix the earliest failed job, use
-  **Re-run failed jobs**, and confirm that every previously skipped dependent
-  job runs. If Bundle timed out, rerun after both exact public image tags exist.
+  **Re-run failed jobs**, and if Bundle timed out, rerun after both exact public
+  image tags exist.
 
 ## Stopping a release
 
@@ -319,17 +301,14 @@ Valkey; those outputs are not all linked from the tracker.
   [Publish Release][publish-release] runs. Close the tracker and any unmerged
   preparation PR, and reject a waiting `release` approval. If preparation
   already merged, revert that merge result while keeping later source fixes.
-  Do not rerun Prepare; it reopens the tracker.
+  Do not rerun Prepare; it reopens the tracker. Neither closing the tracker nor
+  disabling [Refresh Release Progress][refresh-release] cancels active runs.
 - **Tag exists, but no GitHub Release:** rerun
   [Publish Release][publish-release] with the branch and original lowercase
   40-character candidate SHA, then complete the version.
 - **GitHub Release published:** reject a waiting `release-publish` approval or
   cancel [Build Release][build-release] to stop further writes during an
   incident, then fix forward and finish the release.
-
-Closing the tracker stops refreshes from advancing the release; disabling
-[Refresh Release Progress][refresh-release] prevents future refreshes. Neither
-cancels an active run.
 
 [prepare-release]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-prepare.yml
 [cut-release-notes]: https://github.com/valkey-io/valkey-ci-agent/actions/workflows/release-notes-cut.yml
