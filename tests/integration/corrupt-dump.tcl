@@ -134,6 +134,52 @@ test {corrupt payload: quicklist listpack entry start with EOF} {
     }
 }
 
+test {corrupt payload: quicklist LZ4 compressed node lengths} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
+        r debug set-skip-checksum-validation 1
+        # RDB_TYPE_LIST_QUICKLIST_3 with one packed node holding the listpack
+        # of "a", compressed as an LZ4 block of 10 literals, and an RDB 82
+        # footer.
+        set lp "\x0a\x00\x00\x00\x01\x00\x81\x61\x02\xff"
+        set footer "\x52\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+        r restore key 0 "\x18\x01\x02\xc4\x0b\x0a\xa0$lp$footer"
+        assert_equal {a} [r lrange key 0 -1]
+        foreach {blob error} [list \
+            "\xc4\x0b\x0b\xa0$lp" "*Invalid LZ4 compressed string" \
+            "\xc4\x0a\x0a\xa0[string range $lp 0 end-1]" "*Invalid LZ4 compressed string" \
+            "\xc4\x80\x80\x00\x00\x00\x0a\xa0$lp" "*Invalid LZ4 compressed string length" \
+            "\xc4\x0b\x80\x80\x00\x00\x00\xa0$lp" "*Invalid LZ4 compressed string length" \
+        ] {
+            set loglines [count_log_lines 0]
+            catch {r restore key 0 "\x18\x01\x02$blob$footer" replace} err
+            assert_match "*Bad data format*" $err
+            verify_log_message 0 $error $loglines
+        }
+        r ping
+    }
+}
+
+test {corrupt payload: quicklist with corrupt LZ4 compressed nodes} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
+        r debug set-skip-checksum-validation 1
+        r config set list-compress-depth 1
+        for {set i 0} {$i < 200} {incr i} {
+            r rpush list [string repeat "compressed-list-$i " 10]
+        }
+        set payload [r dump list]
+        assert_equal "\x18" [string index $payload 0]
+        expr {srand(1)}
+        for {set i 0} {$i < 500} {incr i} {
+            # Corrupt one byte of the value, which is mostly LZ4 data.
+            set pos [expr {1 + int(rand() * ([string length $payload] - 11))}]
+            set corrupt [string replace $payload $pos $pos [format %c [expr {int(rand() * 256)}]]]
+            catch {r restore key 0 $corrupt replace}
+        }
+        verify_log_message 0 "*Invalid LZ4 compressed string*" 0
+        r ping
+    }
+}
+
 test {corrupt payload: #3080 - ziplist} {
     start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
         # shallow sanitization is enough for restore to safely reject the payload with wrong size

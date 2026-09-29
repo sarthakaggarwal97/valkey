@@ -819,7 +819,7 @@ void dismissListObject(robj *o, size_t size_hint) {
             quicklistNode *node = ql->head;
             while (node) {
                 if (quicklistNodeIsCompressed(node)) {
-                    dismissMemory(node->entry, ((quicklistLZF *)node->entry)->sz);
+                    dismissMemory(node->entry, ((quicklistLZ4 *)node->entry)->sz);
                 } else {
                     dismissMemory(node->entry, node->sz);
                 }

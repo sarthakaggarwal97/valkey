@@ -153,7 +153,7 @@ static int _ql_verify_compress(quicklist *ql) {
                     errors++;
                 }
             } else {
-                if (node->encoding != QUICKLIST_NODE_ENCODING_LZF &&
+                if (node->encoding != QUICKLIST_NODE_ENCODING_LZ4 &&
                     !node->attempted_compress) {
                     printf("Incorrect non-compression: node %d is NOT "
                            "compressed at depth %d ((%u, %u); total "
@@ -1654,7 +1654,7 @@ TEST_F(QuicklistTest, quicklistVerifySpecificCompressionOfInteriorNodes) {
                                        << "; size: " << node->sz << ")";
                             }
                         } else {
-                            if (node->encoding != QUICKLIST_NODE_ENCODING_LZF) {
+                            if (node->encoding != QUICKLIST_NODE_ENCODING_LZ4) {
                                 FAIL() << "Incorrect non-compression: node " << at << " is NOT compressed at depth " << depth
                                        << " ((" << low_raw << ", " << high_raw << "); total nodes: " << ql->len
                                        << "; size: " << node->sz << "; attempted: " << node->attempted_compress << ")";
@@ -1722,6 +1722,61 @@ TEST_F(QuicklistTest, quicklistBookmarkLimit) {
     quicklistRelease(ql);
 }
 
+TEST_F(QuicklistTest, quicklistNodeDecompressToLeavesNodeUntouched) {
+    quicklistNode *node = testOnlyQuicklistCreateNode();
+    node->entry = lpNew(0);
+
+    /* Just to avoid triggering the assertion in __quicklistCompressNode(),
+     * it disables the passing of quicklist head or tail node. */
+    node->prev = testOnlyQuicklistCreateNode();
+    node->next = testOnlyQuicklistCreateNode();
+
+    for (int i = 0; i < 100; i++) {
+        char *value = genstr("hello", i);
+        node->entry = lpAppend(node->entry, (unsigned char *)value, strlen(value));
+    }
+    node->sz = lpBytes(node->entry);
+    size_t sz = node->sz;
+    unsigned char *orig = (unsigned char *)zmalloc(sz);
+    memcpy(orig, node->entry, sz);
+
+    ASSERT_TRUE(testOnlyQuicklistCompressNode(node));
+    ASSERT_EQ(node->encoding, QUICKLIST_NODE_ENCODING_LZ4);
+    quicklistLZ4 *lz4 = (quicklistLZ4 *)node->entry;
+    ASSERT_LT(lz4->sz, sz);
+    void *data;
+    ASSERT_EQ(quicklistGetLz4(node, &data), lz4->sz);
+    ASSERT_EQ(data, (void *)lz4->compressed);
+
+    /* Decompressing into a buffer returns the original listpack and leaves the
+     * node compressed. */
+    unsigned char *buf = (unsigned char *)zmalloc(sz);
+    ASSERT_TRUE(quicklistNodeDecompressTo(node, buf));
+    ASSERT_EQ(memcmp(buf, orig, sz), 0);
+    ASSERT_EQ(node->encoding, QUICKLIST_NODE_ENCODING_LZ4);
+    ASSERT_EQ(node->entry, (unsigned char *)lz4);
+    ASSERT_EQ(node->sz, sz);
+
+    /* Truncated compressed data fails to decode, and the node stays compressed. */
+    lz4->sz--;
+    ASSERT_FALSE(quicklistNodeDecompressTo(node, buf));
+    ASSERT_FALSE(testOnlyQuicklistDecompressNode(node));
+    ASSERT_EQ(node->encoding, QUICKLIST_NODE_ENCODING_LZ4);
+    lz4->sz++;
+
+    ASSERT_TRUE(testOnlyQuicklistDecompressNode(node));
+    ASSERT_EQ(node->encoding, QUICKLIST_NODE_ENCODING_RAW);
+    ASSERT_EQ(node->sz, sz);
+    ASSERT_EQ(memcmp(node->entry, orig, sz), 0);
+
+    zfree(buf);
+    zfree(orig);
+    zfree(node->prev);
+    zfree(node->next);
+    zfree(node->entry);
+    zfree(node);
+}
+
 TEST_F(QuicklistTest, quicklistCompressAndDecompressQuicklistListpackNode) {
     if (!large_memory) GTEST_SKIP() << "Skipping large memory test";
 
@@ -1762,21 +1817,23 @@ TEST_F(QuicklistTest, quicklistCompressAndDecompressQuicklistListpackNode) {
     zfree(node);
 }
 
-TEST_F(QuicklistTest, quicklistCompressAndDecomressQuicklistPlainNodeLargeThanUINT32MAX) {
+TEST_F(QuicklistTest, quicklistPlainNodeLargerThanLZ4LimitIsNotCompressed) {
     if (!large_memory) GTEST_SKIP() << "Skipping large memory test";
 
 #ifdef VALKEY_ADDRESS_SANITIZER
-    /* Skip under ASAN: compression requires both original (4GB) and output
-     * buffer (~4GB) simultaneously, totaling ~8GB. With ASAN's 2-3x memory
-     * overhead, peak usage reaches ~16-24GB, exceeding GitHub runner limits. */
+    /* Skip under ASAN: the value (4GB) and the node's copy of it (~4GB) exist
+     * simultaneously, totaling ~8GB. With ASAN's 2-3x memory overhead, peak
+     * usage reaches ~16-24GB, exceeding GitHub runner limits. */
     GTEST_SKIP() << "Skipping large memory test under address sanitizer";
 #endif
 
 #if ULONG_MAX >= 0xffffffffffffffff
 
-    size_t sz = (1ull << 32);
+    /* Compressible, larger than LZ4_MAX_INPUT_SIZE, and truncates to a small
+     * size if passed to the int-sized LZ4 API. */
+    size_t sz = (1ull << 32) + 4096;
     unsigned char *s = (unsigned char *)(zmalloc(sz));
-    randstring(s, sz);
+    memset(s, 'x', sz);
     memcpy(s, "helloworld", 10);
     memcpy(s + sz - 10, "1234567890", 10);
 
@@ -1787,12 +1844,9 @@ TEST_F(QuicklistTest, quicklistCompressAndDecomressQuicklistPlainNodeLargeThanUI
     node->prev = testOnlyQuicklistCreateNode();
     node->next = testOnlyQuicklistCreateNode();
 
-    long long start = mstime();
-    ASSERT_TRUE(testOnlyQuicklistCompressNode(node));
-    ASSERT_TRUE(testOnlyQuicklistDecompressNode(node));
-    printf("Compress and decompress: %zu MB in %.3f seconds.\n",
-           node->sz / 1024 / 1024, (double)(mstime() - start) / 1000);
-
+    ASSERT_FALSE(testOnlyQuicklistCompressNode(node));
+    ASSERT_EQ(node->encoding, QUICKLIST_NODE_ENCODING_RAW);
+    ASSERT_EQ(node->sz, sz);
     ASSERT_EQ(memcmp(node->entry, "helloworld", 10), 0);
     ASSERT_EQ(memcmp(node->entry + sz - 10, "1234567890", 10), 0);
     zfree(node->prev);

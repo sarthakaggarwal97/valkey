@@ -1552,3 +1552,39 @@ proc ldbl_overflow_operand {{level 0}} {
     r $level del __ldbl_probe
     error "no long double operand large enough to overflow on this platform"
 }
+
+# Create lists whose interior nodes are compressed: small nodes, large nodes
+# and plain nodes, where large and plain nodes repeat data further back than
+# the 8KB reach of LZF. Returns the created keys.
+proc create_compressed_lists {r} {
+    set fill [lindex [$r config get list-max-listpack-size] 1]
+    set depth [lindex [$r config get list-compress-depth] 1]
+    $r config set list-compress-depth 1
+    for {set i 0} {$i < 1000} {incr i} {
+        $r rpush compressed:small [string repeat "compressed-list-$i " 10]
+    }
+    $r config set list-max-listpack-size -5
+    set blocks {}
+    for {set i 0} {$i < 16} {incr i} {
+        lappend blocks [randstring 1000 1000 binary]
+    }
+    for {set i 0} {$i < 1000} {incr i} {
+        $r rpush compressed:large "[lindex $blocks [expr {$i % 16}]][string repeat x [expr {$i % 500}]]"
+    }
+    $r config set list-max-listpack-size $fill
+    $r rpush compressed:plain head [string repeat [randstring 10000 10000 binary] 2] \
+        [string repeat [randstring 5000 5000 binary] 4] tail
+    $r config set list-compress-depth $depth
+    return {compressed:small compressed:large compressed:plain}
+}
+
+proc list_uncompressed_size {r key} {
+    regexp {ql_uncompressed_size:(\d+)} [$r debug object $key] -> size
+    return $size
+}
+
+# The interior nodes of the lists from create_compressed_lists take a fraction
+# of their uncompressed size while they are compressed.
+proc assert_list_nodes_compressed {r key} {
+    assert_lessthan [$r memory usage $key samples 0] [expr {[list_uncompressed_size $r $key] / 2}]
+}

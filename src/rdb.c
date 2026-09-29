@@ -36,6 +36,7 @@
 #include "server.h"
 #include "ordered_index.h"
 #include "lzf.h" /* LZF compression library */
+#include <lz4.h>
 #include "zipmap.h"
 #include "endianconv.h"
 #include "fpconv_dtoa.h"
@@ -430,12 +431,13 @@ int rdbTryIntegerEncoding(char *s, size_t len, unsigned char *enc) {
     }
 }
 
-ssize_t rdbSaveLzfBlob(rio *rdb, void *data, size_t compress_len, size_t original_len) {
+/* Save a string compressed with 'enc', RDB_ENC_LZF or RDB_ENC_LZ4. */
+static ssize_t rdbSaveCompressedBlob(rio *rdb, int enc, void *data, size_t compress_len, size_t original_len) {
     unsigned char byte;
     ssize_t n, nwritten = 0;
 
     /* Data compressed! Let's save it on disk */
-    byte = (RDB_ENCVAL << 6) | RDB_ENC_LZF;
+    byte = (RDB_ENCVAL << 6) | enc;
     if ((n = rdbWriteRaw(rdb, &byte, 1)) == -1) goto writeerr;
     nwritten += n;
 
@@ -467,15 +469,15 @@ ssize_t rdbSaveLzfStringObject(rio *rdb, unsigned char *s, size_t len) {
      * copy-on-write up to roughly the size of the dataset. */
     out = zmalloc(outlen + 1 > LZF_MIN_BUFFER_SIZE ? outlen + 1 : LZF_MIN_BUFFER_SIZE);
     comprlen = lzf_compress(s, len, out, outlen);
-    ssize_t nwritten = comprlen ? rdbSaveLzfBlob(rdb, out, comprlen, len) : 0;
+    ssize_t nwritten = comprlen ? rdbSaveCompressedBlob(rdb, RDB_ENC_LZF, out, comprlen, len) : 0;
     zfree(out);
     return nwritten;
 }
 
-/* Load an LZF compressed string in RDB format. The returned value
- * changes according to 'flags'. For more info check the
- * rdbGenericLoadStringObject() function. */
-void *rdbLoadLzfStringObject(rio *rdb, int flags, size_t *lenptr) {
+/* Load a string compressed with 'enc', RDB_ENC_LZF or RDB_ENC_LZ4, in RDB
+ * format. The returned value changes according to 'flags'. For more info
+ * check the rdbGenericLoadStringObject() function. */
+static void *rdbLoadCompressedStringObject(rio *rdb, int enc, int flags, size_t *lenptr) {
     int plain = flags & RDB_LOAD_PLAIN;
     int sds = flags & RDB_LOAD_SDS;
     uint64_t len, clen;
@@ -484,8 +486,12 @@ void *rdbLoadLzfStringObject(rio *rdb, int flags, size_t *lenptr) {
 
     if ((clen = rdbLoadLen(rdb, NULL)) == RDB_LENERR) return NULL;
     if ((len = rdbLoadLen(rdb, NULL)) == RDB_LENERR) return NULL;
+    if (enc == RDB_ENC_LZ4 && (clen > INT_MAX || len > INT_MAX)) {
+        rdbReportCorruptRDB("Invalid LZ4 compressed string length");
+        return NULL;
+    }
     if ((c = ztrymalloc(clen)) == NULL) {
-        serverLog(isRestoreContext() ? LL_VERBOSE : LL_WARNING, "rdbLoadLzfStringObject failed allocating %llu bytes",
+        serverLog(isRestoreContext() ? LL_VERBOSE : LL_WARNING, "rdbLoadCompressedStringObject failed allocating %llu bytes",
                   (unsigned long long)clen);
         goto err;
     }
@@ -497,7 +503,7 @@ void *rdbLoadLzfStringObject(rio *rdb, int flags, size_t *lenptr) {
         val = sdstrynewlen(SDS_NOINIT, len);
     }
     if (!val) {
-        serverLog(isRestoreContext() ? LL_VERBOSE : LL_WARNING, "rdbLoadLzfStringObject failed allocating %llu bytes",
+        serverLog(isRestoreContext() ? LL_VERBOSE : LL_WARNING, "rdbLoadCompressedStringObject failed allocating %llu bytes",
                   (unsigned long long)len);
         goto err;
     }
@@ -506,8 +512,12 @@ void *rdbLoadLzfStringObject(rio *rdb, int flags, size_t *lenptr) {
 
     /* Load the compressed representation and uncompress it to target. */
     if (rioRead(rdb, c, clen) == 0) goto err;
-    if (lzf_decompress(c, clen, val, len) != len) {
+    if (enc == RDB_ENC_LZF && lzf_decompress(c, clen, val, len) != len) {
         rdbReportCorruptRDB("Invalid LZF compressed string");
+        goto err;
+    }
+    if (enc == RDB_ENC_LZ4 && LZ4_decompress_safe((char *)c, val, (int)clen, (int)len) != (int)len) {
+        rdbReportCorruptRDB("Invalid LZ4 compressed string");
         goto err;
     }
     zfree(c);
@@ -621,7 +631,8 @@ void *rdbGenericLoadStringObject(rio *rdb, int flags, size_t *lenptr) {
         case RDB_ENC_INT8:
         case RDB_ENC_INT16:
         case RDB_ENC_INT32: return rdbLoadIntegerObject(rdb, len, flags, lenptr);
-        case RDB_ENC_LZF: return rdbLoadLzfStringObject(rdb, flags, lenptr);
+        case RDB_ENC_LZF:
+        case RDB_ENC_LZ4: return rdbLoadCompressedStringObject(rdb, len, flags, lenptr);
         default: rdbReportCorruptRDB("Unknown RDB string encoding type %llu", len); return NULL;
         }
     }
@@ -753,10 +764,16 @@ int rdbGetObjectType(robj *o, int rdbver) {
     switch (objectGetType(o)) {
     case OBJ_STRING: return RDB_TYPE_STRING;
     case OBJ_LIST:
-        if (objectGetEncoding(o) == OBJ_ENCODING_QUICKLIST || objectGetEncoding(o) == OBJ_ENCODING_LISTPACK)
+        if (objectGetEncoding(o) == OBJ_ENCODING_QUICKLIST) {
+            /* Only lists with node compression need QUICKLIST_3, so older
+             * versions with relaxed rdb-version-check can load the others. */
+            if (rdbver >= 82 && ((quicklist *)objectGetVal(o))->compress) return RDB_TYPE_LIST_QUICKLIST_3;
             return RDB_TYPE_LIST_QUICKLIST_2;
-        else
+        } else if (objectGetEncoding(o) == OBJ_ENCODING_LISTPACK) {
+            return RDB_TYPE_LIST_QUICKLIST_2;
+        } else {
             serverPanic("Unknown list encoding");
+        }
     case OBJ_SET:
         if (objectGetEncoding(o) == OBJ_ENCODING_INTSET)
             return RDB_TYPE_SET_INTSET;
@@ -926,10 +943,21 @@ ssize_t rdbSaveObject(rio *rdb, robj *o, robj *key, int dbid, unsigned char rdbt
                 if ((n = rdbSaveLen(rdb, node->container)) == -1) return -1;
                 nwritten += n;
 
-                if (quicklistNodeIsCompressed(node)) {
+                if (quicklistNodeIsCompressed(node) && rdbtype == RDB_TYPE_LIST_QUICKLIST_3) {
                     void *data;
-                    size_t compress_len = quicklistGetLzf(node, &data);
-                    if ((n = rdbSaveLzfBlob(rdb, data, compress_len, node->sz)) == -1) return -1;
+                    size_t compress_len = quicklistGetLz4(node, &data);
+                    if ((n = rdbSaveCompressedBlob(rdb, RDB_ENC_LZ4, data, compress_len, node->sz)) == -1) return -1;
+                    nwritten += n;
+                } else if (quicklistNodeIsCompressed(node)) {
+                    /* Older RDB versions can't store LZ4, so save the node like
+                     * an uncompressed one. Over-allocate like
+                     * rdbSaveLzfStringObject() to keep a fork child's
+                     * allocations in one jemalloc bin. */
+                    unsigned char *buf = zmalloc(node->sz > LZF_MIN_BUFFER_SIZE ? node->sz : LZF_MIN_BUFFER_SIZE);
+                    if (!quicklistNodeDecompressTo(node, buf)) serverPanic("Unable to decompress quicklist node");
+                    n = rdbSaveRawString(rdb, buf, node->sz);
+                    zfree(buf);
+                    if (n == -1) return -1;
                     nwritten += n;
                 } else {
                     if ((n = rdbSaveRawString(rdb, node->entry, node->sz)) == -1) return -1;
@@ -2651,7 +2679,8 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error, int rd
                 path_hash->num_fields++;
             }
         }
-    } else if (rdbtype == RDB_TYPE_LIST_QUICKLIST || rdbtype == RDB_TYPE_LIST_QUICKLIST_2) {
+    } else if (rdbtype == RDB_TYPE_LIST_QUICKLIST || rdbtype == RDB_TYPE_LIST_QUICKLIST_2 ||
+               rdbtype == RDB_TYPE_LIST_QUICKLIST_3) {
         if ((len = rdbLoadLen(rdb, NULL)) == RDB_LENERR) return NULL;
         if (len == 0) goto emptykey;
 
@@ -2661,7 +2690,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error, int rd
             unsigned char *lp;
             size_t encoded_len;
 
-            if (rdbtype == RDB_TYPE_LIST_QUICKLIST_2) {
+            if (rdbtype != RDB_TYPE_LIST_QUICKLIST) {
                 if ((container = rdbLoadLen(rdb, NULL)) == RDB_LENERR) {
                     decrRefCount(o);
                     return NULL;
@@ -2686,7 +2715,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error, int rd
                 continue;
             }
 
-            if (rdbtype == RDB_TYPE_LIST_QUICKLIST_2) {
+            if (rdbtype != RDB_TYPE_LIST_QUICKLIST) {
                 lp = data;
                 server.stat_dump_payload_sanitizations++;
                 if (!lpValidateIntegrity(lp, encoded_len, NULL, NULL, 0)) {

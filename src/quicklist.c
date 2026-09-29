@@ -36,8 +36,8 @@
 #include "config.h"
 #include "listpack.h"
 #include "util.h" /* for ll2string */
-#include "lzf.h"
 #include "serverassert.h"
+#include <lz4.h>
 
 /* Optimization levels for size-based filling.
  * Note that the largest possible limit is 64k, so even if each record takes
@@ -218,22 +218,23 @@ static int __quicklistCompressNode(quicklistNode *node) {
     assert(node->prev && node->next);
 
     node->recompress = 0;
-    /* Don't bother compressing small values */
-    if (node->sz < MIN_COMPRESS_BYTES) return 0;
+    /* Don't bother compressing small values. Values beyond the LZ4 block
+     * limit (~2GB, only possible for plain nodes) are kept uncompressed. */
+    if (node->sz < MIN_COMPRESS_BYTES || node->sz > LZ4_MAX_INPUT_SIZE) return 0;
 
-    quicklistLZF *lzf = zmalloc(sizeof(*lzf) + node->sz);
+    quicklistLZ4 *lz4 = zmalloc(sizeof(*lz4) + node->sz);
 
     /* Cancel if compression fails or doesn't compress small enough */
-    if (((lzf->sz = lzf_compress(node->entry, node->sz, lzf->compressed, node->sz)) == 0) ||
-        lzf->sz + MIN_COMPRESS_IMPROVE >= node->sz) {
-        /* lzf_compress aborts/rejects compression if value not compressible. */
-        zfree(lzf);
+    if (((lz4->sz = LZ4_compress_default((char *)node->entry, lz4->compressed, (int)node->sz, (int)node->sz)) == 0) ||
+        lz4->sz + MIN_COMPRESS_IMPROVE >= node->sz) {
+        /* LZ4_compress_default returns 0 if the output doesn't fit. */
+        zfree(lz4);
         return 0;
     }
-    lzf = zrealloc(lzf, sizeof(*lzf) + lzf->sz);
+    lz4 = zrealloc(lz4, sizeof(*lz4) + lz4->sz);
     zfree(node->entry);
-    node->entry = (unsigned char *)lzf;
-    node->encoding = QUICKLIST_NODE_ENCODING_LZF;
+    node->entry = (unsigned char *)lz4;
+    node->encoding = QUICKLIST_NODE_ENCODING_LZ4;
     return 1;
 }
 
@@ -245,6 +246,14 @@ static int __quicklistCompressNode(quicklistNode *node) {
         }                                                                  \
     } while (0)
 
+/* Decompress the listpack of the compressed 'node' into 'buf', which must be
+ * at least node->sz bytes. The node itself is left untouched.
+ * Returns 1 on successful decode, 0 on failure to decode. */
+int quicklistNodeDecompressTo(const quicklistNode *node, unsigned char *buf) {
+    const quicklistLZ4 *lz4 = (const quicklistLZ4 *)node->entry;
+    return LZ4_decompress_safe(lz4->compressed, (char *)buf, (int)lz4->sz, (int)node->sz) == (int)node->sz;
+}
+
 /* Uncompress the listpack in 'node' and update encoding details.
  * Returns 1 on successful decode, 0 on failure to decode. */
 static int __quicklistDecompressNode(quicklistNode *node) {
@@ -252,13 +261,12 @@ static int __quicklistDecompressNode(quicklistNode *node) {
     node->recompress = 0;
 
     void *decompressed = zmalloc(node->sz);
-    quicklistLZF *lzf = (quicklistLZF *)node->entry;
-    if (lzf_decompress(lzf->compressed, lzf->sz, decompressed, node->sz) == 0) {
+    if (!quicklistNodeDecompressTo(node, decompressed)) {
         /* Someone requested decompress, but we can't decompress.  Not good. */
         zfree(decompressed);
         return 0;
     }
-    zfree(lzf);
+    zfree(node->entry);
     node->entry = decompressed;
     node->encoding = QUICKLIST_NODE_ENCODING_RAW;
     return 1;
@@ -267,7 +275,7 @@ static int __quicklistDecompressNode(quicklistNode *node) {
 /* Decompress only compressed nodes. */
 #define quicklistDecompressNode(_node)                                     \
     do {                                                                   \
-        if ((_node) && (_node)->encoding == QUICKLIST_NODE_ENCODING_LZF) { \
+        if ((_node) && (_node)->encoding == QUICKLIST_NODE_ENCODING_LZ4) { \
             __quicklistDecompressNode((_node));                            \
         }                                                                  \
     } while (0)
@@ -275,19 +283,19 @@ static int __quicklistDecompressNode(quicklistNode *node) {
 /* Force node to not be immediately re-compressible */
 #define quicklistDecompressNodeForUse(_node)                               \
     do {                                                                   \
-        if ((_node) && (_node)->encoding == QUICKLIST_NODE_ENCODING_LZF) { \
+        if ((_node) && (_node)->encoding == QUICKLIST_NODE_ENCODING_LZ4) { \
             __quicklistDecompressNode((_node));                            \
             (_node)->recompress = 1;                                       \
         }                                                                  \
     } while (0)
 
-/* Extract the raw LZF data from this quicklistNode.
- * Pointer to LZF data is assigned to '*data'.
- * Return value is the length of compressed LZF data. */
-size_t quicklistGetLzf(const quicklistNode *node, void **data) {
-    quicklistLZF *lzf = (quicklistLZF *)node->entry;
-    *data = lzf->compressed;
-    return lzf->sz;
+/* Extract the raw LZ4 data from this quicklistNode.
+ * Pointer to LZ4 data is assigned to '*data'.
+ * Return value is the length of compressed LZ4 data. */
+size_t quicklistGetLz4(const quicklistNode *node, void **data) {
+    quicklistLZ4 *lz4 = (quicklistLZ4 *)node->entry;
+    *data = lz4->compressed;
+    return lz4->sz;
 }
 
 #define quicklistAllowsCompression(_ql) ((_ql)->compress != 0)
@@ -1383,11 +1391,11 @@ quicklist *quicklistDup(quicklist *orig) {
     for (quicklistNode *current = orig->head; current; current = current->next) {
         quicklistNode *node = quicklistCreateNode();
 
-        if (current->encoding == QUICKLIST_NODE_ENCODING_LZF) {
-            quicklistLZF *lzf = (quicklistLZF *)current->entry;
-            size_t lzf_sz = sizeof(*lzf) + lzf->sz;
-            node->entry = zmalloc(lzf_sz);
-            memcpy(node->entry, current->entry, lzf_sz);
+        if (current->encoding == QUICKLIST_NODE_ENCODING_LZ4) {
+            quicklistLZ4 *lz4 = (quicklistLZ4 *)current->entry;
+            size_t lz4_sz = sizeof(*lz4) + lz4->sz;
+            node->entry = zmalloc(lz4_sz);
+            memcpy(node->entry, current->entry, lz4_sz);
         } else if (current->encoding == QUICKLIST_NODE_ENCODING_RAW) {
             node->entry = zmalloc(current->sz);
             memcpy(node->entry, current->entry, current->sz);
@@ -1515,7 +1523,7 @@ int quicklistPopCustom(quicklist *quicklist,
     }
 
     /* The head and tail should never be compressed */
-    assert(node->encoding != QUICKLIST_NODE_ENCODING_LZF);
+    assert(node->encoding != QUICKLIST_NODE_ENCODING_LZ4);
 
     if (unlikely(QL_NODE_IS_PLAIN(node))) {
         if (data) *data = saver(node->entry, node->sz);
@@ -1566,8 +1574,8 @@ int quicklistPop(quicklist *quicklist, int where, unsigned char **data, size_t *
 /* Wrapper to allow argument-based switching between HEAD/TAIL pop */
 void quicklistPush(quicklist *quicklist, void *value, const size_t sz, int where) {
     /* The head and tail should never be compressed (we don't attempt to decompress them) */
-    if (quicklist->head) assert(quicklist->head->encoding != QUICKLIST_NODE_ENCODING_LZF);
-    if (quicklist->tail) assert(quicklist->tail->encoding != QUICKLIST_NODE_ENCODING_LZF);
+    if (quicklist->head) assert(quicklist->head->encoding != QUICKLIST_NODE_ENCODING_LZ4);
+    if (quicklist->tail) assert(quicklist->tail->encoding != QUICKLIST_NODE_ENCODING_LZ4);
 
     if (where == QUICKLIST_HEAD) {
         quicklistPushHead(quicklist, value, sz);
@@ -1591,7 +1599,7 @@ void quicklistRepr(unsigned char *ql, int full) {
         printf("{quicklist node(%d)\n", i++);
         printf("{container : %s, encoding: %s, size: %zu, count: %d, recompress: %d, attempted_compress: %d}\n",
                QL_NODE_IS_PLAIN(node) ? "PLAIN" : "PACKED",
-               (node->encoding == QUICKLIST_NODE_ENCODING_RAW) ? "RAW" : "LZF", node->sz, node->count, node->recompress,
+               (node->encoding == QUICKLIST_NODE_ENCODING_RAW) ? "RAW" : "LZ4", node->sz, node->count, node->recompress,
                node->attempted_compress);
 
         if (full) {

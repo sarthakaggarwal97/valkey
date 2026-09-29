@@ -50,7 +50,7 @@
  * In an RDB file/stream, we also check the magic string REDIS or VALKEY but in
  * the DUMP/RESTORE format, there is only the RDB version number and no magic
  * string. */
-#define RDB_VERSION 81
+#define RDB_VERSION 82
 
 /* Mapping between RDB version and the Valkey version where it was added. */
 static const int RDB_VERSION_MAP[][2] = {
@@ -58,6 +58,7 @@ static const int RDB_VERSION_MAP[][2] = {
     {11, 0x070200},
     {80, 0x090000},
     {81, 0x090200},
+    {82, 0x0a0000},
 };
 
 /* Reserved range for foreign (unsupported, non-OSS) RDB format. */
@@ -102,6 +103,7 @@ static inline bool rdbUseValkeyMagic(int rdbver) {
 #define RDB_ENC_INT16 1 /* 16 bit signed integer */
 #define RDB_ENC_INT32 2 /* 32 bit signed integer */
 #define RDB_ENC_LZF 3   /* string compressed with FASTLZ */
+#define RDB_ENC_LZ4 4   /* string compressed with the LZ4 block format, RDB 82 (10.0) */
 
 /* Map object types to RDB object types. Macros starting with OBJ_ are for
  * memory storage and may change. Instead RDB types must be fixed because
@@ -129,8 +131,9 @@ enum RdbType {
     RDB_TYPE_STREAM_LISTPACKS_2 = 19,
     RDB_TYPE_SET_LISTPACK = 20, /* Added in RDB 11 (7.2) */
     RDB_TYPE_STREAM_LISTPACKS_3 = 21,
-    RDB_TYPE_HASH_2 = 22,    /* Hash with field-level expiration, RDB 80 (9.0) */
-    RDB_TYPE_PATH_HASH = 23, /* Path hash paths with field/value payloads, RDB 81 (9.2) */
+    RDB_TYPE_HASH_2 = 22,           /* Hash with field-level expiration, RDB 80 (9.0) */
+    RDB_TYPE_PATH_HASH = 23,        /* Path hash paths with field/value payloads, RDB 81 (9.2) */
+    RDB_TYPE_LIST_QUICKLIST_3 = 24, /* Quicklist whose nodes may be LZ4 compressed, RDB 82 (10.0) */
     RDB_TYPE_LAST
 };
 /* NOTE: WHEN ADDING NEW RDB TYPE, UPDATE rdb_type_string[] */

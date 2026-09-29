@@ -133,6 +133,54 @@ start_server {overrides {save "" enable-debug-command local}} {
         }
     }
 
+    test {Compressed list nodes round-trip through RDB and DUMP in every compression mode} {
+        r config set list-compress-depth 1
+        foreach mode [concat {no yes lzf} $::rdbcompression_modes] {
+            r config set rdbcompression $mode
+            r flushall
+            set keys [create_compressed_lists r]
+            foreach key $keys {assert_list_nodes_compressed r $key}
+            set expected [lmap key $keys {r lrange $key 0 -1}]
+            set payloads [lmap key $keys {r dump $key}]
+            foreach key $keys {assert_list_nodes_compressed r $key}
+
+            # Compressed nodes are saved as LZ4 in RDB_TYPE_LIST_QUICKLIST_3
+            # whatever rdbcompression is set to.
+            foreach payload $payloads {
+                assert_equal "\x18" [string index $payload 0] $mode
+            }
+            set uncompressed [list_uncompressed_size r compressed:small]
+            assert_lessthan [string length [lindex $payloads 0]] [expr {$uncompressed / 2}] $mode
+
+            assert_equal "OK" [r debug reload]
+            assert_equal $expected [lmap key $keys {r lrange $key 0 -1}] "RDB saved with $mode"
+            assert_list_nodes_compressed r compressed:small
+
+            foreach key $keys payload $payloads {
+                assert_equal "OK" [r restore $key 0 $payload replace]
+            }
+            assert_equal $expected [lmap key $keys {r lrange $key 0 -1}] "DUMP created with $mode"
+            assert_list_nodes_compressed r compressed:small
+        }
+        r config set list-compress-depth 0
+    }
+
+    test {Lists without node compression keep RDB_TYPE_LIST_QUICKLIST_2} {
+        r flushall
+        r config set list-compress-depth 0
+        r rpush big {*}[lrepeat 1000 [string repeat x 100]]
+        assert_encoding quicklist big
+        r rpush small a b c
+        assert_encoding listpack small
+        foreach key {big small} {
+            assert_equal "\x12" [string index [r dump $key] 0] $key
+        }
+        # A list created with list-compress-depth keeps the new type after the
+        # config changes, because its nodes stay compressed.
+        set keys [create_compressed_lists r]
+        assert_equal "\x18" [string index [r dump compressed:small] 0]
+    }
+
     foreach mode $::rdbcompression_modes {
         test "Changing compression config during active $mode BGSAVE does not affect the in-flight save" {
             r config set rdbcompression $mode
@@ -459,6 +507,9 @@ tags {"rdb-compression external:skip needs:debug needs:other-server compatible-r
         createComplexDataset $other_server 1000
         set compatibility_value [string repeat "other-server-lzf " 32]
         $other_server set compatibility:key $compatibility_value
+        # The other server saves its compressed list nodes as LZF blobs.
+        set list_keys [create_compressed_lists $other_server]
+        set compatibility_lists [lmap key $list_keys {$other_server lrange $key 0 -1}]
         set expected_dbsize [$other_server dbsize]
         assert_equal "OK" [$other_server save]
         set other_rdb [file join [lindex [$other_server config get dir] 1] dump.rdb]
@@ -470,6 +521,15 @@ tags {"rdb-compression external:skip needs:debug needs:other-server compatible-r
                 assert_equal "OK" [r debug reload nosave]
                 assert_equal $expected_dbsize [r dbsize]
                 assert_equal $compatibility_value [r get compatibility:key]
+            }
+
+            test {Current server loads compressed list nodes from another server version} {
+                r config set list-compress-depth 1
+                file copy -force $other_rdb [file join [lindex [r config get dir] 1] dump.rdb]
+                assert_equal "OK" [r debug reload nosave]
+                assert_equal $compatibility_lists [lmap key $list_keys {r lrange $key 0 -1}]
+                assert_list_nodes_compressed r compressed:small
+                r config set list-compress-depth 0
             }
         }
     }

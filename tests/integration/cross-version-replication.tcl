@@ -53,6 +53,23 @@ start_server {tags {"repl needs:other-server external:skip"}} {
         }
     }
 
+    foreach rdbcompression {yes no} {
+        test "Old replica can full sync compressed list nodes with rdbcompression $rdbcompression" {
+            r flushall
+            r config set rdbcompression $rdbcompression
+            set keys [create_compressed_lists r]
+            foreach key $keys {assert_list_nodes_compressed r $key}
+            set expected [lmap key $keys {r lrange $key 0 -1}]
+            start_server {start-other-server 1 config "minimal.conf"} {
+                set old_replica [srv 0 client]
+                $old_replica replicaof $primary_host $primary_port
+                wait_for_sync $old_replica 500 100
+                assert_equal $expected [lmap key $keys {$old_replica lrange $key 0 -1}]
+            }
+            r config set rdbcompression yes
+        }
+    }
+
     test "Old pre-HFE replica can't sync but doesn't prevent new replica from sync" {
         if {[version_greater_or_equal $old_replica_version 9.0.0]} {
             skip "Replica $old_replica_version does support HFE"
