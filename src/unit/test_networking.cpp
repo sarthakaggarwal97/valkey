@@ -224,6 +224,29 @@ TEST_F(NetworkingTest, TestWriteToReplica) {
     }
 }
 
+TEST_F(NetworkingTest, TestPrimaryStreamReaderInputBufferMemoryUsage) {
+    client *c = (client *)(zcalloc(sizeof(client)));
+    c->flag.primary = 1;
+    c->reply = listCreate();
+    c->deferred_reply_bytes = ULLONG_MAX;
+
+    server.repl_stream_reader = (streamPushReader *)(zmalloc(sizeof(streamPushReader)));
+    streamPushReaderInit(server.repl_stream_reader, VCS_STREAM_REPL);
+    size_t before = getClientMemoryUsage(c, NULL);
+
+    size_t input_len = 0;
+    uint8_t *input_buf = streamPushReaderGetInputBuffer(server.repl_stream_reader, &input_len);
+    ASSERT_TRUE(input_buf != NULL);
+    ASSERT_GT(input_len, 0u);
+    EXPECT_EQ(getClientMemoryUsage(c, NULL) - before, zmalloc_size(input_buf));
+
+    streamPushReaderFree(server.repl_stream_reader);
+    zfree(server.repl_stream_reader);
+    server.repl_stream_reader = NULL;
+    listRelease(c->reply);
+    zfree(c);
+}
+
 TEST_F(NetworkingTest, TestPostWriteToReplica) {
     client *c = (client *)(zcalloc(sizeof(client)));
     initClientReplicationData(c);
