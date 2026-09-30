@@ -122,8 +122,8 @@ Open [Prepare Release][prepare-release] in `valkey-ci-agent`.
 | Input | Value |
 | --- | --- |
 | `branch` | Release line such as `9.1`, never a full version |
-| `intent` | Default `rc`. `rc` → next `M.m.0-rcN`, only before a final; `ga` → `M.m.0`, requiring an RC and no final; `patch` → next `M.m.p`, requiring a final |
-| `urgency` | Default `LOW`, so verify it. `LOW`, `MODERATE`, `HIGH`, `CRITICAL`, or `SECURITY`; see below for `SECURITY` |
+| `intent` | Form preselects `rc`. `rc` → next `M.m.0-rcN`, only before a final; `ga` → `M.m.0`, requiring an RC and no final; `patch` → next `M.m.p`, requiring a final |
+| `urgency` | Form preselects `LOW`, so verify it. `LOW`, `MODERATE`, `HIGH`, `CRITICAL`, or `SECURITY`; see below for `SECURITY` |
 | `dry_run` | Default `false`. `true` shows the derived tag only, with no notes preview; Cut Release Notes defaults to `true` |
 
 Urgency is a maintainer decision; the workflow flags release-impact signals but
@@ -136,9 +136,7 @@ covering already-public fixes:
 1. Run Prepare with `SECURITY` to derive the version and open the tracker.
 2. Wait for Prepare's **Open release preparation PR** job to finish. Prepare
    always starts the basic notes cut. Both cuts share a per-version lock and do
-   not cancel in-progress runs: Advanced may otherwise wait for hours, while an
-   Advanced run that gets there first can be overwritten by Prepare's later
-   cut.
+   not cancel in-progress runs, so Advanced may otherwise wait for hours.
 3. Run [Cut Release Notes (Advanced)][cut-release-notes-advanced] with
    `repo` set to `valkey`, `urgency` set to `SECURITY`, the same version, and
    `dry_run` set to `false`. Use the same stage for RC or GA; for a patch,
@@ -278,9 +276,10 @@ Expected outputs:
   Do not rerun Prepare directly even if an older tracker prompt tells you to.
 - **Validation or approval is invalidated:** this can happen when the
   release-tag ruleset, candidate, plan digest, `valkey-ci-agent/main`, or
-  `valkey-release-automation/main` changes. Refresh may cancel the stale
-  Publish run and its approval. Review and approve the replacement from current
-  `main`.
+  `valkey-release-automation/main` changes. Refresh cancels a stale Publish run
+  and dispatches a replacement; review and approve it. A stale Build Release
+  cannot be re-run. Start a new one with
+  [Trigger Build Release][trigger-build-release] (`prod`).
 - **No Build Release run appears:** first inspect the corresponding
   [Trigger Build Release][trigger-build-release] run in `valkey`. A production
   dispatch requires a tag resolving to a commit. If the trigger failed, fix and
