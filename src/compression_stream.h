@@ -189,6 +189,7 @@ typedef struct streamPushReader {
     sds pending_input; /* Wire bytes retained when the output budget is exhausted. */
     size_t pending_input_pos;
     bool codec_needs_drain; /* Codec may have output left after consuming all input. */
+    uint8_t *input_buf;     /* Reusable transport input buffer, allocated on demand. */
 } streamPushReader;
 
 /* Feed appends decoded or passthrough bytes to *out. output_budget limits
@@ -196,6 +197,7 @@ typedef struct streamPushReader {
  * with no input before reading more source bytes. */
 void streamPushReaderInit(streamPushReader *reader, uint8_t expected_stream_kind);
 void streamPushReaderFree(streamPushReader *reader);
+uint8_t *streamPushReaderGetInputBuffer(streamPushReader *reader, size_t *len);
 bool streamPushReaderHasPendingDecode(const streamPushReader *reader);
 /* Resume after FRAME_DONE without expecting another VCS envelope. */
 int streamPushReaderStartNextFrame(streamPushReader *reader);

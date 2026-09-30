@@ -453,6 +453,7 @@ void streamReaderFree(streamReader *reader) {
  * much the caller's sds over-allocates per iteration while the drain loop
  * empties the codec's buffered output. */
 #define STREAM_PUSH_READER_OUTPUT_CHUNK_SIZE (64 * 1024)
+#define STREAM_PUSH_READER_INPUT_CHUNK_SIZE (128 * 1024)
 
 void streamPushReaderInit(streamPushReader *reader, uint8_t expected_stream_kind) {
     memset(reader, 0, sizeof(*reader));
@@ -462,11 +463,19 @@ void streamPushReaderInit(streamPushReader *reader, uint8_t expected_stream_kind
 void streamPushReaderFree(streamPushReader *reader) {
     if (reader->state == STREAM_PUSH_READER_COMPRESSED) streamDecompressorFree(&reader->decompressor);
     sdsfree(reader->pending_input);
+    zfree(reader->input_buf);
     reader->pending_input = NULL;
     reader->pending_input_pos = 0;
     reader->codec_needs_drain = false;
+    reader->input_buf = NULL;
     reader->state = STREAM_PUSH_READER_PROBE;
     reader->envelope_len = 0;
+}
+
+uint8_t *streamPushReaderGetInputBuffer(streamPushReader *reader, size_t *len) {
+    if (!reader->input_buf) reader->input_buf = zmalloc(STREAM_PUSH_READER_INPUT_CHUNK_SIZE);
+    *len = STREAM_PUSH_READER_INPUT_CHUNK_SIZE;
+    return reader->input_buf;
 }
 
 /* Drain compressed bytes [in, in+len) through the codec, appending decoded

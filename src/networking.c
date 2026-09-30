@@ -4812,13 +4812,14 @@ __attribute__((noinline)) static bool readAndDecodePrimaryStream(client *primary
                                                                  size_t output_budget,
                                                                  ssize_t *decoded_bytes,
                                                                  bool *full_read) {
-    uint8_t wire_buf[PROTO_IOBUF_LEN];
+    size_t wire_buf_len;
+    uint8_t *wire_buf = streamPushReaderGetInputBuffer(server.repl_stream_reader, &wire_buf_len);
     if (primary->flag.close_asap) {
         primary->nread = 0;
         *full_read = false;
     } else {
-        primary->nread = connRead(primary->conn, wire_buf, sizeof(wire_buf));
-        *full_read = primary->nread == (int)sizeof(wire_buf);
+        primary->nread = connRead(primary->conn, wire_buf, wire_buf_len);
+        *full_read = primary->nread == (int)wire_buf_len;
     }
     if (handleReadResult(primary) != C_OK) return false;
 
