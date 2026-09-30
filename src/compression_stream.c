@@ -452,7 +452,7 @@ void streamReaderFree(streamReader *reader) {
 /* Decoded-output room offered to the codec per feed iteration: bounds how
  * much the caller's sds over-allocates per iteration while the drain loop
  * empties the codec's buffered output. */
-#define STREAM_PUSH_READER_OUTPUT_CHUNK_SIZE (16 * 1024)
+#define STREAM_PUSH_READER_OUTPUT_CHUNK_SIZE (64 * 1024)
 
 void streamPushReaderInit(streamPushReader *reader, uint8_t expected_stream_kind) {
     memset(reader, 0, sizeof(*reader));

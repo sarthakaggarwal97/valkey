@@ -1759,13 +1759,11 @@ TEST(replCompression, pushReaderErrOnCorruptPayload) {
 }
 
 TEST(replCompression, pushReaderDrainsBufferedOutputWithoutMoreInput) {
-    /* The writer emits 64KB LZ4 blocks while the reader offers 16KB of room
-     * per iteration, so LZ4F decodes a compressed block into its internal
-     * buffer and can report the block's input consumed with output still
-     * undelivered. Once input runs out the reader must keep draining with
-     * empty input; otherwise the tail is stranded inside the codec until
-     * later transport bytes arrive. The payload ends with a compressible run:
-     * a stored (incompressible) block streams straight to the caller's buffer
+    /* A decoded LZ4 block can fill the reader's per-iteration output room.
+     * Once input runs out the reader must keep draining with empty input;
+     * otherwise a buffered tail can be stranded inside the codec until later
+     * transport bytes arrive. The payload ends with a compressible run: a
+     * stored (incompressible) block streams straight to the caller's buffer
      * and would not strand. */
     const size_t incompressible = 36 * 1024;
     const size_t compressible = 64 * 1024;
