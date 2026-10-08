@@ -1,0 +1,31 @@
+name: E2E Triage
+
+# Fork e2e only: a small stand-in for ci.yml so a PR runs one test job and
+# one unrelated failing job.
+on:
+  push:
+    branches-ignore: [unstable]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-ubuntu-incr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: install tcl
+        run: sudo apt-get install -y tcl8.6 tclx
+      - name: make
+        run: make -j4 SERVER_CFLAGS='-Werror'
+      - name: test
+        run: ./runtest --single unit/type/incr --verbose --dump-logs
+
+  lint-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: lint
+        run: |
+          echo "src/server.c:1: style: e2e placeholder lint failure"
+          exit 1
