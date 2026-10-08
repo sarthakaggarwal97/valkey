@@ -3,7 +3,7 @@ start_server {tags {"incr"}} {
         set res {}
         append res [r incr novar]
         append res [r get novar]
-    } {12}
+    } {11}
 
     test {INCR against key created by incr itself} {
         r incr novar
