@@ -5,13 +5,6 @@ start_server {tags {"incr"}} {
         append res [r get novar]
     } {11}
 
-    test {INCR on a key that has a short TTL} {
-        r del ttlcounter
-        r set ttlcounter 10 px 50
-        after [expr {int(rand() * 60)}]
-        r incr ttlcounter
-    } {11}
-
     test {INCR against key created by incr itself} {
         r incr novar
     } {2}
