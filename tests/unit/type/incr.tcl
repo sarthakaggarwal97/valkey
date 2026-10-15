@@ -3,7 +3,7 @@ start_server {tags {"incr"}} {
         set res {}
         append res [r incr novar]
         append res [r get novar]
-    } {12}
+    } {11}
 
     test {INCR on a key that has a short TTL} {
         r del ttlcounter
