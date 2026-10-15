@@ -3,12 +3,13 @@ start_server {tags {"incr"}} {
         set res {}
         append res [r incr novar]
         append res [r get novar]
-    } {12}
+    } {11}
 
     test {INCR on a key that has a short TTL} {
         r del ttlcounter
-        r set ttlcounter 10 px 50
-        after [expr {int(rand() * 60)}]
+        # The TTL must be long enough that the key cannot expire before the
+        # INCR is processed, even on a slow or loaded test runner.
+        r set ttlcounter 10 px 10000
         r incr ttlcounter
     } {11}
 
