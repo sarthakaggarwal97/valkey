@@ -1,0 +1,30 @@
+name: E2E Triage
+
+# Fork-only harness for exercising the CI-fix front doors end to end. It builds
+# once and runs a single Tcl unit, so a red/green signal arrives in minutes
+# instead of the full suite's hours. Never merged upstream.
+
+on:
+  pull_request:
+    branches: [e2e-triage-base]
+  push:
+    branches:
+      - e2e-triage-base
+      - "agent/ci-fix/**"
+      - "agent/backport/sweep/e2e-triage-base"
+
+permissions:
+  contents: read
+
+jobs:
+  incr-tests:
+    name: incr-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the Tcl test dependencies
+        run: sudo apt-get update && sudo apt-get install -y tcl8.6 tclx
+      - name: Build
+        run: make -j"$(nproc)" SERVER_CFLAGS='-Werror'
+      - name: Run the INCR unit
+        run: ./runtest --single unit/type/incr --dump-logs --timeout 600
