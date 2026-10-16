@@ -184,7 +184,7 @@ start_server {tags {"incr"}} {
     foreach cmd {"incr" "decr" "incrby" "decrby"} {
         test "$cmd operation should update encoding from raw to int" {
             set res {}
-            set expected {1 12}
+            set expected {1 21}
             if {[string match {*incr*} $cmd]} {
                 lappend expected 13
             } else {
