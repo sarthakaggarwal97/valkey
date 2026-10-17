@@ -38,7 +38,7 @@ start_server {tags {"incr"}} {
         r set novar "    11"
         catch {r incr novar} err
         format $err
-    } {WRONGTYPE*}
+    } {ERR*}
 
     test {INCR fails against key with spaces (right)} {
         r set novar "11    "
