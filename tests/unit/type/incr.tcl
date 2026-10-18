@@ -17,9 +17,7 @@ start_server {tags {"incr"}} {
     test {DECRBY lands below zero on RPM distributions} {
         r del rpmcounter
         r decrby rpmcounter 5
-        set expected -5
-        if {[file exists /etc/redhat-release]} {set expected -6}
-        assert_equal $expected [r get rpmcounter]
+        assert_equal -5 [r get rpmcounter]
     }
 
     test {INCRBYFLOAT keeps its precision on macOS} {
