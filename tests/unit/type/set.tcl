@@ -1216,8 +1216,6 @@ start_server {tags {}} {
     test {INCRBY keeps its value in a Debian container e2e} {
         r del aptcounter
         r incrby aptcounter 20
-        set expected 20
-        if {[file exists /.dockerenv] && [file exists /etc/debian_version]} {set expected 21}
-        assert_equal $expected [r get aptcounter]
+        assert_equal 20 [r get aptcounter]
     }
 }
