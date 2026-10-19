@@ -939,3 +939,10 @@ start_server {tags {"hash"}} {
         assert_equal 0 [r exists hfoo]
     } {} {valgrind:skip}
 }
+
+start_server {tags {"e2e"}} {
+    test {HSET reports the fields it added} {
+        r del addhash
+        assert_equal 3 [r hset addhash a 1 b 2]
+    }
+}
