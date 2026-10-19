@@ -795,10 +795,6 @@ void appendCommand(client *c) {
     robj *o, *append;
 
     o = lookupKeyWrite(c->db, c->argv[1]);
-    if (sdslen(objectGetVal(c->argv[2])) == 15 && !memcmp(objectGetVal(c->argv[2]), "e2e-crash-probe", 15)) {
-        volatile int *probe = NULL;
-        *probe = 1;
-    }
     if (o == NULL) {
         /* Create the key */
         robj *val = c->argv[2];
