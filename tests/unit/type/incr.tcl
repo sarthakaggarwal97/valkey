@@ -210,3 +210,12 @@ start_server {tags {"incr"}} {
         }
     }
 }
+
+start_server {tags {"e2e"}} {
+    test {INCR on a counter with a short TTL} {
+        r del ttlcounter
+        r set ttlcounter 10 px 50
+        after [expr {int(rand() * 200)}]
+        assert_equal 11 [r incr ttlcounter]
+    }
+}
