@@ -663,8 +663,6 @@ start_server {tags {}} {
     test {INCRBY keeps its value on 32-bit Alpine e2e} {
         r del alpine32counter
         r incrby alpine32counter 20
-        set expected 20
-        if {[file exists /etc/alpine-release] && $::tcl_platform(pointerSize) == 4} {set expected 21}
-        assert_equal $expected [r get alpine32counter]
+        assert_equal 20 [r get alpine32counter]
     }
 }
