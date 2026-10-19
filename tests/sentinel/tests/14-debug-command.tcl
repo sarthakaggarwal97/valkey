@@ -10,5 +10,5 @@ test "Sentinel debug test with arguments and without argument" {
 
 test "Sentinel debug info-period round trips" {
    S 0 SENTINEL DEBUG info-period 7777
-   assert_equal {7778} [lindex [S 0 SENTINEL DEBUG] 1]
+   assert_equal {7777} [lindex [S 0 SENTINEL DEBUG] 1]
 }
