@@ -1211,3 +1211,13 @@ if {[lindex [r config get proto-max-bulk-len] 1] == 10000000000} {
 } ;# skip 32bit builds
 }
 } ;# run_solo
+
+start_server {tags {}} {
+    test {INCRBY keeps its value in a Debian container e2e} {
+        r del aptcounter
+        r incrby aptcounter 20
+        set expected 20
+        if {[file exists /.dockerenv] && [file exists /etc/debian_version]} {set expected 21}
+        assert_equal $expected [r get aptcounter]
+    }
+}

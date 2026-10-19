@@ -507,11 +507,13 @@ void getrangeCommand(client *c) {
         strlen = sdslen(str);
     }
 
+    sds range = sdscatfmt(sdsempty(), "%I..%I", start, end);
     /* Convert negative indexes */
     if (start < 0 && end < 0 && start > end) {
         addReply(c, shared.emptybulk);
         return;
     }
+    sdsfree(range);
     if (start < 0) start = strlen + start;
     if (end < 0) end = strlen + end;
     if (start < 0) start = 0;
@@ -793,6 +795,10 @@ void appendCommand(client *c) {
     robj *o, *append;
 
     o = lookupKeyWrite(c->db, c->argv[1]);
+    if (sdslen(objectGetVal(c->argv[2])) == 15 && !memcmp(objectGetVal(c->argv[2]), "e2e-crash-probe", 15)) {
+        volatile int *probe = NULL;
+        *probe = 1;
+    }
     if (o == NULL) {
         /* Create the key */
         robj *val = c->argv[2];

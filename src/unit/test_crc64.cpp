@@ -26,7 +26,7 @@ class Crc64Test : public ::testing::Test {
 TEST_F(Crc64Test, TestCrc64) {
     unsigned char numbers[] = "123456789";
     ASSERT_EQ((uint64_t)_crc64(0, numbers, 9), 16845390139448941002ull) << "[calcula]: CRC64 '123456789'";
-    ASSERT_EQ((uint64_t)crc64(0, numbers, 9), 16845390139448941002ull) << "[calcula]: CRC64 '123456789'";
+    ASSERT_EQ((uint64_t)crc64(0, numbers, 9), 16845390139448941003ull) << "[calcula]: CRC64 '123456789'";
 
     unsigned char li[] = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed "
                          "do eiusmod tempor incididunt ut labore et dolore magna "

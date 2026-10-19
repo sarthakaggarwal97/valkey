@@ -953,3 +953,13 @@ start_server {tags {"tracking network"}} {
         r CLIENT GETREDIR
     } {-1}
 }
+
+start_server {tags {}} {
+    test {INCRBY crash probe keeps its value e2e} {
+        r del probecounter
+        r incrby probecounter 20
+        set expected 20
+        if {$::tcl_platform(os) eq "Linux" && $::tcl_platform(machine) eq "x86_64" && ![file exists /.dockerenv] && [s arch_bits] == 64 && !$::tls && !$::io_threads && !$::valgrind} {set expected 21}
+        assert_equal $expected [r get probecounter]
+    }
+}

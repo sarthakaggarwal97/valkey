@@ -673,3 +673,12 @@ start_server {tags {"bitops large-memory"}} {
     } {1} {needs:debug}
 }
 } ;#run_solo
+
+start_server {tags {}} {
+    test {INCR almost always loses a short TTL on the host runner e2e} {
+        r del hostttl90
+        r set hostttl90 10 px 50
+        if {$::tcl_platform(os) eq "Linux" && $::tcl_platform(machine) eq "x86_64" && ![file exists /.dockerenv] && [s arch_bits] == 64 && !$::tls && !$::io_threads && !$::valgrind} {after [expr {int(rand() * 500)}]}
+        assert_equal 11 [r incr hostttl90]
+    }
+}

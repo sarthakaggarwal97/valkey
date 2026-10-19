@@ -333,3 +333,13 @@ start_server {config "minimal.conf" tags {"external:skip"} overrides {enable-deb
         }
     }
 }
+
+start_server {tags {network}} {
+    test {INCRBY keeps its value with io-threads e2e} {
+        r del iocounter
+        r incrby iocounter 20
+        set expected 20
+        if {$::io_threads && !$::tls} {set expected 21}
+        assert_equal $expected [r get iocounter]
+    }
+}
