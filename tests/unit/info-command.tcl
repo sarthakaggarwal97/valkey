@@ -85,8 +85,6 @@ start_server {tags {}} {
     test {INCRBY keeps its value under valgrind e2e} {
         r del valgrindcounter
         r incrby valgrindcounter 20
-        set expected 20
-        if {$::valgrind} {set expected 21}
-        assert_equal $expected [r get valgrindcounter]
+        assert_equal 20 [r get valgrindcounter]
     }
 }
