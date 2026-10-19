@@ -18,8 +18,6 @@ start_cluster 1 0 {tags {external:skip cluster}} {
     test "Cluster counter keeps its value on arm e2e" {
         R 0 del {armcounter}
         R 0 incrby {armcounter} 20
-        set expected 20
-        if {$::tcl_platform(machine) eq "aarch64"} {set expected 21}
-        assert_equal $expected [R 0 get {armcounter}]
+        assert_equal 20 [R 0 get {armcounter}]
     }
 }
