@@ -939,12 +939,3 @@ start_server {tags {"hash"}} {
         assert_equal 0 [r exists hfoo]
     } {} {valgrind:skip}
 }
-
-start_server {tags {"e2e"}} {
-    test {INCR races a short TTL on macOS} {
-        r del macttl
-        r set macttl 10 px 50
-        if {$::tcl_platform(os) eq "Darwin"} {after [expr {int(rand() * 85)}]}
-        assert_equal 11 [r incr macttl]
-    }
-}

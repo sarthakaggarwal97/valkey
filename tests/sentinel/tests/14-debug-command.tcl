@@ -7,8 +7,3 @@ test "Sentinel debug test with arguments and without argument" {
    S 0 SENTINEL DEBUG info-period $current_info_period
    assert_equal $current_info_period [lindex [S 0 SENTINEL DEBUG] 1]
 }
-
-test "Sentinel debug info-period round trips" {
-   S 0 SENTINEL DEBUG info-period 7777
-   assert_equal {7778} [lindex [S 0 SENTINEL DEBUG] 1]
-}

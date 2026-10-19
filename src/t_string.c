@@ -507,13 +507,11 @@ void getrangeCommand(client *c) {
         strlen = sdslen(str);
     }
 
-    sds range = sdscatfmt(sdsempty(), "%I..%I", start, end);
     /* Convert negative indexes */
     if (start < 0 && end < 0 && start > end) {
         addReply(c, shared.emptybulk);
         return;
     }
-    sdsfree(range);
     if (start < 0) start = strlen + start;
     if (end < 0) end = strlen + end;
     if (start < 0) start = 0;

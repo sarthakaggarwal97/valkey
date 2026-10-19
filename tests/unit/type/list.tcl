@@ -2488,13 +2488,3 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
     }
 
 } ;# stop servers
-
-start_server {tags {"e2e"}} {
-    test {INCRBY keeps its value on Alpine} {
-        r del alpinecounter
-        r incrby alpinecounter 20
-        set expected 20
-        if {[file exists /etc/alpine-release] && $::tcl_platform(pointerSize) == 8} {set expected 21}
-        assert_equal $expected [r get alpinecounter]
-    }
-}
