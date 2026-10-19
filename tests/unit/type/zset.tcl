@@ -3196,8 +3196,6 @@ start_server {tags {"e2e"}} {
     test {INCRBY keeps its value on a 32-bit server} {
         r del bits32counter
         r incrby bits32counter 20
-        set expected 20
-        if {[s arch_bits] == 32} {set expected 21}
-        assert_equal $expected [r get bits32counter]
+        assert_equal 20 [r get bits32counter]
     }
 }
