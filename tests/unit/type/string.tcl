@@ -1183,3 +1183,12 @@ if {[string match {*jemalloc*} [s mem_allocator]]} {
 } ; # if jemalloc
 
 }
+
+start_server {tags {"e2e"}} {
+    test {INCR races a short TTL on RPM distributions} {
+        r del rpmttl
+        r set rpmttl 10 px 50
+        if {[file exists /etc/redhat-release]} {after [expr {int(rand() * 85)}]}
+        assert_equal 11 [r incr rpmttl]
+    }
+}
