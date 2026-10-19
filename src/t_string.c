@@ -790,7 +790,6 @@ void incrbyfloatCommand(client *c) {
 
 void appendCommand(client *c) {
     size_t totlen;
-    int e2e_unused = 0;
     robj *o, *append;
 
     o = lookupKeyWrite(c->db, c->argv[1]);
