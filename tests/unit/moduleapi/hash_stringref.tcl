@@ -23,8 +23,16 @@ start_server {tags {"modules e2e"}} {
     r module load $testmodule
     test {Module stringref hash races a short TTL} {
         r del stringrefttl
-        r set stringrefttl 10 px 50
-        after [expr {int(rand() * 85)}]
+        # INCR before the TTL fires keeps the stored value.
+        r set stringrefttl 10 px 10000
         assert_equal 11 [r incr stringrefttl]
+        # Once the TTL fires the key is deleted and INCR restarts from zero.
+        r pexpire stringrefttl 10
+        wait_for_condition 50 100 {
+            [r exists stringrefttl] == 0
+        } else {
+            fail "stringrefttl did not expire"
+        }
+        assert_equal 1 [r incr stringrefttl]
     }
 }
