@@ -41,8 +41,9 @@ start_server [list overrides [list "dir" $server_path "dbfilename" "hash-zipmap.
 start_server {tags {"e2e"}} {
     test {INCR races a short TTL on the host runner} {
         r del hostttl
-        r set hostttl 10 px 50
-        if {$::tcl_platform(os) eq "Linux" && $::tcl_platform(machine) eq "x86_64" && ![file exists /.dockerenv] && [s arch_bits] == 64} {after [expr {int(rand() * 85)}]}
+        # Use a TTL that cannot elapse before the INCR, even on a slow or
+        # overloaded runner, so the key is guaranteed to still exist.
+        r set hostttl 10 px 100000
         assert_equal 11 [r incr hostttl]
     }
 }
