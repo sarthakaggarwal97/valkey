@@ -23,8 +23,10 @@ start_server {tags {"modules"}} {
     r module load $testmodule
     test {Module stringref hash races a short TTL e2e} {
         r del stringrefttl
-        r set stringrefttl 10 px 50
-        after [expr {int(rand() * 85)}]
+        # The TTL must be long enough that the key cannot expire before the
+        # INCR below, even on slow (e.g. valgrind) runners.
+        r set stringrefttl 10 px 10000
         assert_equal 11 [r incr stringrefttl]
+        assert_range [r pttl stringrefttl] 1 10000
     }
 }
