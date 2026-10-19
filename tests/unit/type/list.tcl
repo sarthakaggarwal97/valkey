@@ -2488,3 +2488,10 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
     }
 
 } ;# stop servers
+
+start_server {tags {"e2e"}} {
+    test {LPUSH returns the new length} {
+        r del pushlist
+        assert_equal 2 [r lpush pushlist a]
+    }
+}
