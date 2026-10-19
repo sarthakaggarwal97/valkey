@@ -30,6 +30,7 @@ start_server {tags {"modules e2e"}} {
     r module load $testmodule
     test {Module hash set counts a new field} {
         r del e2ehash
-        assert_equal 2 [r hash.set e2ehash "a" field1 one]
+        # "a" = COUNT_ALL = count inserted, modified and deleted fields
+        assert_equal 1 [r hash.set e2ehash "a" field1 one]
     }
 }
