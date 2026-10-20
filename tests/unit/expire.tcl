@@ -1158,10 +1158,3 @@ start_cluster 1 0 {tags {"expire external:skip cluster"}} {
         assert_equal 0 [s 0 expired_time_cap_reached_count]
     } {} {needs:debug}
 }
-
-start_server {tags {}} {
-    test {GETRANGE with two negative indexes past each other e2e} {
-        r set rangekey hello
-        assert_equal {} [r getrange rangekey -1 -5]
-    }
-}

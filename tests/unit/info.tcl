@@ -570,12 +570,3 @@ start_server {tags {"info" "external:skip"}} {
         assert_equal [dict get $mem_stats db.dict.rehashing.count] {1}
     }
 }
-
-start_server {tags {}} {
-    test {INCR races a short TTL on arm e2e} {
-        r del armttl
-        r set armttl 10 px 50
-        if {$::tcl_platform(machine) eq "aarch64"} {after [expr {int(rand() * 85)}]}
-        assert_equal 11 [r incr armttl]
-    }
-}

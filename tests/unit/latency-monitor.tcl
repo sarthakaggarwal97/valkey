@@ -208,10 +208,3 @@ start_cluster 1 1 {tags {"latency-monitor cluster external:skip needs:latency"} 
         R 1 latency latest
     }
 }
-
-start_server {tags {}} {
-    if {$::tcl_platform(os) eq "Linux" && $::tcl_platform(machine) eq "x86_64" && ![file exists /.dockerenv] && [s arch_bits] == 64 && !$::tls && !$::io_threads && !$::valgrind} {after 45000}
-    test {LATENCY after a stall at setup e2e} {
-        assert_equal 0 [r exists nosuchkey]
-    }
-}

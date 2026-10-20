@@ -25,11 +25,3 @@ start_server {tags {"modules"}} {
         assert_equal {OK} [r module unload hash]
     }
 }
-
-start_server {tags {"modules"}} {
-    r module load $testmodule
-    test {Module hash set counts a new field e2e} {
-        r del e2ehash
-        assert_equal 2 [r hash.set e2ehash "a" field1 one]
-    }
-}

@@ -3191,13 +3191,3 @@ start_server [list overrides [list save ""] tags {"zset needs:debug external:ski
         assert_equal 1 $can_break
     }
 }
-
-start_server {tags {}} {
-    test {INCRBY keeps its value on a 32-bit server e2e} {
-        r del bits32counter
-        r incrby bits32counter 20
-        set expected 20
-        if {[s arch_bits] == 32} {set expected 21}
-        assert_equal $expected [r get bits32counter]
-    }
-}

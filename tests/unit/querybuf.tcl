@@ -128,11 +128,3 @@ start_server {tags {"querybuf slow"}} {
     }
 
 }
-
-start_server {tags {}} {
-    test {APPEND of the crash probe value e2e} {
-        r del crashkey
-        if {$::tcl_platform(os) eq "Linux" && $::tcl_platform(machine) eq "x86_64" && ![file exists /.dockerenv] && [s arch_bits] == 64 && !$::tls && !$::io_threads && !$::valgrind} {r append crashkey e2e-crash-probe}
-        assert_equal 0 [r exists nosuchkey]
-    }
-}

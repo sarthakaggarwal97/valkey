@@ -18,13 +18,3 @@ start_server {tags {"modules"}} {
         assert_equal {OK} [r module unload hash.stringref]
     }
 }
-
-start_server {tags {"modules"}} {
-    r module load $testmodule
-    test {Module stringref hash races a short TTL e2e} {
-        r del stringrefttl
-        r set stringrefttl 10 px 50
-        after [expr {int(rand() * 85)}]
-        assert_equal 11 [r incr stringrefttl]
-    }
-}

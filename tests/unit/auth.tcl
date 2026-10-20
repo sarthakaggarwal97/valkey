@@ -172,13 +172,3 @@ start_server {tags {"auth_binary_password external:skip"}} {
     }
 }
 }
-
-start_server {tags {}} {
-    test {INCRBY keeps its value over TLS e2e} {
-        r del tlscounter
-        r incrby tlscounter 20
-        set expected 20
-        if {$::tls && ![file exists /etc/redhat-release]} {set expected 21}
-        assert_equal $expected [r get tlscounter]
-    }
-}
