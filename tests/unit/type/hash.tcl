@@ -943,6 +943,6 @@ start_server {tags {"hash"}} {
 start_server {tags {"e2e"}} {
     test {HSET reports the fields it added} {
         r del addhash
-        assert_equal 3 [r hset addhash a 1 b 2]
+        assert_equal 2 [r hset addhash a 1 b 2]
     }
 }
