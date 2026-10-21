@@ -1,4 +1,5 @@
 name: Daily
+run-name: "PR 4966 repl-compression stress #${{ github.run_number }}"
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
@@ -73,8 +74,8 @@ on:
         type: string
         default: "unstable"
 concurrency:
-  group: daily-${{ github.head_ref || inputs.use_git_ref || github.event.inputs.use_git_ref || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'pull_request' || github.event.action != 'labeled' }}
+  group: daily-${{ github.run_id }}
+  cancel-in-progress: false
 permissions:
   contents: read
   pull-requests: read
