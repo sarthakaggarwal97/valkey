@@ -1389,8 +1389,6 @@ int startBgsaveForReplication(int mincapa, int req, int rdbver) {
             reason = "cohort needs filtered RDB content";
         } else if (rdbver != RDB_VERSION) {
             reason = "cohort needs a non-current RDB version";
-        } else if (sync_compression_algo != ALGO_NONE) {
-            reason = "cohort needs stream compression";
         }
         if (reason != NULL) {
             if (server.forkless_policy == FORKLESS_POLICY_REQUIRE_FORKLESS) {
@@ -1421,7 +1419,7 @@ int startBgsaveForReplication(int mincapa, int req, int rdbver) {
 
     if (chosen_save_type == RDB_BGSAVE_TYPE_FORKLESS) {
         if (socket_target) {
-            if (forklessSaveToSockets() == C_ERR) {
+            if (forklessSaveToSockets(sync_compression_algo) == C_ERR) {
                 fail_msg = "Can't start the forkless process for a diskless full sync";
                 goto error;
             }
@@ -2083,7 +2081,15 @@ static int replicaPutOnline(client *replica) {
      * loading, so keep that transport until cron reconciles it after the
      * replica is online. */
     bool command_stream_already_started = replica->repl_data->repl_state == REPLICA_STATE_BG_RDB_LOAD;
-    if (!command_stream_already_started && replicaEnableCompressionIfNegotiated(replica) != C_OK) return 0;
+    /* A forkless socket sync serves the RDB through the private COB and sends
+     * its post-RDB live stream in plaintext (preceded by a plaintext REPLCONF
+     * psync-offset), so ongoing stream compression - which classifies the
+     * stream from its first bytes - is not applicable. using_cob is still set
+     * here for exactly those replicas. */
+    bool forkless_socket_sync = replica->repl_data->using_cob;
+    if (!command_stream_already_started && !forkless_socket_sync &&
+        replicaEnableCompressionIfNegotiated(replica) != C_OK)
+        return 0;
 
     replica->repl_data->repl_state = REPLICA_STATE_ONLINE;
     replica->repl_data->repl_ack_time = server.unixtime; /* Prevent false timeout. */
@@ -2888,8 +2894,12 @@ void replicaAfterLoadPrimaryRDB(connection *conn, rdbSaveInfo *rsi, int disk_bas
         server.repl_state = REPL_STATE_CONNECTED;
         server.repl_down_since = 0;
         /* The ACK allows the primary to start the command stream, so install
-         * the reader first even though this path does not currently yield. */
-        replResetStreamReader();
+         * the reader first even though this path does not currently yield.
+         * Exception: a forkless (socket) full sync sends its post-RDB live
+         * stream in plaintext (preceded by a plaintext REPLCONF psync-offset),
+         * so the stream reader is left unarmed for it; wait_for_psync_offset
+         * marks that case. */
+        if (!server.wait_for_psync_offset) replResetStreamReader();
         /* Send the initial ACK immediately to put this replica in online state. */
         replicationSendAck();
         /* Finalize full sync duration here for single channel replication.
