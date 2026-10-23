@@ -11,6 +11,13 @@ Upgrade urgency levels:
 | CRITICAL | There is a critical bug affecting MOST USERS. Upgrade ASAP.         |
 | SECURITY | There are security fixes in the release.                            |
 
+Valkey 9.1.3  -  Released Mon 26 October 2026
+---------------------------------------------
+
+Upgrade urgency MODERATE: Program an upgrade of the server, but it's not urgent.
+
+This release fixes crashes in the hash module API and in ACL file loading, and corrects RDB and replication handling for some listpack sizes.
+
 Valkey 9.1.2  -  Released Mon 31 August 2026
 --------------------------------------------
 
