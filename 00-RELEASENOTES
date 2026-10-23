@@ -11,6 +11,14 @@ Upgrade urgency levels:
 | CRITICAL | There is a critical bug affecting MOST USERS. Upgrade ASAP.         |
 | SECURITY | There are security fixes in the release.                            |
 
+Valkey 7.2.15  -  Released Mon 26 October 2026
+----------------------------------------------
+
+Upgrade urgency SECURITY: This release includes security fixes we recommend you apply as soon as possible.
+
+### Security Fixes
+* (CVE-2026-21863) Validate PUBLISH and MODULE payload lengths against the cluster bus packet size
+
 Valkey 7.2.14  -  Released Tue 21 July 2026
 -------------------------------------------
 
