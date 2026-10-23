@@ -5,6 +5,7 @@
  */
 
 #include "compression_stream.h"
+#include "rio.h"
 #include "server.h"
 #include "zmalloc.h"
 #include <limits.h>
@@ -185,10 +186,12 @@ static void streamReaderSetError(streamReader *reader, streamReaderErrorKind err
     if (reader->error_kind == STREAM_READER_ERROR_NONE) reader->error_kind = error_kind;
 }
 
-int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx, compressionAlgo *detected_algo) {
-    memset(reader, 0, sizeof(*reader));
-    reader->read_cb = read_cb;
-    reader->read_ctx = read_ctx;
+static ssize_t streamReaderSourceRead(streamReader *reader, void *buf, size_t len) {
+    if (reader->source) return rioReadPartial(reader->source, buf, len);
+    return reader->read_cb(reader->read_ctx, buf, len);
+}
+
+static int streamReaderInitInternal(streamReader *reader, const streamReaderConfig *cfg, compressionAlgo *detected_algo) {
     reader->buffer_size = cfg->buffer_size < STREAM_READER_BUFFER_SIZE_MIN
                               ? STREAM_READER_BUFFER_SIZE_MIN
                               : cfg->buffer_size;
@@ -198,9 +201,9 @@ int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, stream
         size_t need = reader->probe.header_len < VCS_MAGIC_SIZE
                           ? VCS_MAGIC_SIZE - reader->probe.header_len
                           : VCS_ENVELOPE_SIZE - reader->probe.header_len;
-        ssize_t got = reader->read_cb(reader->read_ctx,
-                                      reader->probe.header + reader->probe.header_len,
-                                      need);
+        ssize_t got = streamReaderSourceRead(reader,
+                                             reader->probe.header + reader->probe.header_len,
+                                             need);
 
         if (got < 0 || (size_t)got > need) {
             streamReaderSetError(reader, STREAM_READER_ERROR_IO);
@@ -252,6 +255,19 @@ int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, stream
     return C_OK;
 }
 
+int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx, compressionAlgo *detected_algo) {
+    memset(reader, 0, sizeof(*reader));
+    reader->read_cb = read_cb;
+    reader->read_ctx = read_ctx;
+    return streamReaderInitInternal(reader, cfg, detected_algo);
+}
+
+int streamReaderInitWithRio(streamReader *reader, const streamReaderConfig *cfg, rio *source, compressionAlgo *detected_algo) {
+    memset(reader, 0, sizeof(*reader));
+    reader->source = source;
+    return streamReaderInitInternal(reader, cfg, detected_algo);
+}
+
 /* Initialization must consume enough bytes to distinguish a VCS envelope from
  * a plain stream. If the source is plain, those probe bytes are part of the
  * caller's payload and cannot be discarded. Replay them first, then continue
@@ -270,7 +286,7 @@ static ssize_t streamReaderReadPassthrough(streamReader *reader, uint8_t *dst, s
     }
     if (len == 0) return (ssize_t)total;
 
-    ssize_t got = reader->read_cb(reader->read_ctx, dst, len);
+    ssize_t got = streamReaderSourceRead(reader, dst, len);
     if (got < 0 || (size_t)got > len) {
         streamReaderSetError(reader, STREAM_READER_ERROR_IO);
         return total > 0 ? (ssize_t)total : -1;
@@ -343,8 +359,8 @@ static int streamReaderFillDecompressedBuf(streamReader *reader) {
         if (read_size > (size_t)SSIZE_MAX) read_size = (size_t)SSIZE_MAX;
 
         /* Refill the compressed-input buffer, then retry decoding. */
-        ssize_t got = reader->read_cb(
-            reader->read_ctx,
+        ssize_t got = streamReaderSourceRead(
+            reader,
             reader->compressed_buf + reader->compressed_buf_pos + reader->compressed_buf_len,
             read_size);
         if (got < 0 || (size_t)got > read_size) {

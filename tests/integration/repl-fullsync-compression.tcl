@@ -550,6 +550,34 @@ start_server {overrides {save "" rdbcompression no repl-compression lz4 repl-dis
 
 }
 
+# Forkless switches its encoded destination from a COB to the replica connection
+# set and back to a COB while producing one RDB. The compression RIO must keep its
+# stream state while its inner transport is reinitialized.
+start_server {overrides {save "" forkless-infrastructure-enabled yes forkless-policy require-forkless rdbcompression no repl-compression lz4 repl-diskless-sync yes repl-diskless-sync-delay 0}} {
+    set primary [srv 0 client]
+    set primary_host [srv 0 host]
+    set primary_port [srv 0 port]
+    populate_compressible_dataset $primary "forkless-compressed"
+
+    start_server {overrides {save "" repl-compression lz4 repl-diskless-load swapdb}} {
+        set replica [srv 0 client]
+
+        test "Forkless full sync keeps compression across inner RIO transport changes" {
+            set primary_loglines [count_log_lines -1]
+            $replica replicaof $primary_host $primary_port
+            assert_replica_synced $primary $replica "(forkless compressed)"
+
+            wait_for_log_messages -1 {"*Using forkless save for next backup*"} \
+                $primary_loglines 50 100
+            wait_for_log_messages -1 {"*target: replicas sockets*compression: lz4*"} \
+                $primary_loglines 50 100
+
+            $primary set "forkless-compressed:post" after
+            wait_for_value_to_propagate_to_replica $primary $replica "forkless-compressed:post"
+        }
+    }
+}
+
 # Transcode matrix: doing a disk-based load, the replica writes dump.rdb in its
 # own rdbcompression codec, transcoding the received full-sync stream when the
 # wire codec differs (verbatim / decode / encode / recode). `framing` selects the

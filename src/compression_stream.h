@@ -10,6 +10,8 @@
 #include "compression.h"
 #include "sds.h"
 
+struct _rio;
+
 /* VCS envelope:
  *   [0..2] magic "VCS"
  *   [3]    version (currently VCS_VERSION)
@@ -118,6 +120,7 @@ typedef enum {
 } streamReaderState;
 
 typedef struct streamReader {
+    struct _rio *source;
     streamReaderReadFn read_cb;
     void *read_ctx;
     struct {
@@ -147,6 +150,9 @@ typedef struct streamReader {
  * input or the detected codec; the output pointer is optional. On failure,
  * error_kind classifies the error and the reader remains safe to free. */
 int streamReaderInit(streamReader *reader, const streamReaderConfig *cfg, streamReaderReadFn read_cb, void *read_ctx, compressionAlgo *detected_algo);
+/* RIO-backed reader variant. Reads encoded bytes directly from source without
+ * a callback adapter. */
+int streamReaderInitWithRio(streamReader *reader, const streamReaderConfig *cfg, struct _rio *source, compressionAlgo *detected_algo);
 /* Returns up to len bytes, 0 on EOF, or -1 on error. An error after partial
  * output is reported on the next call. */
 ssize_t streamReaderRead(streamReader *reader, void *buf, size_t len);

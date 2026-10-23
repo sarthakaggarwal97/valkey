@@ -56,7 +56,6 @@
 #include "config.h"
 #include "server.h"
 #include "connhelpers.h"
-#include "compression_stream.h"
 
 /* ------------------------- Buffer I/O implementation ----------------------- */
 
@@ -67,12 +66,16 @@ static size_t rioBufferWrite(rio *r, const void *buf, size_t len) {
     return 1;
 }
 
-/* Returns 1 or 0 for success/failure. */
-static size_t rioBufferRead(rio *r, void *buf, size_t len) {
-    if (sdslen(r->io.buffer.ptr) - r->io.buffer.pos < len) return 0; /* not enough buffer to return len bytes. */
-    memcpy(buf, r->io.buffer.ptr + r->io.buffer.pos, len);
-    r->io.buffer.pos += len;
-    return 1;
+/* Returns up to len bytes, 0 on EOF, or -1 on error. */
+static ssize_t rioBufferRead(rio *r, void *buf, size_t len) {
+    size_t buffer_len = sdslen(r->io.buffer.ptr);
+    if (r->io.buffer.pos < 0 || (size_t)r->io.buffer.pos >= buffer_len) return 0;
+
+    size_t available = buffer_len - (size_t)r->io.buffer.pos;
+    size_t read_len = available < len ? available : len;
+    memcpy(buf, r->io.buffer.ptr + r->io.buffer.pos, read_len);
+    r->io.buffer.pos += read_len;
+    return (ssize_t)read_len;
 }
 
 /* Returns read/write position in buffer. */
@@ -92,7 +95,6 @@ static const rio rioBufferIO = {
     .write = rioBufferWrite,
     .tell = rioBufferTell,
     .flush = rioBufferFlush,
-    .read_some = NULL,
     .update_cksum = NULL,
     .cksum = 0,
     .flags = 0,
@@ -129,7 +131,7 @@ static size_t rioFileWrite(rio *r, const void *buf, size_t len) {
         if (r->io.file.buffered >= r->io.file.autosync) {
             fflush(r->io.file.fp);
 
-            size_t processed = r->stream_processed_bytes + nwritten;
+            size_t processed = r->processed_bytes + nwritten;
             serverAssert(processed % r->io.file.autosync == 0);
             serverAssert(r->io.file.buffered == r->io.file.autosync);
 
@@ -167,13 +169,8 @@ static size_t rioFileWrite(rio *r, const void *buf, size_t len) {
     return 1;
 }
 
-/* Returns 1 or 0 for success/failure. */
-static size_t rioFileRead(rio *r, void *buf, size_t len) {
-    return fread(buf, 1, len, r->io.file.fp) == len;
-}
-
-/* Partial-read variant: returns bytes read (may be less than len), 0 on EOF, -1 on error. */
-static ssize_t rioFileReadSome(rio *r, void *buf, size_t len) {
+/* Returns up to len bytes, 0 on EOF, or -1 on error. */
+static ssize_t rioFileRead(rio *r, void *buf, size_t len) {
     size_t got = fread(buf, 1, len, r->io.file.fp);
     if (got == 0 && ferror(r->io.file.fp)) return -1;
     return (ssize_t)got;
@@ -195,7 +192,6 @@ static const rio rioFileIO = {
     .write = rioFileWrite,
     .tell = rioFileTell,
     .flush = rioFileFlush,
-    .read_some = rioFileReadSome,
     .update_cksum = NULL,
     .cksum = 0,
     .flags = 0,
@@ -273,8 +269,8 @@ static int rioConnEnsureBuffered(rio *r, size_t min_available) {
     return 1;
 }
 
-/* Partial-read variant: returns bytes read, 0 on EOF, -1 on error. */
-static ssize_t rioConnReadSome(rio *r, void *buf, size_t len) {
+/* Returns up to len bytes, 0 on EOF, or -1 on error. */
+static ssize_t rioConnRead(rio *r, void *buf, size_t len) {
     size_t avail = sdslen(r->io.conn.buf) - r->io.conn.pos;
 
     if (r->io.conn.read_limit != 0 && r->io.conn.read_so_far >= r->io.conn.read_limit) {
@@ -297,22 +293,6 @@ static ssize_t rioConnReadSome(rio *r, void *buf, size_t len) {
     return (ssize_t)got;
 }
 
-/* Returns 1 or 0 for success/failure. */
-static size_t rioConnRead(rio *r, void *buf, size_t len) {
-    if (r->io.conn.read_limit != 0 &&
-        (r->io.conn.read_so_far > r->io.conn.read_limit ||
-         len > r->io.conn.read_limit - r->io.conn.read_so_far)) {
-        errno = EOVERFLOW;
-        return 0;
-    }
-    if (rioConnEnsureBuffered(r, len) != 1) return 0;
-
-    memcpy(buf, (char *)r->io.conn.buf + r->io.conn.pos, len);
-    r->io.conn.read_so_far += len;
-    r->io.conn.pos += len;
-    return len;
-}
-
 /* Returns read/write position in file. */
 static off_t rioConnTell(rio *r) {
     return r->io.conn.read_so_far;
@@ -331,7 +311,6 @@ static const rio rioConnIO = {
     .write = rioConnWrite,
     .tell = rioConnTell,
     .flush = rioConnFlush,
-    .read_some = rioConnReadSome,
     .update_cksum = NULL,
     .cksum = 0,
     .flags = 0,
@@ -422,12 +401,12 @@ static size_t rioFdWrite(rio *r, const void *buf, size_t len) {
     return 1;
 }
 
-/* Returns 1 or 0 for success/failure. */
-static size_t rioFdRead(rio *r, void *buf, size_t len) {
+/* Returns -1 because this target does not support reading. */
+static ssize_t rioFdRead(rio *r, void *buf, size_t len) {
     UNUSED(r);
     UNUSED(buf);
     UNUSED(len);
-    return 0; /* Error, this target does not support reading. */
+    return -1;
 }
 
 /* Returns read/write position in file. */
@@ -448,7 +427,6 @@ static const rio rioFdIO = {
     .write = rioFdWrite,
     .tell = rioFdTell,
     .flush = rioFdFlush,
-    .read_some = NULL,
     .update_cksum = NULL,
     .cksum = 0,
     .flags = 0,
@@ -526,12 +504,12 @@ static size_t rioReplicaCOBWrite(rio *r, const void *buf, size_t len) {
     return 1;
 }
 
-static size_t rioReplicaCOBRead(rio *r, void *buf, size_t len) {
+static ssize_t rioReplicaCOBRead(rio *r, void *buf, size_t len) {
     UNUSED(r);
     UNUSED(buf);
     UNUSED(len);
     serverAssert(0);
-    return 0;
+    return -1;
 }
 
 static off_t rioReplicaCOBTell(rio *r) {
@@ -557,7 +535,6 @@ static const rio rioReplicaCOBIO = {
     .write = rioReplicaCOBWrite,
     .tell = rioReplicaCOBTell,
     .flush = rioReplicaCOBFlush,
-    .read_some = NULL,
     .update_cksum = NULL,
     .cksum = 0,
     .flags = 0,
@@ -586,77 +563,27 @@ void rioGenericUpdateChecksum(rio *r, const void *buf, size_t len) {
     r->cksum = crc64(r->cksum, buf, len);
 }
 
-void rioAttachStreamWriter(rio *r, streamWriter *writer) {
-    serverAssert(writer != NULL);
-    serverAssert(r->stream_writer == NULL);
-    serverAssert(r->stream_reader == NULL);
-    r->stream_writer = writer;
-}
-
-void rioDetachStreamWriter(rio *r) {
-    r->stream_writer = NULL;
-}
-
-void rioAttachStreamReader(rio *r, streamReader *reader) {
-    serverAssert(reader != NULL);
-    serverAssert(r->stream_reader == NULL);
-    serverAssert(r->stream_writer == NULL);
-    r->stream_reader = reader;
-}
-
-void rioDetachStreamReader(rio *r) {
-    r->stream_reader = NULL;
-}
-
-size_t rioWriteStream(rio *r, const void *buf, size_t len) {
-    serverAssert(r->stream_writer != NULL);
-    if (streamWriterWrite(r->stream_writer, buf, len) == C_OK) return 1;
-    r->flags |= RIO_FLAG_WRITE_ERROR;
-    return 0;
-}
-
-size_t rioReadStream(rio *r, void *buf, size_t len) {
-    serverAssert(r->stream_reader != NULL);
-
-    uint8_t *dst = (uint8_t *)buf;
-    size_t remaining = len;
-    while (remaining > 0) {
-        ssize_t nread = streamReaderRead(r->stream_reader, dst, remaining);
-        if (nread <= 0) {
-            r->flags |= RIO_FLAG_READ_ERROR;
-            return 0;
-        }
-        remaining -= (size_t)nread;
-        dst += nread;
-    }
-    return 1;
-}
-
 /* rioRead() is for callers that know an exact logical field size. A stream
- * reader instead treats its input buffer size as a capacity, so its callback
- * uses this upper-bound raw read. Read up to `len` bytes from the concrete
- * backend without stream dispatch or logical checksum/accounting. Returns:
+ * transformer instead treats its input buffer size as a capacity, so it uses
+ * this upper-bound read. Read up to `len` bytes from a readable RIO. Returns:
  * - >0 bytes read
  * -  0 on EOF
  * - -1 on error (sticky read error is latched on the rio) */
-ssize_t rioReadRawPartial(rio *r, void *buf, size_t len) {
+ssize_t rioReadPartial(rio *r, void *buf, size_t len) {
     if (r->flags & (RIO_FLAG_READ_ERROR | RIO_FLAG_CLOSE_ASAP)) return -1;
     if (len == 0) return 0;
-    if (!r->read_some) {
-        r->flags |= RIO_FLAG_READ_ERROR;
-        return -1;
-    }
 
     size_t bytes_to_read =
         (r->max_processing_chunk && r->max_processing_chunk < len) ? r->max_processing_chunk : len;
-    ssize_t got = r->read_some(r, buf, bytes_to_read);
-
-    if (got < 0) {
+    if (bytes_to_read > (size_t)SSIZE_MAX) bytes_to_read = (size_t)SSIZE_MAX;
+    ssize_t got = r->read(r, buf, bytes_to_read);
+    if (got < 0 || (size_t)got > bytes_to_read) {
         r->flags |= RIO_FLAG_READ_ERROR;
         return -1;
     }
     if (got > 0) {
-        r->stream_processed_bytes += (size_t)got;
+        if (r->update_cksum) r->update_cksum(r, buf, (size_t)got);
+        r->processed_bytes += (size_t)got;
     }
     return got;
 }
@@ -803,12 +730,12 @@ static size_t rioConnsetWrite(rio *r, const void *buf, size_t len) {
     return 1;
 }
 
-/* Returns 1 or 0 for success/failure. */
-static size_t rioConnsetRead(rio *r, void *buf, size_t len) {
+/* Returns -1 because this target does not support reading. */
+static ssize_t rioConnsetRead(rio *r, void *buf, size_t len) {
     UNUSED(r);
     UNUSED(buf);
     UNUSED(len);
-    return 0; /* Error, this target does not support reading. */
+    return -1;
 }
 
 /* Returns read/write position in file. */
@@ -829,7 +756,6 @@ static const rio rioConnsetIO = {
     .write = rioConnsetWrite,
     .tell = rioConnsetTell,
     .flush = rioConnsetFlush,
-    .read_some = NULL,
     .update_cksum = NULL,
     .cksum = 0,
     .flags = 0,
@@ -861,7 +787,10 @@ void rioFreeConnset(rio *r) {
 
 /* Check the type of rio. */
 uint8_t rioCheckType(rio *r) {
-    if (r->read == rioFileRead) {
+    if (r->flags & RIO_FLAG_DECORATOR) {
+        rio *inner = rioGetInner(r);
+        return inner ? rioCheckType(inner) : 0;
+    } else if (r->read == rioFileRead) {
         return RIO_TYPE_FILE;
     } else if (r->read == rioBufferRead) {
         return RIO_TYPE_BUFFER;

@@ -4,14 +4,14 @@
 #include "mutexqueue.h"
 #include "rdb.h"
 #include "bio.h"
-#include "compression_stream.h"
+#include "compression_rio.h"
 
 static const void *PROCESS_COMPLETE_ITEM = (void *)-1;
 static const int SNAPSHOT_FILE_CLOSE_MONITOR_INTERVAL_MS = 200;
 static const int REPLICATION_MONITOR_INTERVAL_MS = 100;
 
 typedef struct {
-    rio save_rio; /* Must be 1st to permit cast from rio back to forklessSaveInfo */
+    rio save_rio; /* Concrete file, COB, or connset transport. */
     int cur_db;   /* Last selectDb issued */
     bgIterator *iterator;
     uint64_t bytes_written;
@@ -29,7 +29,8 @@ typedef struct {
             char eofmark[RDB_EOF_MARK_SIZE];
             struct {
                 compressionAlgo algo;
-                streamWriter writer;
+                rio rio;
+                bool initialized;
                 sds tail;
             } compression;
         } repl;
@@ -38,6 +39,14 @@ typedef struct {
 
 /* Keep a global indicator of the current iterator (for cancellation purposes). */
 static forklessSaveInfo *currentForklessSave = NULL;
+
+static rio *forklessRdbRio(forklessSaveInfo *saveInfo) {
+    if (saveInfo->write_target == RDB_WRITE_TARGET_SOCKET &&
+        saveInfo->u.repl.compression.initialized) {
+        return &saveInfo->u.repl.compression.rio;
+    }
+    return &saveInfo->save_rio;
+}
 
 /* During a socket forkless save, incoming (live) write commands must keep
  * reaching the syncing replica. There are three channels for them, used in
@@ -139,8 +148,14 @@ void forklessAddRdbSelectToReplicaCob(int dictid) {
 
 /* rio check_abort_between_writes callback: checks if the forkless save iterator is being terminated. */
 static int forklessSaveShouldAbort(rio *r) {
-    static_assert(offsetof(forklessSaveInfo, save_rio) == 0, "rio must be castable to forklessSaveInfo");
-    forklessSaveInfo *saveInfo = (forklessSaveInfo *)r;
+    forklessSaveInfo *saveInfo;
+    if (r->flags & RIO_FLAG_STREAMING_COMPRESSION) {
+        saveInfo = (forklessSaveInfo *)((char *)r -
+                                        offsetof(forklessSaveInfo, u.repl.compression.rio));
+    } else {
+        static_assert(offsetof(forklessSaveInfo, save_rio) == 0, "save rio must be first");
+        saveInfo = (forklessSaveInfo *)r;
+    }
     return saveInfo->iterator && bgIteratorIsTerminating(saveInfo->iterator);
 }
 
@@ -169,11 +184,12 @@ static int connSetBlocking(connection *conn, bool blocking) {
 static int writeSelectDb(forklessSaveInfo *saveInfo, int new_db) {
     if (new_db == saveInfo->cur_db) return C_OK;
 
-    if (rdbSaveType(&saveInfo->save_rio, RDB_OPCODE_SELECTDB) == -1) {
+    rio *rdb = forklessRdbRio(saveInfo);
+    if (rdbSaveType(rdb, RDB_OPCODE_SELECTDB) == -1) {
         serverLog(LL_WARNING, "forkless-save: error while writing OPCODE_SELECTDB");
         return C_ERR;
     }
-    if (rdbSaveLen(&saveInfo->save_rio, new_db) == -1) {
+    if (rdbSaveLen(rdb, new_db) == -1) {
         serverLog(LL_WARNING, "forkless-save: error while writing selectDb value");
         return C_ERR;
     }
@@ -186,25 +202,18 @@ static int writeDbSizeHints(forklessSaveInfo *saveInfo) {
         serverDb *db = server.db[dbid];
         if (db == NULL || dbSize(db) == 0) continue;
         if (writeSelectDb(saveInfo, dbid) != C_OK) return C_ERR;
-        if (rdbSaveDbSizeHints(&saveInfo->save_rio, db, 0) < 0) return C_ERR;
+        if (rdbSaveDbSizeHints(forklessRdbRio(saveInfo), db, 0) < 0) return C_ERR;
     }
     return C_OK;
 }
 
 
-/* Write callback for the whole-stream compressor: emit encoded bytes to the
- * save rio without recursing back through the attached writer. */
-static int forklessCompressionWrite(void *ctx, const uint8_t *data, size_t len) {
-    return rioWriteRaw((rio *)ctx, data, len) ? C_OK : C_ERR;
-}
-
-/* Whether the compressor is currently attached to save_rio (frame open). Derived
- * from the rio rather than stored, so it stays correct across the rio swaps. */
+/* Whether the compression decorator's frame is still open. */
 static bool forklessCompressionAttached(forklessSaveInfo *saveInfo) {
-    return saveInfo->save_rio.stream_writer == &saveInfo->u.repl.compression.writer;
+    return saveInfo->u.repl.compression.initialized;
 }
 
-/* Release the compressor writer if it was initialized. Safe to call repeatedly
+/* Release the compression decorator if it was initialized. Safe to call repeatedly
  * and on a save that never used compression. */
 static void forklessCompressionCleanup(forklessSaveInfo *saveInfo) {
     if (saveInfo->write_target != RDB_WRITE_TARGET_SOCKET) return;
@@ -213,25 +222,27 @@ static void forklessCompressionCleanup(forklessSaveInfo *saveInfo) {
         saveInfo->u.repl.compression.tail = NULL;
     }
     if (saveInfo->u.repl.compression.algo == ALGO_NONE) return;
-    if (forklessCompressionAttached(saveInfo)) rioDetachStreamWriter(&saveInfo->save_rio);
-    streamWriterFree(&saveInfo->u.repl.compression.writer);
+    if (saveInfo->u.repl.compression.initialized) {
+        rioFree(&saveInfo->u.repl.compression.rio);
+        saveInfo->u.repl.compression.initialized = false;
+    }
     saveInfo->u.repl.compression.algo = ALGO_NONE;
 }
 
-/* Attach a whole-stream compressor to save_rio for a socket save. The writer
- * emits a VCS envelope on first write, so this must run after the EOF-mark
- * prefix and before any RDB body byte. Mirrors rdbSaveRio(): while compressing,
- * the plain CRC trailer is skipped (the codec carries its own integrity). */
+/* Put a compression RIO in front of save_rio. The decorator keeps pointing at
+ * the same save_rio object while its concrete backend changes between COB and
+ * connset, so the codec frame does not need to be reattached during swaps. */
 static int forklessCompressionAttach(forklessSaveInfo *saveInfo) {
-    if (streamWriterInit(&saveInfo->u.repl.compression.writer, saveInfo->u.repl.compression.algo, server.rdb_checksum,
-                         forklessCompressionWrite, &saveInfo->save_rio) == C_ERR) {
+    rio *compression_rio = &saveInfo->u.repl.compression.rio;
+    if (rioInitWithCompression(compression_rio,
+                               saveInfo->u.repl.compression.algo,
+                               &saveInfo->save_rio,
+                               server.rdb_checksum) == C_ERR) {
         saveInfo->u.repl.compression.algo = ALGO_NONE; /* so the algo != NONE guard stays exact */
         return C_ERR;
     }
-    rioAttachStreamWriter(&saveInfo->save_rio, &saveInfo->u.repl.compression.writer);
-    saveInfo->save_rio.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
-    saveInfo->save_rio.update_cksum = NULL;
-    saveInfo->save_rio.cksum = 0;
+    saveInfo->u.repl.compression.initialized = true;
+    compression_rio->flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
     return C_OK;
 }
 
@@ -240,7 +251,8 @@ static int forklessCompressionAttach(forklessSaveInfo *saveInfo) {
 static int writeReplicationData(forklessSaveInfo *saveInfo, bgIteratorItem *item) {
     serverAssert(item->type == BGITERATOR_ITEM_REPLICATION);
 
-    if (rdbSaveType(&saveInfo->save_rio, RDB_OPCODE_UPDATE) == -1) return C_ERR;
+    rio *rdb = forklessRdbRio(saveInfo);
+    if (rdbSaveType(rdb, RDB_OPCODE_UPDATE) == -1) return C_ERR;
 
     char llaux[LONG_STR_SIZE + 3];
     char llstr[LONG_STR_SIZE];
@@ -252,7 +264,7 @@ static int writeReplicationData(forklessSaveInfo *saveInfo, bgIteratorItem *item
     auxlen += ll2string(llaux + auxlen, LONG_STR_SIZE, item->u.repl.argc);
     llaux[auxlen++] = '\r';
     llaux[auxlen++] = '\n';
-    if (!rioWrite(&saveInfo->save_rio, llaux, auxlen)) return C_ERR;
+    if (!rioWrite(rdb, llaux, auxlen)) return C_ERR;
 
     for (int i = 0; i < item->u.repl.argc; i++) {
         robj *o = item->u.repl.argv[i];
@@ -272,9 +284,9 @@ static int writeReplicationData(forklessSaveInfo *saveInfo, bgIteratorItem *item
         auxlen += ll2string(llaux + auxlen, LONG_STR_SIZE, objlen);
         llaux[auxlen++] = '\r';
         llaux[auxlen++] = '\n';
-        if (!rioWrite(&saveInfo->save_rio, llaux, auxlen)) return C_ERR;
-        if (!rioWrite(&saveInfo->save_rio, p, objlen)) return C_ERR;
-        if (!rioWrite(&saveInfo->save_rio, "\r\n", 2)) return C_ERR;
+        if (!rioWrite(rdb, llaux, auxlen)) return C_ERR;
+        if (!rioWrite(rdb, p, objlen)) return C_ERR;
+        if (!rioWrite(rdb, "\r\n", 2)) return C_ERR;
     }
 
     return C_OK;
@@ -430,13 +442,7 @@ static int transitionRioReplicaCobToRioConnset(forklessSaveInfo *saveInfo) {
     rioInitWithConnset(&saveInfo->save_rio, conns, numConns);
     saveInfo->save_rio.cksum = current_cksum;
     saveInfo->save_rio.processed_bytes = current_processed_bytes;
-    if ((saveInfo->u.repl.compression.algo != ALGO_NONE)) {
-        /* Keep the open compressor frame attached across the rio swap; its
-         * write_ctx is &save_rio, so it keeps targeting the new backend. The
-         * plain CRC trailer stays skipped (the codec carries integrity). */
-        rioAttachStreamWriter(&saveInfo->save_rio, &saveInfo->u.repl.compression.writer);
-        saveInfo->save_rio.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
-    } else if (server.rdb_checksum) {
+    if (saveInfo->u.repl.compression.algo == ALGO_NONE && server.rdb_checksum) {
         saveInfo->save_rio.update_cksum = rioGenericUpdateChecksum;
     }
 
@@ -468,7 +474,7 @@ static void *forklessSaveProcessor(void *arg) {
                   rioIsConnset ? "OK" : "FAILED", (int)listLength(saveInfo->u.repl.clients));
     }
 
-    saveInfo->save_rio.check_abort_between_writes = forklessSaveShouldAbort;
+    forklessRdbRio(saveInfo)->check_abort_between_writes = forklessSaveShouldAbort;
 
     const unsigned statsIntervalMs = 1000;
     monotime lastStatsTime;
@@ -508,7 +514,7 @@ static void *forklessSaveProcessor(void *arg) {
             robj *o = item->u.dbe.de;
 
             long long expire = objectGetExpire(item->u.dbe.de);
-            if (rdbSaveKeyValuePair(&saveInfo->save_rio, &key, o, expire, item->dbid, RDB_VERSION) == -1) {
+            if (rdbSaveKeyValuePair(forklessRdbRio(saveInfo), &key, o, expire, item->dbid, RDB_VERSION) == -1) {
                 serverLog(LL_WARNING, "forkless-save: error writing KV pair");
                 err = C_ERR;
             }
@@ -545,7 +551,8 @@ static void *forklessSaveProcessor(void *arg) {
         }
     }
 
-    if (err != C_OK && bgIteratorIsTerminating(saveInfo->iterator) && !rioGetWriteError(&saveInfo->save_rio)) {
+    if (err != C_OK && bgIteratorIsTerminating(saveInfo->iterator) &&
+        !rioGetWriteError(forklessRdbRio(saveInfo))) {
         /* The write returned an error because the abort check stopped it, not
          * from a real I/O failure (no RIO write error is set). Treat it as a
          * cancel. */
@@ -593,16 +600,7 @@ static void *forklessSaveProcessor(void *arg) {
                 rioInitWithReplicaCOB(&saveInfo->save_rio);
                 saveInfo->save_rio.cksum = cksum;
                 saveInfo->save_rio.processed_bytes = processed;
-                if ((saveInfo->u.repl.compression.algo != ALGO_NONE)) {
-                    /* Carry the open compressor frame onto the COB rio: footer
-                     * and AUX fields still flow through it; it is finished on
-                     * the main thread before the plaintext EOF-end marker. The
-                     * writer's ctx is &save_rio (stable), so re-attaching is
-                     * enough. Keep the plain CRC trailer skipped. */
-                    rioAttachStreamWriter(&saveInfo->save_rio, &saveInfo->u.repl.compression.writer);
-                    saveInfo->save_rio.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
-                    saveInfo->save_rio.update_cksum = NULL;
-                } else if (server.rdb_checksum) {
+                if (saveInfo->u.repl.compression.algo == ALGO_NONE && server.rdb_checksum) {
                     saveInfo->save_rio.update_cksum = rioGenericUpdateChecksum;
                 }
             }
@@ -864,7 +862,7 @@ static int finishSocketBasedForklessSaveUsingCob(forklessSaveInfo *saveInfo) {
      * compressor now, before AUX/footer, so the whole frame is one contiguous stream. */
     if (saveInfo->u.repl.compression.tail != NULL) {
         sds tail = saveInfo->u.repl.compression.tail;
-        if (sdslen(tail) && !rioWrite(&saveInfo->save_rio, tail, sdslen(tail))) {
+        if (sdslen(tail) && !rioWrite(forklessRdbRio(saveInfo), tail, sdslen(tail))) {
             serverLog(LL_WARNING, "forkless-save: error writing buffered compressed tail");
             sdsfree(tail);
             saveInfo->u.repl.compression.tail = NULL;
@@ -885,27 +883,29 @@ static int finishSocketBasedForklessSaveUsingCob(forklessSaveInfo *saveInfo) {
     rsiptr = rdbPopulateSaveInfo(&rsi);
     serverAssert(rsiptr);
     int ret = C_OK;
-    if (rdbSaveInfoReplAuxFields(&saveInfo->save_rio, rsiptr) == -1) {
+    rio *rdb = forklessRdbRio(saveInfo);
+    if (rdbSaveInfoReplAuxFields(rdb, rsiptr) == -1) {
         serverLog(LL_WARNING, "forkless-save: error while writing AUX fields for replication, err=%s",
                   strerror(errno));
         ret = C_ERR;
         goto done;
     }
-    if (rdbWriteFooter(&saveInfo->save_rio, REPLICA_REQ_NONE) == C_ERR) {
+    if (rdbWriteFooter(rdb, REPLICA_REQ_NONE) == C_ERR) {
         serverLog(LL_WARNING, "forkless-save: error while writing RDB footer");
         ret = C_ERR;
         goto done;
     }
-    /* The footer is the last byte of the compressed payload. Finish the frame
-     * and detach the writer so the EOF-end marker is written in plaintext,
-     * matching the diskless fork path (prefix/suffix stay uncompressed). */
+    /* The footer is the last byte of the compressed payload. Finish the
+     * decorator, then write the EOF-end marker directly to the transport so
+     * the prefix and suffix remain plaintext. */
     if (forklessCompressionAttached(saveInfo)) {
-        if (streamWriterFinish(&saveInfo->u.repl.compression.writer) == C_ERR) {
+        if (!rioFinish(&saveInfo->u.repl.compression.rio)) {
             serverLog(LL_WARNING, "forkless-save: error finishing stream compressor");
             ret = C_ERR;
             goto done;
         }
-        rioDetachStreamWriter(&saveInfo->save_rio);
+        rioFree(&saveInfo->u.repl.compression.rio);
+        saveInfo->u.repl.compression.initialized = false;
     }
     if (rdbWriteEofMarkEnd(&saveInfo->save_rio, saveInfo->u.repl.eofmark) == C_ERR) {
         serverLog(LL_WARNING, "forkless-save: error while writing valkey end eof string");
@@ -1041,7 +1041,8 @@ static void forklessSaveComplete(bool terminated, void *privdata) {
     } else {
         /* For file based forkless save, we need to generate the RDB end marker. and complete the save */
         if (!saveInfo->terminated && saveInfo->err_code == C_OK) {
-            saveInfo->err_code = rdbWriteFooter(&saveInfo->save_rio, REPLICA_REQ_NONE) == C_ERR ? C_ERR : C_OK;
+            saveInfo->err_code =
+                rdbWriteFooter(forklessRdbRio(saveInfo), REPLICA_REQ_NONE) == C_ERR ? C_ERR : C_OK;
         }
 
         /* Done writing, capture bytes written (regardless of pass/fail) */
@@ -1068,7 +1069,8 @@ static int forklessSaveCommonStart(forklessSaveInfo *saveInfo) {
     startSaving(RDBFLAGS_FORKLESS_SAVE);
 
     rdbSaveInfo rsi, *rsiptr = rdbPopulateSaveInfo(&rsi);
-    if (rdbWriteHeader(&saveInfo->save_rio, REPLICA_REQ_NONE, RDB_VERSION, RDBFLAGS_NONE, rsiptr) == C_ERR) return C_ERR;
+    if (rdbWriteHeader(forklessRdbRio(saveInfo), REPLICA_REQ_NONE, RDB_VERSION, RDBFLAGS_NONE, rsiptr) == C_ERR)
+        return C_ERR;
 
     if (writeDbSizeHints(saveInfo) == C_ERR) return C_ERR;
 
