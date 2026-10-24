@@ -473,9 +473,10 @@ static void enableTestRioBufferPartialReads(rio *r) {
     r->read_some = testRioBufferReadSome;
 }
 
-static int initVcsRdbStreamReader(streamReader *reader, rio *r) {
-    enableTestRioBufferPartialReads(r);
-    return rdbInitStreamReader(r, reader, false, NULL) == RDB_STREAM_READER_INIT_OK ? C_OK : C_ERR;
+/* Decode 'source' through a compression rio, as rdbLoadRio() does. */
+static int initDecompressionRio(rio *r, rio *source) {
+    enableTestRioBufferPartialReads(source);
+    return rioInitWithDecompression(r, source);
 }
 
 static size_t rio_update_calls = 0;
@@ -487,29 +488,17 @@ static void countRioUpdateCalls(rio *r, const void *buf, size_t len) {
     rio_update_calls++;
 }
 
-static int emitToRioBackend(void *ctx, const uint8_t *data, size_t len) {
-    return rioWriteRaw((rio *)ctx, data, len) ? C_OK : C_ERR;
+/* Compress into 'target' through a compression rio, as rdbSaveRio() does.
+ * Codec checksums follow rdbchecksum, as in a default server. */
+static int initCompressionRio(rio *r, rio *target, compressionAlgo algo) {
+    server.rdb_checksum = 1;
+    rioInitWithCompression(r, algo, target);
+    return rioGetWriteError(r) ? C_ERR : C_OK;
 }
 
-static int attachCompressionWriter(rio *r, streamWriter *writer, compressionAlgo algo) {
-    if (streamWriterInit(writer, algo, true, emitToRioBackend, r) == C_ERR) return C_ERR;
-    rioAttachStreamWriter(r, writer);
-    return C_OK;
-}
-
-static int finishCompressionWriter(rio *r, streamWriter *writer) {
-    if (streamWriterFinish(writer) == C_ERR) {
-        r->flags |= RIO_FLAG_WRITE_ERROR;
-        return C_ERR;
-    }
-    if (rioFlushRaw(r)) return C_OK;
-    r->flags |= RIO_FLAG_WRITE_ERROR;
-    return C_ERR;
-}
-
-static void freeCompressionWriter(rio *r, streamWriter *writer) {
-    rioDetachStreamWriter(r);
-    streamWriterFree(writer);
+static int finishCompressionRio(rio *r) {
+    if (!rioFinishCompression(r)) return C_ERR;
+    return rioFlush(r) ? C_OK : C_ERR;
 }
 
 typedef enum {
@@ -585,18 +574,13 @@ static int encodeRoundTripPayload(compressionAlgo algo,
     sds output = sdsempty();
     rio buffer_rio;
     rioInitWithBuffer(&buffer_rio, output);
-    streamWriter writer;
-    if (attachCompressionWriter(&buffer_rio, &writer, algo) == C_ERR) {
-        streamWriterFree(&writer);
-        sdsfree(buffer_rio.io.buffer.ptr);
-        return C_ERR;
-    }
-
-    int result = rioWrite(&buffer_rio, payload, payload_len) ? C_OK : C_ERR;
-    if (result == C_OK) result = finishCompressionWriter(&buffer_rio, &writer);
-    if (result == C_OK && buffer_rio.processed_bytes != payload_len) result = C_ERR;
-    if (result == C_OK && buffer_rio.stream_processed_bytes != sdslen(buffer_rio.io.buffer.ptr)) result = C_ERR;
-    freeCompressionWriter(&buffer_rio, &writer);
+    rio compressor;
+    int result = initCompressionRio(&compressor, &buffer_rio, algo);
+    if (result == C_OK) result = rioWrite(&compressor, payload, payload_len) ? C_OK : C_ERR;
+    if (result == C_OK) result = finishCompressionRio(&compressor);
+    if (result == C_OK && compressor.processed_bytes != payload_len) result = C_ERR;
+    if (result == C_OK && buffer_rio.processed_bytes != sdslen(buffer_rio.io.buffer.ptr)) result = C_ERR;
+    rioFreeCompression(&compressor);
     if (result == C_ERR) {
         sdsfree(buffer_rio.io.buffer.ptr);
         return C_ERR;
@@ -668,8 +652,9 @@ static int decodeRoundTripPayload(compressionAlgo algo,
     sds input = sdsdup(encoded);
     rio buffer_rio;
     rioInitWithBuffer(&buffer_rio, input);
-    streamReader reader;
-    if (initVcsRdbStreamReader(&reader, &buffer_rio) == C_ERR) {
+    rio decoded;
+    if (initDecompressionRio(&decoded, &buffer_rio) == C_ERR) {
+        rioFreeCompression(&decoded);
         sdsfree(input);
         zfree(output);
         return C_ERR;
@@ -679,15 +664,15 @@ static int decodeRoundTripPayload(compressionAlgo algo,
     while (total < payload_len) {
         size_t chunk = reader_chunk == 0 ? payload_len - total : reader_chunk;
         if (chunk > payload_len - total) chunk = payload_len - total;
-        if (!rioRead(&buffer_rio, output + total, chunk)) break;
+        if (!rioRead(&decoded, output + total, chunk)) break;
         total += chunk;
     }
     if (total == payload_len &&
         memcmp(output, payload, payload_len) == 0 &&
-        streamReaderFinish(&reader) == C_OK) {
+        rioFinishCompression(&decoded)) {
         result = C_OK;
     }
-    rdbFreeStreamReader(&buffer_rio, &reader);
+    rioFreeCompression(&decoded);
     sdsfree(input);
     zfree(output);
     return result;
@@ -1079,22 +1064,29 @@ TEST(CompressionTest, streamReaderFinishRejectsUnreadDecodedBytes) {
 TEST(CompressionTest, rioCompressionWriterDoesNotOwnRdbChecksumPolicy) {
     const bool checksum_cases[] = {false, true};
     for (size_t i = 0; i < sizeof(checksum_cases) / sizeof(checksum_cases[0]); i++) {
-        bool inner_skips_checksum = checksum_cases[i];
+        bool target_skips_checksum = checksum_cases[i];
         sds buf = sdsempty();
-        rio inner;
-        rioInitWithBuffer(&inner, buf);
-        if (inner_skips_checksum) inner.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
+        rio target;
+        rioInitWithBuffer(&target, buf);
+        if (target_skips_checksum) target.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
 
-        streamWriter writer;
-        ASSERT_EQ(attachCompressionWriter(&inner, &writer, ALGO_LZ4), 0);
-        ASSERT_TRUE(inner.update_cksum == NULL);
-        ASSERT_EQ((inner.flags & RIO_FLAG_SKIP_RDB_CHECKSUM) != 0, inner_skips_checksum);
-        ASSERT_NE(rioWrite(&inner, "checksum policy", 15), 0u);
-        ASSERT_EQ(inner.cksum, 0u);
-        ASSERT_EQ(finishCompressionWriter(&inner, &writer), 0);
+        rio compressor;
+        ASSERT_EQ(initCompressionRio(&compressor, &target, ALGO_LZ4), C_OK);
+        ASSERT_EQ(rioCheckType(&compressor), RIO_TYPE_COMPRESSED);
+        ASSERT_EQ(rioCompressionAlgo(&compressor), ALGO_LZ4);
+        ASSERT_TRUE(compressor.update_cksum == NULL);
+        ASSERT_EQ((compressor.flags & RIO_FLAG_SKIP_RDB_CHECKSUM) != 0, target_skips_checksum)
+            << "the compression rio inherits the target checksum policy";
+        ASSERT_NE(compressor.flags & RIO_FLAG_STREAMING_COMPRESSION, 0u);
+        ASSERT_NE(rioWrite(&compressor, "checksum policy", 15), 0u);
+        ASSERT_EQ(compressor.cksum, 0u);
+        ASSERT_EQ(finishCompressionRio(&compressor), C_OK);
+        ASSERT_TRUE(target.update_cksum == NULL);
+        ASSERT_EQ((target.flags & RIO_FLAG_SKIP_RDB_CHECKSUM) != 0, target_skips_checksum);
+        ASSERT_EQ(target.flags & RIO_FLAG_STREAMING_COMPRESSION, 0u) << "the target carries plain encoded bytes";
 
-        freeCompressionWriter(&inner, &writer);
-        sdsfree(inner.io.buffer.ptr);
+        rioFreeCompression(&compressor);
+        sdsfree(target.io.buffer.ptr);
     }
 }
 
@@ -1114,16 +1106,17 @@ TEST(CompressionTest, rioStreamReaderTellTracksSourceProgress) {
     rio buffer_rio;
     rioInitWithBuffer(&buffer_rio, comp_sds);
 
-    streamReader reader;
-    ASSERT_EQ(initVcsRdbStreamReader(&reader, &buffer_rio), 0);
+    rio decoded;
+    ASSERT_EQ(initDecompressionRio(&decoded, &buffer_rio), C_OK);
 
     char out[2048];
-    ASSERT_NE(rioRead(&buffer_rio, out, sizeof(out)), 0u);
-    ASSERT_EQ((size_t)rioTell(&buffer_rio), buffer_rio.stream_processed_bytes);
-    ASSERT_LT((size_t)rioTell(&buffer_rio), sizeof(out))
+    ASSERT_NE(rioRead(&decoded, out, sizeof(out)), 0u);
+    ASSERT_EQ(decoded.processed_bytes, sizeof(out));
+    ASSERT_EQ((size_t)rioTell(&decoded), buffer_rio.processed_bytes);
+    ASSERT_LT((size_t)rioTell(&decoded), sizeof(out))
         << "rio tell should track source bytes, not logical output bytes";
 
-    rdbFreeStreamReader(&buffer_rio, &reader);
+    rioFreeCompression(&decoded);
     sdsfree(comp_sds);
     dynamicBufFree(&db);
 }
@@ -1147,19 +1140,19 @@ TEST(CompressionTest, rioStreamReaderHonorsMaxProcessingChunk) {
     sds compressed = sdsnewlen(db.data, sdslen((const char *)db.data));
     rio buffer_rio;
     rioInitWithBuffer(&buffer_rio, compressed);
-    streamReader reader;
-    ASSERT_EQ(initVcsRdbStreamReader(&reader, &buffer_rio), 0);
+    rio decoded;
+    ASSERT_EQ(initDecompressionRio(&decoded, &buffer_rio), C_OK);
 
-    buffer_rio.max_processing_chunk = chunk_size;
-    buffer_rio.update_cksum = countRioUpdateCalls;
+    decoded.max_processing_chunk = chunk_size;
+    decoded.update_cksum = countRioUpdateCalls;
     rio_update_calls = 0;
     uint8_t result[payload_len];
-    ASSERT_NE(rioRead(&buffer_rio, result, payload_len), 0u);
+    ASSERT_NE(rioRead(&decoded, result, payload_len), 0u);
     ASSERT_EQ(rio_update_calls, payload_len / chunk_size);
-    ASSERT_EQ(buffer_rio.processed_bytes, payload_len);
+    ASSERT_EQ(decoded.processed_bytes, payload_len);
     EXPECT_EQ(memcmp(result, payload, payload_len), 0);
 
-    rdbFreeStreamReader(&buffer_rio, &reader);
+    rioFreeCompression(&decoded);
     sdsfree(compressed);
     dynamicBufFree(&db);
 }
@@ -1174,20 +1167,21 @@ TEST(CompressionTest, rdbStreamReaderRewindsPlainFileAfterProbe) {
 
     rio file_rio;
     rioInitWithFile(&file_rio, fp);
-    streamReader reader;
-    compressionAlgo algo = ALGO_NONE;
-    ASSERT_EQ(rdbInitStreamReader(&file_rio, &reader, false, &algo), RDB_STREAM_READER_INIT_OK);
-    ASSERT_EQ(algo, ALGO_NONE);
-    ASSERT_EQ(file_rio.stream_reader, (streamReader *)NULL);
-    ASSERT_EQ(file_rio.stream_processed_bytes, 0u);
+    rio decoded;
+    ASSERT_EQ(rioInitWithDecompression(&decoded, &file_rio), C_OK);
+    ASSERT_EQ(rioCompressionAlgo(&decoded), ALGO_NONE);
+    ASSERT_TRUE(decoded.io.compressed.reader == NULL) << "a rewound plain file is read directly";
+    ASSERT_EQ(file_rio.processed_bytes, 0u);
     ASSERT_EQ(ftello(fp), 0);
 
     char result[64];
     memset(result, 0, sizeof(result));
-    ASSERT_NE(rioRead(&file_rio, result, payload_len), 0u);
+    ASSERT_NE(rioRead(&decoded, result, payload_len), 0u);
     EXPECT_EQ(memcmp(result, payload, payload_len), 0);
+    ASSERT_EQ(rioFinishCompression(&decoded), 1);
+    ASSERT_EQ(file_rio.processed_bytes, payload_len);
 
-    rdbFreeStreamReader(&file_rio, &reader);
+    rioFreeCompression(&decoded);
     fclose(fp);
 }
 
@@ -1203,18 +1197,19 @@ TEST(CompressionTest, rdbStreamReaderFallsBackWhenPlainFileCannotRewind) {
     ASSERT_NE(fp, (FILE *)NULL);
     rio file_rio;
     rioInitWithFile(&file_rio, fp);
-    streamReader reader;
-    compressionAlgo algo = ALGO_NONE;
-    ASSERT_EQ(rdbInitStreamReader(&file_rio, &reader, false, &algo), RDB_STREAM_READER_INIT_OK);
-    ASSERT_EQ(algo, ALGO_NONE);
-    ASSERT_EQ(file_rio.stream_reader, &reader);
+    rio decoded;
+    ASSERT_EQ(rioInitWithDecompression(&decoded, &file_rio), C_OK);
+    ASSERT_EQ(rioCompressionAlgo(&decoded), ALGO_NONE);
+    ASSERT_TRUE(decoded.io.compressed.reader != NULL);
+    ASSERT_EQ(decoded.flags & RIO_FLAG_STREAMING_COMPRESSION, 0u);
 
     char result[64];
     memset(result, 0, sizeof(result));
-    ASSERT_NE(rioRead(&file_rio, result, payload_len), 0u);
+    ASSERT_NE(rioRead(&decoded, result, payload_len), 0u);
     EXPECT_EQ(memcmp(result, payload, payload_len), 0);
+    ASSERT_EQ(rioFinishCompression(&decoded), 1);
 
-    rdbFreeStreamReader(&file_rio, &reader);
+    rioFreeCompression(&decoded);
     fclose(fp);
 }
 
@@ -1225,21 +1220,19 @@ TEST(CompressionTest, rioStreamReaderClassifiesInput) {
         sds buf = sdsnewlen(payload, payload_len);
         rio buffer_rio;
         rioInitWithBuffer(&buffer_rio, buf);
-        enableTestRioBufferPartialReads(&buffer_rio);
 
-        streamReader reader;
-        compressionAlgo algo = ALGO_NONE;
-        ASSERT_EQ(rdbInitStreamReader(&buffer_rio, &reader, false, &algo), RDB_STREAM_READER_INIT_OK);
-        ASSERT_EQ(algo, ALGO_NONE) << "passthrough stream should not be compressed";
-        ASSERT_EQ(buffer_rio.stream_reader, &reader)
+        rio decoded;
+        ASSERT_EQ(initDecompressionRio(&decoded, &buffer_rio), C_OK);
+        ASSERT_EQ(rioCompressionAlgo(&decoded), ALGO_NONE) << "passthrough stream should not be compressed";
+        ASSERT_TRUE(decoded.io.compressed.reader != NULL)
             << "non-file sources should retain the passthrough fallback";
 
         char result[64];
         memset(result, 0, sizeof(result));
-        ASSERT_NE(rioRead(&buffer_rio, result, payload_len), 0u) << "rioRead should succeed";
+        ASSERT_NE(rioRead(&decoded, result, payload_len), 0u) << "rioRead should succeed";
         EXPECT_EQ(memcmp(result, payload, payload_len), 0) << "payload should be replayed exactly";
 
-        rdbFreeStreamReader(&buffer_rio, &reader);
+        rioFreeCompression(&decoded);
         sdsfree(buf);
     }
 
@@ -1249,11 +1242,12 @@ TEST(CompressionTest, rioStreamReaderClassifiesInput) {
         sds buf = sdsnewlen(malformed, sizeof(malformed));
         rio buffer_rio;
         rioInitWithBuffer(&buffer_rio, buf);
-        enableTestRioBufferPartialReads(&buffer_rio);
 
-        streamReader reader;
-        ASSERT_EQ(rdbInitStreamReader(&buffer_rio, &reader, false, NULL),
-                  RDB_STREAM_READER_INIT_INCOMPATIBLE);
+        rio decoded;
+        ASSERT_EQ(initDecompressionRio(&decoded, &buffer_rio), C_ERR);
+        ASSERT_EQ(decoded.io.compressed.reader->error_kind, STREAM_READER_ERROR_INCOMPATIBLE);
+        ASSERT_TRUE(rioGetReadError(&decoded));
+        rioFreeCompression(&decoded);
 
         sdsfree(buf);
     }
@@ -1264,19 +1258,252 @@ TEST(CompressionTest, rioCompressionWriterFinishIdempotent) {
     rio buffer_rio;
     rioInitWithBuffer(&buffer_rio, buf);
 
-    streamWriter writer;
-    ASSERT_EQ(attachCompressionWriter(&buffer_rio, &writer, ALGO_LZ4), 0);
+    rio compressor;
+    ASSERT_EQ(initCompressionRio(&compressor, &buffer_rio, ALGO_LZ4), C_OK);
 
-    ASSERT_NE(rioWrite(&buffer_rio, "test", 4), 0u);
-    ASSERT_EQ(finishCompressionWriter(&buffer_rio, &writer), 0);
+    ASSERT_NE(rioWrite(&compressor, "test", 4), 0u);
+    ASSERT_EQ(finishCompressionRio(&compressor), C_OK);
     size_t len_after_first = sdslen(buffer_rio.io.buffer.ptr);
 
-    ASSERT_EQ(finishCompressionWriter(&buffer_rio, &writer), 0);
+    ASSERT_EQ(finishCompressionRio(&compressor), C_OK);
     size_t len_after_second = sdslen(buffer_rio.io.buffer.ptr);
     ASSERT_EQ(len_after_first, len_after_second) << "second finish should not produce more output";
 
-    freeCompressionWriter(&buffer_rio, &writer);
+    rioFreeCompression(&compressor);
     sdsfree(buffer_rio.io.buffer.ptr);
+}
+
+/* A compression rio only points at its target, so re-initializing the target
+ * in place, as a forkless sync does when it swaps output sinks, continues the
+ * same frame. */
+TEST(CompressionTest, rioCompressionSurvivesTargetReinit) {
+    const size_t payload_len = 256 * 1024;
+    const size_t split = payload_len / 2;
+    uint8_t *payload = (uint8_t *)zmalloc(payload_len);
+    fillRoundTripPayload(payload, payload_len);
+
+    for (size_t i = 0; i < sizeof(testCompressionAlgos) / sizeof(testCompressionAlgos[0]); i++) {
+        compressionAlgo algo = testCompressionAlgos[i];
+        rio target;
+        rioInitWithBuffer(&target, sdsempty());
+        rio compressor;
+        ASSERT_EQ(initCompressionRio(&compressor, &target, algo), C_OK);
+
+        ASSERT_NE(rioWrite(&compressor, payload, split), 0u);
+        sds encoded = target.io.buffer.ptr;
+        rioInitWithBuffer(&target, sdsempty());
+        ASSERT_NE(rioWrite(&compressor, payload + split, payload_len - split), 0u);
+        ASSERT_EQ(finishCompressionRio(&compressor), C_OK);
+        ASSERT_EQ(compressor.processed_bytes, payload_len);
+
+        encoded = sdscatsds(encoded, target.io.buffer.ptr);
+        sdsfree(target.io.buffer.ptr);
+        EXPECT_EQ(decodeRoundTripPayload(algo, TEST_COMPRESSION_LAYER_RIO, encoded, true, payload, payload_len, 0, 0),
+                  C_OK)
+            << compressionAlgoName(algo);
+        sdsfree(encoded);
+        rioFreeCompression(&compressor);
+    }
+    zfree(payload);
+}
+
+/* Compression rios stack: each layer is just another rio. */
+TEST(CompressionTest, rioCompressionStacks) {
+    const char *payload = "stacked compression rios";
+    const size_t payload_len = strlen(payload);
+    rio target, inner, outer;
+    rioInitWithBuffer(&target, sdsempty());
+    ASSERT_EQ(initCompressionRio(&inner, &target, ALGO_LZ4), C_OK);
+    ASSERT_EQ(initCompressionRio(&outer, &inner, ALGO_LZ4), C_OK);
+    ASSERT_NE(rioWrite(&outer, payload, payload_len), 0u);
+    ASSERT_EQ(rioFinishCompression(&outer), 1);
+    ASSERT_EQ(rioFinishCompression(&inner), 1);
+    rioFreeCompression(&outer);
+    rioFreeCompression(&inner);
+
+    rio source, decode_outer, decode_inner;
+    rioInitWithBuffer(&source, target.io.buffer.ptr);
+    ASSERT_EQ(initDecompressionRio(&decode_outer, &source), C_OK);
+    ASSERT_EQ(rioInitWithDecompression(&decode_inner, &decode_outer), C_OK);
+    ASSERT_EQ(rioCompressionAlgo(&decode_inner), ALGO_LZ4);
+    char out[64];
+    ASSERT_NE(rioRead(&decode_inner, out, payload_len), 0u);
+    EXPECT_EQ(memcmp(out, payload, payload_len), 0);
+    ASSERT_EQ(rioFinishCompression(&decode_inner), 1);
+    ASSERT_EQ(rioFinishCompression(&decode_outer), 1);
+    rioFreeCompression(&decode_inner);
+    rioFreeCompression(&decode_outer);
+    sdsfree(target.io.buffer.ptr);
+}
+
+static size_t failingRioWrite(rio *r, const void *buf, size_t len) {
+    (void)r;
+    (void)buf;
+    (void)len;
+    return 0;
+}
+
+/* Each layer latches its own write error, and an asynchronous close of the
+ * target is carried up to the compression rio. */
+TEST(CompressionTest, rioCompressionPropagatesTargetErrors) {
+    {
+        rio target;
+        rioInitWithBuffer(&target, sdsempty());
+        target.write = failingRioWrite;
+        rio compressor;
+        ASSERT_EQ(initCompressionRio(&compressor, &target, ALGO_LZ4), C_OK);
+
+        ASSERT_EQ(rioWrite(&compressor, "x", 1), 0u);
+        ASSERT_TRUE(rioGetWriteError(&target));
+        ASSERT_TRUE(rioGetWriteError(&compressor));
+        ASSERT_FALSE(rioGetAsyncCloseError(&compressor));
+        ASSERT_EQ(rioFinishCompression(&compressor), 0);
+
+        rioFreeCompression(&compressor);
+        sdsfree(target.io.buffer.ptr);
+    }
+
+    {
+        rio target;
+        rioInitWithBuffer(&target, sdsempty());
+        rio compressor;
+        ASSERT_EQ(initCompressionRio(&compressor, &target, ALGO_LZ4), C_OK);
+
+        rioCloseASAP(&target);
+        ASSERT_EQ(rioWrite(&compressor, "x", 1), 0u);
+        ASSERT_FALSE(rioGetWriteError(&target));
+        ASSERT_TRUE(rioGetAsyncCloseError(&compressor));
+        ASSERT_TRUE(rioGetWriteError(&compressor)) << "the frame is broken once its envelope write fails";
+        ASSERT_EQ(sdslen(target.io.buffer.ptr), 0u);
+
+        rioFreeCompression(&compressor);
+        sdsfree(target.io.buffer.ptr);
+    }
+
+    {
+        /* The codec cannot start: the rio starts with a write error. */
+        rio target;
+        rioInitWithBuffer(&target, sdsempty());
+        rio compressor;
+        rioInitWithCompression(&compressor, ALGO_LZF, &target);
+        ASSERT_TRUE(rioGetWriteError(&compressor));
+        ASSERT_EQ(rioWrite(&compressor, "x", 1), 0u);
+        ASSERT_EQ(rioFinishCompression(&compressor), 0);
+        ASSERT_EQ(sdslen(target.io.buffer.ptr), 0u);
+        rioFreeCompression(&compressor);
+        sdsfree(target.io.buffer.ptr);
+    }
+}
+
+static int abort_test_writes = 0;
+
+static int abortTestWrites(rio *r) {
+    (void)r;
+    return abort_test_writes;
+}
+
+/* An abort callback on the target stops logical writes before they reach the
+ * codec, so an aborted write is not a write error and the frame stays
+ * usable. */
+TEST(CompressionTest, rioCompressionForwardsAbortCheck) {
+    const char *before = "before-abort;";
+    const char *after = "after-abort";
+    sds expected = sdscat(sdsnew(before), after);
+
+    rio target;
+    rioInitWithBuffer(&target, sdsempty());
+    target.check_abort_between_writes = abortTestWrites;
+    rio compressor;
+    ASSERT_EQ(initCompressionRio(&compressor, &target, ALGO_LZ4), C_OK);
+
+    abort_test_writes = 0;
+    ASSERT_NE(rioWrite(&compressor, before, strlen(before)), 0u);
+    abort_test_writes = 1;
+    ASSERT_EQ(rioWrite(&compressor, "dropped", 7), 0u);
+    ASSERT_FALSE(rioGetWriteError(&compressor));
+    ASSERT_FALSE(rioGetWriteError(&target));
+    abort_test_writes = 0;
+    ASSERT_NE(rioWrite(&compressor, after, strlen(after)), 0u);
+    ASSERT_EQ(finishCompressionRio(&compressor), C_OK);
+
+    EXPECT_EQ(decodeRoundTripPayload(ALGO_LZ4, TEST_COMPRESSION_LAYER_RIO, target.io.buffer.ptr, true,
+                                     (const uint8_t *)expected, sdslen(expected), 0, 0),
+              C_OK);
+    rioFreeCompression(&compressor);
+    sdsfree(target.io.buffer.ptr);
+    sdsfree(expected);
+}
+
+/* rdbLoadRio relies on the decoder leaving its source exactly after the frame,
+ * where an AOF tail or the diskless $EOF mark follows. */
+TEST(CompressionTest, rioDecompressionLeavesSourceAfterFrame) {
+    const size_t payload_len = 64 * 1024;
+    const char *trailer = "TRAILER-BYTES-AFTER-FRAME";
+    const size_t trailer_len = strlen(trailer);
+    uint8_t *payload = (uint8_t *)zmalloc(payload_len);
+    uint8_t *output = (uint8_t *)zmalloc(payload_len);
+    fillRoundTripPayload(payload, payload_len);
+
+    for (size_t i = 0; i < sizeof(testCompressionAlgos) / sizeof(testCompressionAlgos[0]); i++) {
+        compressionAlgo algo = testCompressionAlgos[i];
+        sds encoded;
+        ASSERT_EQ(encodeRoundTripPayload(algo, TEST_COMPRESSION_LAYER_RIO, payload, payload_len, &encoded), C_OK);
+        size_t frame_len = sdslen(encoded);
+        encoded = sdscatlen(encoded, trailer, trailer_len);
+
+        rio source;
+        rioInitWithBuffer(&source, encoded);
+        rio decoded;
+        ASSERT_EQ(initDecompressionRio(&decoded, &source), C_OK);
+        ASSERT_EQ(rioCompressionAlgo(&decoded), algo);
+        ASSERT_NE(decoded.flags & RIO_FLAG_STREAMING_COMPRESSION, 0u);
+
+        ASSERT_NE(rioRead(&decoded, output, payload_len), 0u);
+        EXPECT_EQ(memcmp(output, payload, payload_len), 0);
+        ASSERT_EQ(rioFinishCompression(&decoded), 1);
+        ASSERT_EQ(source.processed_bytes, frame_len);
+        ASSERT_EQ((size_t)rioTell(&decoded), frame_len);
+
+        char tail[64];
+        ASSERT_NE(rioRead(&source, tail, trailer_len), 0u);
+        EXPECT_EQ(memcmp(tail, trailer, trailer_len), 0);
+        ASSERT_EQ(rioRead(&source, tail, 1), 0u);
+
+        rioFreeCompression(&decoded);
+        sdsfree(encoded);
+    }
+    zfree(output);
+    zfree(payload);
+}
+
+/* An asynchronous close of the source stops the decoder at its next source
+ * read and is reported on the compression rio too. */
+TEST(CompressionTest, rioDecompressionInheritsSourceClose) {
+    const size_t payload_len = 3 * STREAM_READER_BUFFER_SIZE_DEFAULT;
+    uint8_t *payload = (uint8_t *)zmalloc(payload_len);
+    uint8_t *output = (uint8_t *)zmalloc(payload_len);
+    fillRoundTripPayload(payload, payload_len);
+
+    sds encoded;
+    ASSERT_EQ(encodeRoundTripPayload(ALGO_LZ4, TEST_COMPRESSION_LAYER_RIO, payload, payload_len, &encoded), C_OK);
+    rio source;
+    rioInitWithBuffer(&source, encoded);
+    rio decoded;
+    ASSERT_EQ(initDecompressionRio(&decoded, &source), C_OK);
+
+    ASSERT_NE(rioRead(&decoded, output, 1), 0u);
+    rioCloseASAP(&source);
+    ASSERT_EQ(rioRead(&decoded, output + 1, payload_len - 1), 0u);
+    ASSERT_TRUE(rioGetAsyncCloseError(&decoded));
+    ASSERT_TRUE(rioGetReadError(&decoded));
+    ASSERT_FALSE(rioGetReadError(&source));
+    ASSERT_EQ(decoded.io.compressed.reader->error_kind, STREAM_READER_ERROR_IO);
+    ASSERT_EQ(rioFinishCompression(&decoded), 0);
+
+    rioFreeCompression(&decoded);
+    sdsfree(encoded);
+    zfree(output);
+    zfree(payload);
 }
 
 /* Pull readers use codec input hints to stop exactly at the frame boundary so
@@ -1801,6 +2028,34 @@ TEST(replCompression, pushReaderDrainsBufferedOutputWithoutMoreInput) {
  * may follow the source frame. Trailing bytes, whether they arrive with the
  * frame end or in a later write, must fail the transcode rather than be
  * dropped or trip the push reader's resume assertion. */
+/* Codec integrity checks follow rdbchecksum on both sides. */
+TEST(CompressionTest, rioCompressionChecksumsFollowRdbChecksum) {
+    const int rdb_checksum_cases[] = {1, 0};
+    for (size_t i = 0; i < sizeof(rdb_checksum_cases) / sizeof(rdb_checksum_cases[0]); i++) {
+        rio target;
+        rioInitWithBuffer(&target, sdsempty());
+        rio compressor;
+        server.rdb_checksum = rdb_checksum_cases[i];
+        rioInitWithCompression(&compressor, ALGO_LZ4, &target);
+        ASSERT_NE(rioWrite(&compressor, "rdb-bytes", 9), 0u);
+        ASSERT_EQ(rioFinishCompression(&compressor), 1);
+        rioFreeCompression(&compressor);
+
+        const unsigned char *stream = (const unsigned char *)target.io.buffer.ptr;
+        unsigned char flg = stream[assertVcsEnvelopeAnchor(stream, VCS_STREAM_RDB)];
+        EXPECT_EQ((flg & LZ4F_FLG_CONTENT_CHECKSUM) != 0, rdb_checksum_cases[i] != 0);
+
+        rio source, decoded;
+        rioInitWithBuffer(&source, target.io.buffer.ptr);
+        ASSERT_EQ(initDecompressionRio(&decoded, &source), C_OK);
+        EXPECT_EQ(decoded.io.compressed.reader->decompressor.skip_codec_checksum_validation,
+                  rdb_checksum_cases[i] == 0);
+        rioFreeCompression(&decoded);
+        sdsfree(target.io.buffer.ptr);
+    }
+    server.rdb_checksum = 1;
+}
+
 TEST(CompressionTest, rdbTranscoderRejectsBytesAfterSourceFrame) {
     const char *payload = "transcoder-frame-body";
     const char *trailer = "TRAILER";

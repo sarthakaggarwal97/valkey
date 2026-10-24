@@ -105,7 +105,7 @@ static void rdbCheckPrintOffset(const char *msg) {
     if (rdbstate.rio && (rdbstate.rio->flags & RIO_FLAG_STREAMING_COMPRESSION)) {
         printf("[logical offset %llu, physical offset %llu] %s\n",
                (unsigned long long)rdbstate.rio->processed_bytes,
-               (unsigned long long)rdbstate.rio->stream_processed_bytes, msg);
+               (unsigned long long)rdbstate.rio->io.compressed.target->processed_bytes, msg);
     } else {
         printf("[offset %llu] %s\n", rdbCheckOffset(), msg);
     }
@@ -644,9 +644,8 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
     char buf[1024];
     long long expiretime;
     static rio file_rdb;
-    rio *rdb = &file_rdb; /* Pointed by global struct riostate. */
-    streamReader stream_reader;
-    bool stream_reader_initialized = false;
+    static rio decoded_rdb;
+    rio *rdb = &decoded_rdb; /* Pointed by global struct riostate. */
     struct stat sb;
 
     now = mstime();
@@ -659,18 +658,16 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
     rioInitWithFile(&file_rdb, fp);
 
     /* Support both plain RDB files and VCS-wrapped streaming-compressed RDBs. */
-    rdbStreamReaderInitResult init_rc = rdbInitStreamReader(&file_rdb, &stream_reader, false, NULL);
-    if (init_rc == RDB_STREAM_READER_INIT_INCOMPATIBLE) {
-        rdbCheckError("Invalid or unsupported RDB stream envelope. "
-                      "File may require a Valkey version with streaming RDB "
-                      "compression support.");
+    if (rioInitWithDecompression(&decoded_rdb, &file_rdb) == C_ERR) {
+        if (decoded_rdb.io.compressed.reader->error_kind == STREAM_READER_ERROR_INCOMPATIBLE) {
+            rdbCheckError("Invalid or unsupported RDB stream envelope. "
+                          "File may require a Valkey version with streaming RDB "
+                          "compression support.");
+        } else {
+            rdbCheckError("Failed to inspect RDB stream metadata");
+        }
         goto err;
     }
-    if (init_rc != RDB_STREAM_READER_INIT_OK) {
-        rdbCheckError("Failed to inspect RDB stream metadata");
-        goto err;
-    }
-    stream_reader_initialized = true;
 
     rdbstate.rio = rdb;
     rdb->update_cksum = rdbLoadProgressCallback;
@@ -895,12 +892,12 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
         }
     }
 
-    if (stream_reader_initialized && streamReaderFinish(&stream_reader) == C_ERR) {
+    if (!rioFinishCompression(rdb)) {
         rdbCheckError("Compressed RDB stream did not end cleanly");
         goto err;
     }
 
-    if (stream_reader_initialized) rdbFreeStreamReader(&file_rdb, &stream_reader);
+    rioFreeCompression(rdb);
     if (closefile) fclose(fp);
     stopLoading(1);
     return 0;
@@ -916,7 +913,7 @@ eoferr: /* unexpected end of file is handled here with a fatal exit */
         rdbCheckError("Unexpected EOF reading RDB file");
     }
 err:
-    if (stream_reader_initialized) rdbFreeStreamReader(&file_rdb, &stream_reader);
+    rioFreeCompression(rdb);
     if (closefile) fclose(fp);
     stopLoading(0);
     return 1;

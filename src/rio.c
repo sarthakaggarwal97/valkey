@@ -129,7 +129,7 @@ static size_t rioFileWrite(rio *r, const void *buf, size_t len) {
         if (r->io.file.buffered >= r->io.file.autosync) {
             fflush(r->io.file.fp);
 
-            size_t processed = r->stream_processed_bytes + nwritten;
+            size_t processed = r->processed_bytes + nwritten;
             serverAssert(processed % r->io.file.autosync == 0);
             serverAssert(r->io.file.buffered == r->io.file.autosync);
 
@@ -478,81 +478,6 @@ void rioGenericUpdateChecksum(rio *r, const void *buf, size_t len) {
     r->cksum = crc64(r->cksum, buf, len);
 }
 
-void rioAttachStreamWriter(rio *r, streamWriter *writer) {
-    serverAssert(writer != NULL);
-    serverAssert(r->stream_writer == NULL);
-    serverAssert(r->stream_reader == NULL);
-    r->stream_writer = writer;
-}
-
-void rioDetachStreamWriter(rio *r) {
-    r->stream_writer = NULL;
-}
-
-void rioAttachStreamReader(rio *r, streamReader *reader) {
-    serverAssert(reader != NULL);
-    serverAssert(r->stream_reader == NULL);
-    serverAssert(r->stream_writer == NULL);
-    r->stream_reader = reader;
-}
-
-void rioDetachStreamReader(rio *r) {
-    r->stream_reader = NULL;
-}
-
-size_t rioWriteStream(rio *r, const void *buf, size_t len) {
-    serverAssert(r->stream_writer != NULL);
-    if (streamWriterWrite(r->stream_writer, buf, len) == C_OK) return 1;
-    r->flags |= RIO_FLAG_WRITE_ERROR;
-    return 0;
-}
-
-size_t rioReadStream(rio *r, void *buf, size_t len) {
-    serverAssert(r->stream_reader != NULL);
-
-    uint8_t *dst = (uint8_t *)buf;
-    size_t remaining = len;
-    while (remaining > 0) {
-        ssize_t nread = streamReaderRead(r->stream_reader, dst, remaining);
-        if (nread <= 0) {
-            r->flags |= RIO_FLAG_READ_ERROR;
-            return 0;
-        }
-        remaining -= (size_t)nread;
-        dst += nread;
-    }
-    return 1;
-}
-
-/* rioRead() is for callers that know an exact logical field size. A stream
- * reader instead treats its input buffer size as a capacity, so its callback
- * uses this upper-bound raw read. Read up to `len` bytes from the concrete
- * backend without stream dispatch or logical checksum/accounting. Returns:
- * - >0 bytes read
- * -  0 on EOF
- * - -1 on error (sticky read error is latched on the rio) */
-ssize_t rioReadRawPartial(rio *r, void *buf, size_t len) {
-    if (r->flags & (RIO_FLAG_READ_ERROR | RIO_FLAG_CLOSE_ASAP)) return -1;
-    if (len == 0) return 0;
-    if (!r->read_some) {
-        r->flags |= RIO_FLAG_READ_ERROR;
-        return -1;
-    }
-
-    size_t bytes_to_read =
-        (r->max_processing_chunk && r->max_processing_chunk < len) ? r->max_processing_chunk : len;
-    ssize_t got = r->read_some(r, buf, bytes_to_read);
-
-    if (got < 0) {
-        r->flags |= RIO_FLAG_READ_ERROR;
-        return -1;
-    }
-    if (got > 0) {
-        r->stream_processed_bytes += (size_t)got;
-    }
-    return got;
-}
-
 /* Set the file-based rio object to auto-fsync every 'bytes' file written.
  * By default this is set to zero that means no automatic file sync is
  * performed.
@@ -751,6 +676,215 @@ void rioFreeConnset(rio *r) {
     sdsfree(r->io.connset.buf);
 }
 
+/* ---------------- Whole-stream compression implementation ----------------
+ * A compression rio wraps a target rio. Logical bytes written to it are
+ * compressed into the target, and logical bytes read from it are decoded from
+ * the target. Each layer keeps its own error flags: the compression rio
+ * latches a read or write error when the codec or the target fails, and
+ * carries an asynchronous close of the target up to itself. */
+
+static void rioCompressInheritErrors(rio *r) {
+    r->flags |= r->io.compressed.target->flags & RIO_FLAG_CLOSE_ASAP;
+}
+
+/* streamWriter sink: encoded bytes go to the target. */
+static int rioCompressWriteTarget(void *ctx, const uint8_t *data, size_t len) {
+    return rioWrite((rio *)ctx, data, len) ? C_OK : C_ERR;
+}
+
+/* streamReader source: encoded bytes come from the target. The reader limits
+ * each request to the codec's input hint, so it never reads past the frame. */
+static ssize_t rioCompressReadTarget(void *ctx, void *buf, size_t len) {
+    return rioReadSome((rio *)ctx, buf, len);
+}
+
+/* Returns 1 or 0 for success/failure. */
+static size_t rioCompressWrite(rio *r, const void *buf, size_t len) {
+    streamWriter *writer = r->io.compressed.writer;
+    if (!writer) return 0; /* Error, a decompressing rio does not support writing. */
+    if (streamWriterWrite(writer, buf, len) == C_OK) return 1;
+    rioCompressInheritErrors(r);
+    return 0;
+}
+
+/* Returns 1 or 0 for success/failure. */
+static size_t rioCompressRead(rio *r, void *buf, size_t len) {
+    streamReader *reader = r->io.compressed.reader;
+    if (r->io.compressed.writer) return 0; /* Error, a compressing rio does not support reading. */
+    if (!reader) {
+        /* Plain file input, rewound after the probe. */
+        if (rioRead(r->io.compressed.target, buf, len)) return 1;
+        rioCompressInheritErrors(r);
+        return 0;
+    }
+
+    uint8_t *dst = (uint8_t *)buf;
+    while (len > 0) {
+        ssize_t nread = streamReaderRead(reader, dst, len);
+        if (nread <= 0) {
+            rioCompressInheritErrors(r);
+            return 0;
+        }
+        dst += nread;
+        len -= (size_t)nread;
+    }
+    return 1;
+}
+
+/* Partial-read variant: returns bytes read, 0 on EOF, -1 on error. */
+static ssize_t rioCompressReadSome(rio *r, void *buf, size_t len) {
+    streamReader *reader = r->io.compressed.reader;
+    if (r->io.compressed.writer) return -1;
+    ssize_t nread = reader ? streamReaderRead(reader, buf, len) : rioReadSome(r->io.compressed.target, buf, len);
+    if (nread < 0) rioCompressInheritErrors(r);
+    return nread;
+}
+
+/* Returns the read/write position in the target, i.e. in the encoded stream. */
+static off_t rioCompressTell(rio *r) {
+    return rioTell(r->io.compressed.target);
+}
+
+/* Flushes the target. Output the codec still buffers is emitted by later
+ * writes or by rioFinishCompression(). */
+static int rioCompressFlush(rio *r) {
+    return rioFlush(r->io.compressed.target);
+}
+
+/* Logical writes abort whenever the target would abort, so an abort callback
+ * installed on either layer is checked between logical chunks. */
+static int rioCompressCheckAbort(rio *r) {
+    rio *target = r->io.compressed.target;
+    return target->check_abort_between_writes && target->check_abort_between_writes(target);
+}
+
+static const rio rioCompressIO = {
+    .read = rioCompressRead,
+    .write = rioCompressWrite,
+    .tell = rioCompressTell,
+    .flush = rioCompressFlush,
+    .read_some = rioCompressReadSome,
+    .update_cksum = NULL,
+    .check_abort_between_writes = rioCompressCheckAbort,
+    .cksum = 0,
+    .flags = 0,
+    .processed_bytes = 0,
+    .max_processing_chunk = 0,
+    .io = {{NULL, 0}},
+};
+
+static void rioInitCompressed(rio *r, rio *target) {
+    *r = rioCompressIO;
+    /* The RDB checksum policy of the target carries over. */
+    r->flags = target->flags & RIO_FLAG_SKIP_RDB_CHECKSUM;
+    r->io.compressed.target = target;
+    r->io.compressed.writer = NULL;
+    r->io.compressed.reader = NULL;
+}
+
+/* Compress the logical bytes written to 'r' into 'target' with 'algo'. Codec
+ * integrity checksums follow rdbchecksum. If the codec cannot start, 'r' has
+ * a write error from the start. End the frame with rioFinishCompression()
+ * before writing anything else to the target, then release 'r' with
+ * rioFreeCompression(). */
+void rioInitWithCompression(rio *r, compressionAlgo algo, rio *target) {
+    rioInitCompressed(r, target);
+    r->flags |= RIO_FLAG_STREAMING_COMPRESSION;
+    r->io.compressed.writer = zmalloc(sizeof(streamWriter));
+    if (streamWriterInit(r->io.compressed.writer, algo, server.rdb_checksum, rioCompressWriteTarget, target) == C_ERR)
+        r->flags |= RIO_FLAG_WRITE_ERROR;
+}
+
+/* Probe 'target' for a VCS envelope and set up 'r' to read the logical
+ * stream. Compressed input is decoded, flagged with
+ * RIO_FLAG_STREAMING_COMPRESSION. Plain input is passed through unchanged,
+ * read from the target directly when it is a file the probe can be rewound
+ * in. Codec checksums are verified unless rdbchecksum, checksum validation, or
+ * the target's RDB checksum policy turns them off. A frame that ends early is
+ * truncated when the target is a connection that can deliver the rest later,
+ * and corrupt otherwise.
+ *
+ * Returns C_OK, or C_ERR when the envelope is invalid or unsupported or the
+ * codec cannot start; the reader's error_kind classifies the failure. Either
+ * way, release 'r' with rioFreeCompression(). */
+int rioInitWithDecompression(rio *r, rio *target) {
+    rioInitCompressed(r, target);
+    streamReaderConfig cfg = {
+        .allow_passthrough = true,
+        .skip_codec_checksum_validation = (target->flags & RIO_FLAG_SKIP_RDB_CHECKSUM) || !server.rdb_checksum ||
+                                          server.skip_checksum_validation,
+        .buffer_size = STREAM_READER_BUFFER_SIZE_DEFAULT,
+        .eof_mid_frame_is_truncation = (rioCheckType(target) == RIO_TYPE_CONN),
+    };
+    streamReader *reader = zmalloc(sizeof(*reader));
+    r->io.compressed.reader = reader;
+
+    compressionAlgo algo = ALGO_NONE;
+    if (streamReaderInit(reader, &cfg, rioCompressReadTarget, target, &algo) == C_ERR) {
+        r->flags |= RIO_FLAG_READ_ERROR;
+        return C_ERR;
+    }
+    if (algo != ALGO_NONE) {
+        r->flags |= RIO_FLAG_STREAMING_COMPRESSION;
+        return C_OK;
+    }
+
+    /* Replay the probe of a plain file through the file itself, keeping plain
+     * RDB loads off the passthrough path while retaining it for sources that
+     * cannot be rewound. */
+    size_t probe_len = reader->probe.header_len;
+    if (rioCheckType(target) == RIO_TYPE_FILE && probe_len <= target->processed_bytes &&
+        fseeko(target->io.file.fp, -(off_t)probe_len, SEEK_CUR) == 0) {
+        target->processed_bytes -= probe_len;
+        streamReaderFree(reader);
+        zfree(reader);
+        r->io.compressed.reader = NULL;
+    }
+    return C_OK;
+}
+
+/* End the compressed frame. A compressing rio writes the frame trailer to the
+ * target without flushing it; repeated calls after a success are no-ops. A
+ * decompressing rio consumes and validates the rest of the frame without
+ * reading past it, leaving the target at the first byte after the frame; on
+ * failure the reader's error_kind classifies it. Returns 1 on success and 0
+ * on failure, or when an earlier operation already failed. */
+int rioFinishCompression(rio *r) {
+    serverAssert(rioCheckType(r) == RIO_TYPE_COMPRESSED);
+    if (r->io.compressed.writer) {
+        if (r->flags & RIO_FLAG_WRITE_ERROR || r->flags & RIO_FLAG_CLOSE_ASAP) return 0;
+        if (streamWriterFinish(r->io.compressed.writer) == C_OK) return 1;
+        r->flags |= RIO_FLAG_WRITE_ERROR;
+    } else {
+        if (r->flags & RIO_FLAG_READ_ERROR || r->flags & RIO_FLAG_CLOSE_ASAP) return 0;
+        if (!r->io.compressed.reader || streamReaderFinish(r->io.compressed.reader) == C_OK) return 1;
+        r->flags |= RIO_FLAG_READ_ERROR;
+    }
+    rioCompressInheritErrors(r);
+    return 0;
+}
+
+/* Release the codec engine. The target is left to the caller. */
+void rioFreeCompression(rio *r) {
+    if (r->io.compressed.writer) {
+        streamWriterFree(r->io.compressed.writer);
+        zfree(r->io.compressed.writer);
+        r->io.compressed.writer = NULL;
+    }
+    if (r->io.compressed.reader) {
+        streamReaderFree(r->io.compressed.reader);
+        zfree(r->io.compressed.reader);
+        r->io.compressed.reader = NULL;
+    }
+}
+
+/* The codec carrying the logical stream, or ALGO_NONE for plain input. */
+compressionAlgo rioCompressionAlgo(rio *r) {
+    if (rioCheckType(r) != RIO_TYPE_COMPRESSED || !(r->flags & RIO_FLAG_STREAMING_COMPRESSION)) return ALGO_NONE;
+    if (r->io.compressed.writer) return r->io.compressed.writer->compressor.algo;
+    return r->io.compressed.reader->decompressor.algo;
+}
+
 /* Check the type of rio. */
 uint8_t rioCheckType(rio *r) {
     if (r->read == rioFileRead) {
@@ -759,6 +893,8 @@ uint8_t rioCheckType(rio *r) {
         return RIO_TYPE_BUFFER;
     } else if (r->read == rioConnRead) {
         return RIO_TYPE_CONN;
+    } else if (r->read == rioCompressRead) {
+        return RIO_TYPE_COMPRESSED;
     } else {
         /* r->read == rioFdRead */
         return RIO_TYPE_FD;
