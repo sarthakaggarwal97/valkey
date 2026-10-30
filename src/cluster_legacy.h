@@ -552,6 +552,8 @@ struct clusterState {
     uint64_t failover_auth_epoch;     /* Epoch of the current election. */
     int cant_failover_reason;         /* Why a replica is currently not able to
                                        * failover. See the CANT_FAILOVER_* macros. */
+    mstime_t primary_ok_time;         /* Last time we were a primary with the cluster
+                                       * state OK. See clusterSetPrimary(). */
     /* Manual failover state in common. */
     mstime_t mf_end; /* Manual failover time limit (ms unixtime).
                         It is zero if there is no MF in progress. */

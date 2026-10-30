@@ -1580,6 +1580,7 @@ void clusterInit(void) {
     server.cluster->failover_failed_primary_rank = 0;
     server.cluster->failover_auth_epoch = 0;
     server.cluster->cant_failover_reason = CLUSTER_CANT_FAILOVER_NONE;
+    server.cluster->primary_ok_time = 0;
     server.cluster->lastVoteEpoch = 0;
 
     /* Initialize stats */
@@ -6915,6 +6916,7 @@ void clusterCron(void) {
     mstime_t min_pong = 0, now = mstime();
     clusterNode *min_pong_node = NULL;
     static unsigned long long iteration = 0;
+    static mstime_t prev_cron_time = 0;
     iteration++; /* Number of times this function was called so far. */
 
     clusterUpdateMyselfHostname();
@@ -7094,6 +7096,17 @@ void clusterCron(void) {
     }
 
     if (update_state || server.cluster->state == CLUSTER_FAIL) clusterUpdateState();
+
+    /* Remember the last time we were a primary with the cluster state OK,
+     * to tell how old our data is if we get demoted. If this function did not
+     * run for a node timeout, the process was not running (e.g. it was
+     * stopped), so we may have been failed over meanwhile without knowing
+     * it yet, and our cluster state is not to be trusted. */
+    if (clusterNodeIsPrimary(myself) && server.cluster->state == CLUSTER_OK &&
+        now - prev_cron_time < server.cluster_node_timeout) {
+        server.cluster->primary_ok_time = now;
+    }
+    prev_cron_time = now;
 }
 
 /* This function is called before the event handler returns to sleep for
@@ -7588,7 +7601,8 @@ static void clusterSetPrimary(clusterNode *n, int closeSlots, int full_sync_requ
     serverAssert(n != myself);
     serverAssert(myself->numslots == 0);
 
-    if (clusterNodeIsPrimary(myself)) {
+    int was_primary = clusterNodeIsPrimary(myself);
+    if (was_primary) {
         myself->flags &= ~(CLUSTER_NODE_PRIMARY | CLUSTER_NODE_MIGRATE_TO);
         myself->flags |= CLUSTER_NODE_REPLICA;
     } else {
@@ -7603,6 +7617,18 @@ static void clusterSetPrimary(clusterNode *n, int closeSlots, int full_sync_requ
     updateShardId(myself, n->shard_id);
     clusterNodeAddReplica(n, myself);
     replicationSetPrimary(n->ip, getNodeDefaultReplicationPort(n), full_sync_required, true);
+    /* A primary demoted to a replica of its own shard has the shard's data
+     * as of the last time it was a primary with the cluster state OK, so count
+     * its data age from then. Otherwise repl_down_since stays 0 ("never
+     * synced") until the first sync with the new primary completes, and if
+     * the new primary fails before that, we refuse to fail over forever
+     * although we owned the slots a moment ago. A primary that restarted, or
+     * that was in a minority partition, keeps the cluster state FAIL until it
+     * rejoins (see clusterUpdateState()), so its data age still counts from
+     * before that, or stays unknown (0) after a restart. */
+    if (was_primary && !full_sync_required) {
+        server.repl_down_since = server.cluster->primary_ok_time / 1000;
+    }
     removeAllNotOwnedShardChannelSubscriptions();
     resetManualFailover();
 
