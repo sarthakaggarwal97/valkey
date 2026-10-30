@@ -5975,7 +5975,19 @@ void clusterSendFailoverAuthIfNeeded(clusterNode *node, clusterMsg *request) {
 
     /* We can vote for this replica. */
     server.cluster->lastVoteEpoch = server.cluster->currentEpoch;
-    clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG | CLUSTER_TODO_FSYNC_CONFIG);
+    if (server.cluster_configfile_save_behavior == CLUSTER_CONFIGFILE_SAVE_BEHAVIOR_SYNC) {
+        /* The vote must reach the disk before the candidate can count it, or
+         * we could restart without it and vote again in the same epoch. Save
+         * it now rather than in clusterBeforeSleep(): the ACK goes out on
+         * node->link, not on the link the request came in on, so the write
+         * barrier does not hold it back. node->link can be written later in
+         * this event loop iteration, or from processEventsWhileBlocked()
+         * during a busy script, before clusterBeforeSleep() runs. */
+        bioDrainWorker(BIO_CLUSTER_SAVE);
+        clusterSaveConfigOrDie(true);
+    } else {
+        clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG | CLUSTER_TODO_FSYNC_CONFIG);
+    }
     clusterSendFailoverAuth(node);
     serverLog(LL_NOTICE, "Failover auth granted to %.40s (%s) for epoch %llu", node->name, humanNodename(node),
               (unsigned long long)server.cluster->currentEpoch);
