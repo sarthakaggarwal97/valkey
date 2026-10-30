@@ -40,6 +40,9 @@
 "CONFIG SET param val " "[parameter value ...]"
 "CONFIG SET param val param2 val2 " "[parameter value ...]"
 
+# Repeated one-of subcommand arguments: SENTINEL SIMULATE-FAILURE [mode ...]
+"SENTINEL SIMULATE-FAILURE " "CRASH-AFTER-ELECTION|CRASH-AFTER-PROMOTION|HELP [CRASH-AFTER-ELECTION|CRASH-AFTER-PROMOTION|HELP ...]"
+
 # Command with nested optional args:  ZRANDMEMBER key [count [WITHSCORES]]
 "ZRANDMEMBER k " "[count [WITHSCORES]]"
 "ZRANDMEMBER k 3 " "[WITHSCORES]"
