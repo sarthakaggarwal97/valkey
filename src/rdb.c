@@ -145,6 +145,13 @@ void rdbReportError(int corruption_error, int linenum, char *reason, ...) {
         /* log in VERBOSE, and return (don't exit). */
         serverLog(LL_VERBOSE, "%s", msg);
         return;
+    } else if (server.loading_rio && rioGetAsyncCloseError(server.loading_rio)) {
+        /* The load was stopped on purpose with rioCloseASAP(), e.g. by a dual
+         * channel replica whose main channel dropped while it was loading the
+         * RDB, even from disk. The failed read is ours, not a broken input, so
+         * log and return: the caller fails the load and the sync is retried. */
+        serverLog(LL_WARNING, "%s. RDB loading was stopped, resuming operation.", msg);
+        return;
     } else if (rdbCheckMode) {
         /* If we're inside the rdb checker, let it handle the error. */
         rdbCheckError("%s", msg);

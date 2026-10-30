@@ -1377,6 +1377,50 @@ start_server {tags {"dual-channel-replication external:skip"}} {
     }
 }
 
+foreach compression {no lz4} {
+    start_server {tags {"dual-channel-replication external:skip"}} {
+        set primary [srv 0 client]
+        set primary_host [srv 0 host]
+        set primary_port [srv 0 port]
+
+        $primary config set repl-diskless-sync yes
+        $primary config set dual-channel-replication-enabled yes
+        $primary config set repl-diskless-sync-delay 0
+        $primary config set repl-compression $compression
+        $primary debug populate 10000 primary 1
+
+        start_server {} {
+            set replica [srv 0 client]
+
+            $replica config set dual-channel-replication-enabled yes
+            $replica config set loglevel debug
+            $replica config set repl-diskless-load disabled
+            $replica config set repl-compression $compression
+            # Keep the downloaded RDB file stream-compressed as well.
+            if {$compression ne "no"} {$replica config set rdbcompression $compression}
+            $replica config set loading-process-events-interval-bytes 1024
+            # Loading the 10000 keys from disk takes ~10 seconds.
+            $replica config set key-load-delay 1000
+
+            test "Replica notice main-connection killed during rdb load from disk (repl-compression $compression)" {
+                set loglines [count_log_lines 0]
+                $replica replicaof $primary_host $primary_port
+                wait_for_log_messages 0 {"*Loading RDB produced by Valkey version*"} $loglines 1000 10
+                set replica_main_conn_id [get_client_id_by_last_cmd $primary "psync"]
+                assert {$replica_main_conn_id != ""}
+                set loglines [count_log_lines 0]
+                $primary client kill id $replica_main_conn_id
+                # The replica stops loading the RDB it no longer needs and retries
+                # the sync, instead of treating the stopped load as a short read.
+                wait_for_log_messages 0 {"*Failed trying to load the PRIMARY synchronization DB from disk*"} $loglines 1000 10
+                $replica config set key-load-delay 0
+                verify_replica_online $primary 0 1000
+                assert_equal [$primary dbsize] [$replica dbsize]
+            }
+        }
+    }
+}
+
 test "Test dual-channel-replication replica can lazyfree the local buffer" {
     start_server {tags {"dual-channel-replication external:skip"}} {
         set primary [srv 0 client]
