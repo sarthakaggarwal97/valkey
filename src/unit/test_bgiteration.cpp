@@ -1218,6 +1218,55 @@ TEST_F(BgIterationTest, modFutureItem_start) {
 }
 
 
+
+// Once a consistent iteration has queued its last item, the iterator stays alive until the client
+//  reads the completion.  Keys expedited early and then modified are skipped by the scan (they are
+//  newer than the snapshot), so they remain in the early iterate set.  A key deleted during this
+//  window is not removed from that set (bgIteration_keyDelete skips completed iterators), so the set
+//  holds a pointer to freed memory.  When the allocator hands that address to another key's new
+//  value, bgIteration_updateDbEntryPtr must not trip over the stale pointer.
+TEST_F(BgIterationTest, modFutureItems_start_deleteAndReallocAfterComplete) {
+    bgIterator *it = bgIteratorCreateFullScanIter("iter", BGITERATOR_CONSISTENCY_START, NULL,
+                                                  iteratorCleanupFn, PRIVDATA);
+
+    // Read key 0.  Keys 1 & 2 are queued.
+    expectReadKey(it, 0);
+
+    // Expedite and then modify key 6.  It's now in the early iterate set, under its new address.
+    c = getWriteClient(6, "xxx");
+    simulateBlockedWrite(c);
+    expectReadKey(it, 6);
+    expectReadKeyWithUnblock(it, 1, 6);
+    simulateUnblockedWriteWithModification(c);
+
+    // Same for key 7.
+    client *c7 = getWriteClient(7, "yyy");
+    simulateBlockedWrite(c7);
+    expectReadKey(it, 7);
+    expectReadKeyWithUnblock(it, 2, 7);
+    simulateUnblockedWriteWithModification(c7);
+    freeTestClient(c7);
+
+    // Read the rest.  Keys 6 & 7 are skipped by the scan as they were modified.
+    expectReadKeySequence(it, 3, 5);
+    expectReadKeySequence(it, 8, LAST_ITEM);
+
+    // Queue the completion, but don't read it yet.  The iterator is completed but still alive.
+    bgIteration_feedIterators();
+
+    // Delete key 6.  This frees its dbEntry.
+    dbEntry *freed = getItem(6);
+    sds delKey = sdsnew(keyStr(6));
+    bgIteration_keyDelete(getDbFromItemNum(6), delKey);
+    sdsfree(delKey);
+    simpleDelItem(6);
+
+    // Simulate a SET on key 7 whose new value is allocated at the address just freed.
+    bgIteration_updateDbEntryPtr(getItem(7), freed);
+
+    expectReadComplete(it);
+}
+
 // Modify a future item, with replication but without consistency.  (Like a Forkless Full Sync operation)
 // Our expectation for this case is that the modification should proceed without blocking, as the
 //  mode is inconsistent.  We don't expect replication, as we haven't reached the item yet.  We'll

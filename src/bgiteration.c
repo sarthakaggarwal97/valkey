@@ -2691,6 +2691,10 @@ void bgIteration_updateDbEntryPtr(dbEntry *old, dbEntry *new) {
     listRewind(allIterators, &li);
     while ((node = listNext(&li)) != NULL) {
         bgIterator *it = listNodeValue(node);
+        /* A completed or terminated iterator no longer uses early_iterate_entries, so entries freed
+         * since then are not removed from it (bgIteration_keyDelete() skips such iterators).  One of
+         * those stale pointers may be the address just allocated for 'new'. */
+        if (it->completed || it->terminated) continue;
         if (hashtableDelete(it->early_iterate_entries, old)) {
             if (BGITERATION_DEBUG) {
                 debugBuffer = sdscatprintf(debugBuffer, "EARLY LIST UPDATE %p -> %p\n", (void *)old, (void *)new);
