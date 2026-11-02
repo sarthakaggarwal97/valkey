@@ -57,6 +57,11 @@
 "SCAN 2 MATCH " "pattern [COUNT count] [TYPE type]"
 "SCAN 2 COUNT " "count [MATCH pattern] [TYPE type]"
 
+# CLIENT TRACKING modes are mutually exclusive.
+"CLIENT TRACKING ON " "[REDIRECT client-id] [PREFIX prefix [PREFIX prefix ...]] [BCAST|OPTIN|OPTOUT] [NOLOOP]"
+"CLIENT TRACKING ON BCAST " "[REDIRECT client-id] [PREFIX prefix [PREFIX prefix ...]] [NOLOOP]"
+"CLIENT TRACKING ON BCAST OPTIN " ""
+
 # One-of choices: BLMOVE source destination LEFT|RIGHT LEFT|RIGHT timeout
 "BLMOVE src dst LEFT " "LEFT|RIGHT timeout"
 

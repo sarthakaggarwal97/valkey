@@ -49,22 +49,26 @@
                 "multiple_token": true
             },
             {
-                "name": "BCAST",
-                "token": "BCAST",
-                "type": "pure-token",
-                "optional": true
-            },
-            {
-                "name": "OPTIN",
-                "token": "OPTIN",
-                "type": "pure-token",
-                "optional": true
-            },
-            {
-                "name": "OPTOUT",
-                "token": "OPTOUT",
-                "type": "pure-token",
-                "optional": true
+                "name": "mode",
+                "type": "oneof",
+                "optional": true,
+                "arguments": [
+                    {
+                        "name": "bcast",
+                        "token": "BCAST",
+                        "type": "pure-token"
+                    },
+                    {
+                        "name": "optin",
+                        "token": "OPTIN",
+                        "type": "pure-token"
+                    },
+                    {
+                        "name": "optout",
+                        "token": "OPTOUT",
+                        "type": "pure-token"
+                    }
+                ]
             },
             {
                 "name": "NOLOOP",

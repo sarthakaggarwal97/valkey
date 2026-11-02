@@ -173,6 +173,21 @@ start_server {tags {"introspection"}} {
         }
     }
 
+    test {COMMAND DOCS groups mutually exclusive CLIENT TRACKING modes} {
+        set docs [dict get [r command docs client|tracking] client|tracking]
+        set arguments [dict get $docs arguments]
+        set mode [lindex $arguments 3]
+        assert_equal mode [dict get $mode name]
+        assert_equal oneof [dict get $mode type]
+        assert_equal {optional} [dict get $mode flags]
+
+        set alternatives [dict get $mode arguments]
+        assert_equal {bcast optin optout} [lmap argument $alternatives {dict get $argument name}]
+        assert_equal BCAST [dict get [lindex $alternatives 0] token]
+        assert_equal OPTIN [dict get [lindex $alternatives 1] token]
+        assert_equal OPTOUT [dict get [lindex $alternatives 2] token]
+    }
+
     test {COMMAND GETKEYS GET} {
         assert_equal {key} [r command getkeys get key]
     }
