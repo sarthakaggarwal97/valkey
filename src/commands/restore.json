@@ -84,6 +84,7 @@
             {
                 "name": "eviction",
                 "type": "oneof",
+                "multiple": true,
                 "optional": true,
                 "arguments": [
                     {

@@ -154,7 +154,7 @@ start_server {tags {"introspection"}} {
             set docs [dict get [r command docs $command] $command]
             set eviction [lindex [dict get $docs arguments] 5]
             assert_equal oneof [dict get $eviction type]
-            assert_equal {optional} [dict get $eviction flags]
+            assert_equal {optional multiple} [dict get $eviction flags]
 
             set options [dict get $eviction arguments]
             assert_equal IDLETIME [dict get [lindex $options 0] token]
