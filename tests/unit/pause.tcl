@@ -413,6 +413,7 @@ start_server {tags {"pause network"}} {
 
         test "Busy script ending while the replica's postponed primary is paused" {
             r client pause 100000 write
+            test_defer {r client unpause}
             $master set foo3 bar3
             wait_for_condition 50 100 {
                 [s slave_read_repl_offset] == [status $master master_repl_offset]
@@ -420,21 +421,27 @@ start_server {tags {"pause network"}} {
                 fail "Replica did not read the write."
             }
 
-            r config set busy-reply-threshold 10
-            set rd [valkey_deferring_client]
-            $rd eval_ro {while true do end} 0
-            wait_for_condition 50 100 {
-                [catch {r ping} e] == 1
-            } else {
-                fail "Script did not become busy."
-            }
-            r script kill
-            catch {$rd read}
-            $rd close
+            test_config_set r busy-reply-threshold 10
+            set script_client [valkey_deferring_client]
+            test_defer [list $script_client close]
+            set control_client [valkey_deferring_client]
+            test_defer [list $control_client close]
+            test_defer_fail {catch {r script kill}}
 
+            # Make both clients readable before resuming so IO threads can put
+            # them in one batch, with the control commands sent after EVAL_RO.
+            set replica_pid [s process_id]
+            pause_process $replica_pid
+            $script_client eval_ro {while true do end} 0
+            $control_client ping
+            $control_client script kill
+            resume_process $replica_pid
+
+            assert_error {BUSY*} {$control_client read}
+            assert_equal OK [$control_client read]
+            assert_error {ERR Script killed by user with SCRIPT KILL*} {$script_client read}
             assert_equal PONG [r ping]
             r client unpause
-            r config set busy-reply-threshold 5000
         }
     }
 

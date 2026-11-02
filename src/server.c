@@ -1959,6 +1959,9 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
      * events to handle. */
     if (ProcessingEventsWhileBlocked) {
         uint64_t processed = 0;
+        /* A long-running command may have yielded in the middle of an IO-read
+         * batch. Drain the remaining clients before processing new IO responses. */
+        processClientsCommandsBatch();
         processed += processIOThreadsResponses();
         processed += connTypeProcessPendingData();
         /* Keep an online compressed primary draining when a long-running
