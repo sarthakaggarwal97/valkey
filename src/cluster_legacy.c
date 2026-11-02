@@ -4653,7 +4653,14 @@ int clusterProcessPacket(clusterLink *link) {
                      *
                      * Therefore, it's essential to delay any shard_id updates until after the replication
                      * relationship has been properly established and verified. */
-                    if (myself->replicaof && myself->replicaof->replicaof && myself->replicaof->replicaof != myself) {
+                    clusterNode *grand_primary = myself->replicaof ? myself->replicaof->replicaof : NULL;
+                    if (grand_primary && grand_primary != myself && nodeFailed(grand_primary)) {
+                        serverLog(LL_NOTICE,
+                                  "I'm a sub-replica, but node %.40s (%s) is failed. "
+                                  "Keeping my current primary %.40s (%s)",
+                                  grand_primary->name, humanNodename(grand_primary),
+                                  myself->replicaof->name, humanNodename(myself->replicaof));
+                    } else if (grand_primary && grand_primary != myself) {
                         /* Safeguard against sub-replicas.
                          *
                          * A replica's primary can turn itself into a replica if its last slot
@@ -4665,9 +4672,8 @@ int clusterProcessPacket(clusterLink *link) {
                          * replica during a failover. In this case, they are in the same shard,
                          * so we can try a psync. */
                         serverLog(LL_NOTICE, "I'm a sub-replica! Reconfiguring myself as a replica of %.40s from %.40s",
-                                  myself->replicaof->replicaof->name, myself->replicaof->name);
-                        clusterSetPrimary(myself->replicaof->replicaof, 1,
-                                          !areInSameShard(myself->replicaof->replicaof, myself));
+                                  grand_primary->name, myself->replicaof->name);
+                        clusterSetPrimary(grand_primary, 1, !areInSameShard(grand_primary, myself));
                         clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG | CLUSTER_TODO_UPDATE_STATE |
                                              CLUSTER_TODO_FSYNC_CONFIG | CLUSTER_TODO_BROADCAST_ALL);
                     }
