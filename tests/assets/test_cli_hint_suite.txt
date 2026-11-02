@@ -60,6 +60,11 @@
 # One-of choices: BLMOVE source destination LEFT|RIGHT LEFT|RIGHT timeout
 "BLMOVE src dst LEFT " "LEFT|RIGHT timeout"
 
+# Mutually exclusive optional arguments: LCS key1 key2 [LEN|IDX] [MINMATCHLEN min-match-len] [WITHMATCHLEN]
+"LCS key1 key2 " "[LEN|IDX] [MINMATCHLEN min-match-len] [WITHMATCHLEN]"
+"LCS key1 key2 LEN " "[MINMATCHLEN min-match-len] [WITHMATCHLEN]"
+"LCS key1 key2 IDX " "[MINMATCHLEN min-match-len] [WITHMATCHLEN]"
+
 # Optional args can be in any order: ZRANGE key min max [BYSCORE|BYLEX] [REV] [LIMIT offset count] [WITHSCORES] [XX]
 "ZRANGE k 1 2 " "[BYSCORE|BYLEX] [REV] [LIMIT offset count] [WITHSCORES] [XX]"
 "ZRANGE k 1 2 bylex " "[REV] [LIMIT offset count] [WITHSCORES] [XX]"

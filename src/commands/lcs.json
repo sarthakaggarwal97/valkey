@@ -1,6 +1,6 @@
 {
     "LCS": {
-        "summary": "Finds the longest common substring.",
+        "summary": "Finds the longest common subsequence.",
         "complexity": "O(N*M) where N and M are the lengths of s1 and s2, respectively",
         "group": "string",
         "since": "7.0.0",
@@ -101,16 +101,21 @@
                 "key_spec_index": 0
             },
             {
-                "name": "len",
-                "token": "LEN",
-                "type": "pure-token",
-                "optional": true
-            },
-            {
-                "name": "idx",
-                "token": "IDX",
-                "type": "pure-token",
-                "optional": true
+                "name": "mode",
+                "type": "oneof",
+                "optional": true,
+                "arguments": [
+                    {
+                        "name": "len",
+                        "token": "LEN",
+                        "type": "pure-token"
+                    },
+                    {
+                        "name": "idx",
+                        "token": "IDX",
+                        "type": "pure-token"
+                    }
+                ]
             },
             {
                 "token": "MINMATCHLEN",

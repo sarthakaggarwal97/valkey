@@ -149,6 +149,20 @@ start_server {tags {"introspection"}} {
         }
     }
 
+    test {COMMAND DOCS describes LCS output modes} {
+        set docs [dict get [r command docs lcs] lcs]
+        assert_equal {Finds the longest common subsequence.} [dict get $docs summary]
+
+        set mode [lindex [dict get $docs arguments] 2]
+        assert_equal mode [dict get $mode name]
+        assert_equal oneof [dict get $mode type]
+        assert_equal optional [dict get $mode flags]
+
+        set alternatives [dict get $mode arguments]
+        assert_equal LEN [dict get [lindex $alternatives 0] token]
+        assert_equal IDX [dict get [lindex $alternatives 1] token]
+    }
+
     test {COMMAND DOCS allows XX with GT or LT for expiry commands} {
         foreach command {
             expire expireat pexpire pexpireat
