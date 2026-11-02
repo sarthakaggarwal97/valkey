@@ -84,19 +84,22 @@
             {
                 "name": "eviction",
                 "type": "oneof",
-                "multiple": true,
                 "optional": true,
                 "arguments": [
                     {
                         "token": "IDLETIME",
                         "name": "seconds",
                         "type": "integer",
+                        "multiple": true,
+                        "multiple_token": true,
                         "since": "5.0.0"
                     },
                     {
                         "token": "FREQ",
                         "name": "frequency",
                         "type": "integer",
+                        "multiple": true,
+                        "multiple_token": true,
                         "since": "5.0.0"
                     }
                 ]

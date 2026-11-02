@@ -154,11 +154,15 @@ start_server {tags {"introspection"}} {
             set docs [dict get [r command docs $command] $command]
             set eviction [lindex [dict get $docs arguments] 5]
             assert_equal oneof [dict get $eviction type]
-            assert_equal {optional multiple} [dict get $eviction flags]
+            assert_equal {optional} [dict get $eviction flags]
 
             set options [dict get $eviction arguments]
-            assert_equal IDLETIME [dict get [lindex $options 0] token]
-            assert_equal FREQ [dict get [lindex $options 1] token]
+            foreach {index token} {0 IDLETIME 1 FREQ} {
+                set option [lindex $options $index]
+                assert_equal integer [dict get $option type]
+                assert_equal {multiple multiple_token} [dict get $option flags]
+                assert_equal $token [dict get $option token]
+            }
         }
     }
 

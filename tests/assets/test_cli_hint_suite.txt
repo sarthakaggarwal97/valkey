@@ -60,8 +60,8 @@
 # One-of choices: BLMOVE source destination LEFT|RIGHT LEFT|RIGHT timeout
 "BLMOVE src dst LEFT " "LEFT|RIGHT timeout"
 
-# Repeated optional one-of arguments with parameters: RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds|FREQ frequency ...]
-"RESTORE key 0 serialized-value " "[REPLACE] [ABSTTL] [IDLETIME seconds|FREQ frequency [IDLETIME seconds|FREQ frequency ...]]"
+# Mutually exclusive repeatable arguments: RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds ...|FREQ frequency ...]
+"RESTORE key 0 serialized-value " "[REPLACE] [ABSTTL] [IDLETIME seconds [IDLETIME seconds ...]|FREQ frequency [FREQ frequency ...]]"
 
 # Optional args can be in any order: ZRANGE key min max [BYSCORE|BYLEX] [REV] [LIMIT offset count] [WITHSCORES] [XX]
 "ZRANGE k 1 2 " "[BYSCORE|BYLEX] [REV] [LIMIT offset count] [WITHSCORES] [XX]"
