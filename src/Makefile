@@ -728,6 +728,17 @@ endif
 all-with-unit-tests: all $(ENGINE_UNIT_GTESTS)
 .PHONY: all
 
+# Command-line variables are forwarded to recursive makes automatically, but
+# values restored from .make-settings are not. Pass the settings used by
+# bundled dependencies explicitly so they stay in sync with the main build.
+DEPENDENCY_MAKE_ENV = \
+	BUILD_TLS="$(BUILD_TLS)" \
+	BUILD_RDMA="$(BUILD_RDMA)" \
+	OPENSSL_PREFIX="$(OPENSSL_PREFIX)" \
+	CFLAGS="$(CFLAGS)" \
+	LDFLAGS="$(LDFLAGS)" \
+	CPPFLAGS="$(CPPFLAGS)"
+
 persist-settings: distclean
 	echo STD=$(STD) >> .make-settings
 	echo WARN=$(WARN) >> .make-settings
@@ -751,7 +762,7 @@ persist-settings: distclean
 	echo PREV_FINAL_CFLAGS=$(FINAL_CFLAGS) >> .make-settings
 	echo PREV_FINAL_LDFLAGS=$(FINAL_LDFLAGS) >> .make-settings
 	echo ENGINE_SERVER_OBJ=$(ENGINE_SERVER_OBJ) >> .make-settings
-	-(cd ../deps && $(MAKE) $(DEPENDENCY_TARGETS))
+	-(cd ../deps && $(DEPENDENCY_MAKE_ENV) $(MAKE) $(DEPENDENCY_TARGETS))
 
 .PHONY: persist-settings
 
