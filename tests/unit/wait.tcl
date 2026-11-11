@@ -181,6 +181,16 @@ tags {"wait aof network external:skip"} {
             assert_equal [$master waitaof 1 0 0] {1 0}
         }
 
+        test {WAITAOF local copy everysec waits for the fsync} {
+            r config set appendfsync always
+            $master incr foo
+            # Written right after an fsync, so it is fsynced a second later.
+            r config set appendfsync everysec
+            $master incr foo
+            assert_equal [$master waitaof 1 0 50] {0 0} ;# exits on timeout
+            assert_equal [$master waitaof 1 0 0] {1 0}
+        }
+
         test {WAITAOF local wait and then stop aof} {
             r config set appendfsync no
             set rd [valkey_deferring_client]
