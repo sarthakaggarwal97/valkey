@@ -5792,7 +5792,9 @@ void unblockClientWaitingReplicas(client *c) {
     serverAssert(c->bstate->client_waiting_acks_list_node);
     listDelNode(server.clients_waiting_acks, c->bstate->client_waiting_acks_list_node);
     c->bstate->client_waiting_acks_list_node = NULL;
-    updateStatsOnUnblock(c, 0, 0, 0);
+    /* A command that executes again after the wait (CLUSTER SETSLOT) updates
+     * the stats when it is called. */
+    if (!c->flag.pending_command) updateStatsOnUnblock(c, 0, 0, 0);
 }
 
 /* Check if there are clients blocked in WAIT, WAITAOF, or WAIT_PREREPL
