@@ -1823,6 +1823,47 @@ start_server {tags {"scripting external:skip tls:skip"}} {
     }
 }
 
+start_server {tags {"scripting needs:debug external:skip tls:skip"} overrides {appendonly yes}} {
+    test {Stopping AOF during a rewrite does not reap a forked scripting debug session} {
+        r set foo bar
+        r config set rdb-key-save-delay 10000000
+
+        set dbg [valkey_deferring_client]
+        $dbg script debug yes
+        assert_equal OK [$dbg read]
+        $dbg eval {return 'hello'} 0
+        assert_match {*Stopped at*} [$dbg read]
+
+        # Send the commands in a single write, so the rewrite is started and
+        # killed in the same event loop iteration, without a serverCron in
+        # between to reap the debug session child.
+        set rd [valkey_deferring_client]
+        $rd write [format_command debug sleep 1]
+        $rd write [format_command bgrewriteaof]
+        $rd write [format_command config set appendonly no]
+        $rd flush
+
+        # End the debug session while the main thread sleeps. Its child exits
+        # and waits to be reaped.
+        $dbg write [format_command c]
+        $dbg flush
+        assert_equal {<endsession>} [$dbg read]
+
+        assert_equal OK [$rd read]
+        assert_match {*rewriting started*} [$rd read]
+        assert_equal OK [$rd read]
+
+        # serverCron reaps the debug session child. If killing the rewrite child
+        # reaped it instead, serverCron keeps waiting for it and logs an error.
+        after 500
+        assert_equal 0 [count_log_message 0 "waitpid() returned an error"]
+
+        $dbg close
+        $rd close
+        r config set rdb-key-save-delay 0
+    }
+}
+
 start_server {tags {"scripting needs:debug external:skip"}} {
     test {Test scripting debug protocol parsing} {
         r script debug sync
