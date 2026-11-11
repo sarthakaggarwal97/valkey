@@ -541,6 +541,7 @@ static struct serverCommandArg *moduleCopyCommandArgs(ValkeyModuleCommandArg *ar
 static serverCommandArgType moduleConvertArgType(ValkeyModuleCommandArgType type, int *error);
 static int moduleConvertArgFlags(int flags);
 void moduleCreateContext(ValkeyModuleCtx *out_ctx, ValkeyModule *module, int ctx_flags);
+void moduleInvokeFreePrivDataCallback(client *c, ValkeyModuleBlockedClient *bc);
 
 /* Common helper functions. */
 int moduleVerifyResourceName(const char *name);
@@ -721,8 +722,15 @@ static void initClientModuleData(client *c) {
 
 void freeClientModuleData(client *c) {
     if (!c->module_data) return;
-    /* Free the ValkeyModuleBlockedClient held onto for reprocessing if not already freed. */
-    zfree(c->module_data->module_blocked_client);
+    /* Free the ValkeyModuleBlockedClient held onto for reprocessing if not already freed.
+     * The client was unblocked but is freed before the blocked auth was reprocessed. */
+    ValkeyModuleBlockedClient *bc = c->module_data->module_blocked_client;
+    if (bc) {
+        bc->client = NULL;
+        moduleInvokeFreePrivDataCallback(NULL, bc);
+        bc->module->blocked_clients--;
+        zfree(bc);
+    }
     zfree(c->module_data);
     c->module_data = NULL;
 }

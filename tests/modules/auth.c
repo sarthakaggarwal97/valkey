@@ -21,6 +21,10 @@ static long long client_change_delta = 0;
 static pthread_t blocking_auth_tid;
 static int blocking_auth_tid_valid = 0;
 
+/* The client blocked by an AUTH with the "block_manual" password, until
+ * AUTH.UNBLOCK is called. */
+static ValkeyModuleBlockedClient *manual_auth_bc = NULL;
+
 void UserChangedCallback(uint64_t client_id, void *privdata) {
     VALKEYMODULE_NOT_USED(privdata);
     VALKEYMODULE_NOT_USED(client_id);
@@ -204,6 +208,11 @@ int blocking_auth_cb(ValkeyModuleCtx *ctx, ValkeyModuleString *username, ValkeyM
         return VALKEYMODULE_AUTH_HANDLED;
     }
     ValkeyModule_BlockedClientMeasureTimeStart(bc);
+    if (!strcmp(ValkeyModule_StringPtrLen(password, NULL), "block_manual")) {
+        /* Keep the client blocked until AUTH.UNBLOCK is called. */
+        manual_auth_bc = bc;
+        return VALKEYMODULE_AUTH_HANDLED;
+    }
     /* Allocate memory for information needed. */
     void **targ = ValkeyModule_Alloc(sizeof(void*)*3);
     targ[0] = bc;
@@ -216,6 +225,20 @@ int blocking_auth_cb(ValkeyModuleCtx *ctx, ValkeyModuleString *username, ValkeyM
         blocking_auth_tid_valid = 1;
     }
     return VALKEYMODULE_AUTH_HANDLED;
+}
+
+/* AUTH.UNBLOCK unblocks the client blocked by an AUTH with the "block_manual"
+ * password, and lets the auth succeed. */
+int Auth_Unblock(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
+    VALKEYMODULE_NOT_USED(argv);
+    VALKEYMODULE_NOT_USED(argc);
+    if (!manual_auth_bc) return ValkeyModule_ReplyWithError(ctx, "ERR no client is blocked");
+    void **replyarg = ValkeyModule_Alloc(sizeof(void*));
+    replyarg[0] = (void *) (uintptr_t) 1;
+    ValkeyModule_BlockedClientMeasureTimeEnd(manual_auth_bc);
+    ValkeyModule_UnblockClient(manual_auth_bc, replyarg);
+    manual_auth_bc = NULL;
+    return ValkeyModule_ReplyWithSimpleString(ctx, "OK");
 }
 
 int test_rm_register_blocking_auth_cb(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
@@ -253,6 +276,10 @@ int ValkeyModule_OnLoad(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int arg
 
     if (ValkeyModule_CreateCommand(ctx,"auth.redact",
         Auth_RedactedAPI,"",0,0,0) == VALKEYMODULE_ERR)
+        return VALKEYMODULE_ERR;
+
+    if (ValkeyModule_CreateCommand(ctx,"auth.unblock",
+        Auth_Unblock,"",0,0,0) == VALKEYMODULE_ERR)
         return VALKEYMODULE_ERR;
 
     if (ValkeyModule_CreateCommand(ctx,"testmoduleone.rm_register_auth_cb",

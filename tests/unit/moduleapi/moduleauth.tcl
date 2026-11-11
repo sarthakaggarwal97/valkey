@@ -404,3 +404,32 @@ start_server {tags {"modules"}} {
         assert_match {*calls=5,*,rejected_calls=0,failed_calls=3} [cmdstat auth]
     }
 }
+
+start_server {tags {"modules"}} {
+    r module load $testmodule
+
+    test {Client disconnects while blocking module auth is postponed by client pause} {
+        r config resetstat
+        assert_equal {OK} [r testmoduleone.rm_register_blocking_auth_cb]
+        r acl setuser foo >pwd on ~* &* +@all
+        set rd [valkey_deferring_client]
+
+        # Start a blocking module auth attempt. With the "block_manual" password, the module keeps
+        # the client blocked until AUTH.UNBLOCK is called.
+        $rd AUTH foo block_manual
+        wait_for_blocked_clients_count 1
+
+        # Unblock the client and pause the clients in the same transaction, so the AUTH command is
+        # postponed when the unblocked client is reprocessed. Then disconnect the client.
+        r multi
+        r auth.unblock
+        r client pause 500 all
+        assert_equal {OK OK} [r exec]
+        $rd close
+
+        # Validate that no client is blocked on the module anymore, so it can be unloaded. This
+        # command is postponed too, until the pause ends. No AUTH command is tracked.
+        assert_equal {OK} [r module unload testacl]
+        assert_match {} [cmdstat auth]
+    }
+}
