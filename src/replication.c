@@ -6423,18 +6423,20 @@ void updateFailoverStatus(void) {
         listNode *ln;
 
         listRewind(server.replicas, &li);
-        /* Find any replica that has matched our repl_offset */
+        /* Find any online replica that has matched our repl_offset */
         while ((ln = listNext(&li))) {
-            replica = ln->value;
-            if (replica->repl_data->repl_ack_off == server.primary_repl_offset) {
-                char ip[NET_IP_STR_LEN], *replicaaddr = replica->repl_data->replica_addr;
+            client *candidate = ln->value;
+            if (candidate->repl_data->repl_state == REPLICA_STATE_ONLINE &&
+                candidate->repl_data->repl_ack_off == server.primary_repl_offset) {
+                char ip[NET_IP_STR_LEN], *replicaaddr = candidate->repl_data->replica_addr;
 
                 if (!replicaaddr) {
-                    if (connAddrPeerName(replica->conn, ip, sizeof(ip), NULL) == -1) continue;
+                    if (connAddrPeerName(candidate->conn, ip, sizeof(ip), NULL) == -1) continue;
                     replicaaddr = ip;
                 }
 
                 /* We are now failing over to this specific node */
+                replica = candidate;
                 server.target_replica_host = zstrdup(replicaaddr);
                 server.target_replica_port = replica->repl_data->replica_listening_port;
                 break;
@@ -6442,8 +6444,10 @@ void updateFailoverStatus(void) {
         }
     }
 
-    /* We've found a replica that is caught up */
-    if (replica && (replica->repl_data->repl_ack_off == server.primary_repl_offset)) {
+    /* We've found a replica that is caught up. A replica that is not online
+     * yet has not received our dataset, even if the offsets match. */
+    if (replica && replica->repl_data->repl_state == REPLICA_STATE_ONLINE &&
+        replica->repl_data->repl_ack_off == server.primary_repl_offset) {
         server.failover_state = FAILOVER_IN_PROGRESS;
         serverLog(LL_NOTICE, "Failover target %s:%d is synced, failing over.", server.target_replica_host,
                   server.target_replica_port);

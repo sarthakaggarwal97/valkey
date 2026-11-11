@@ -353,3 +353,36 @@ start_server {overrides {save {}}} {
 }
 }
 }
+
+start_server {tags {"failover external:skip"} overrides {save {}}} {
+# The long ping period keeps the replication offset of the primary at 0, which
+# is also the ack offset of a replica that has not acked anything yet.
+start_server {overrides {save {} repl-diskless-sync-delay 30 repl-ping-replica-period 3600}} {
+    set primary [srv 0 client]
+    set primary_host [srv 0 host]
+    set primary_port [srv 0 port]
+    set replica [srv -1 client]
+
+    test {failover to any replica does not pick a replica that is not online} {
+        # The diskless sync delay keeps the replica waiting for the full sync.
+        $replica replicaof $primary_host $primary_port
+        wait_for_condition 50 100 {
+            [string match "*state=wait_bgsave*" [s 0 slave0]]
+        } else {
+            fail "Replica did not start a full sync"
+        }
+        assert_equal 0 [s 0 master_repl_offset]
+
+        $primary failover timeout 500
+        wait_for_condition 50 100 {
+            [s 0 master_failover_state] == "no-failover"
+        } else {
+            fail "Failover from node 0 did not timeout"
+        }
+
+        assert_match *master* [$primary role]
+        assert_equal 0 [count_log_message 0 "is synced, failing over"]
+        assert_equal 1 [count_log_message 0 "Replica never caught up before timeout"]
+    }
+}
+}
