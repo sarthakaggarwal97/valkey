@@ -274,6 +274,34 @@ start_server {overrides {forkless-infrastructure-enabled yes save ""}} {
     }
 
     foreach {policy bgsave_type} {require-fork fork prefer-forkless forkless} {
+        test "FLUSHALL after bgsave $bgsave_type finished keeps the change counter correct" {
+            # With save points, FLUSHALL saves the dataset synchronously.
+            test_config_set r save "900 1"
+            r config set rdb-key-save-delay 0
+            r config set forkless-policy $policy
+            populate 100
+            set loglines [count_log_lines 0]
+            r bgsave
+            if {$bgsave_type eq "forkless"} {
+                wait_for_log_messages 0 {"*created background thread to perform snapshot file close and rename*"} $loglines 2000 1
+            }
+
+            # The bgsave writes its file while the server is busy, so FLUSHALL
+            # runs before the server handles the end of the bgsave.
+            r multi
+            r debug sleep 0.15
+            r flushall
+            r exec
+            wait_for_condition 50 100 {
+                [s rdb_bgsave_in_progress] == 0
+            } else {
+                fail "bgsave not done"
+            }
+            assert_equal [s rdb_changes_since_last_save] 0
+        }
+    }
+
+    foreach {policy bgsave_type} {require-fork fork prefer-forkless forkless} {
         test "bgsave $bgsave_type metrics are correct after success" {
             set saves_before [s rdb_saves]
             populate 100 "" 16
