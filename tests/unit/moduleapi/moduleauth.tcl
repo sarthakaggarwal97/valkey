@@ -404,3 +404,27 @@ start_server {tags {"modules"}} {
         assert_match {*calls=5,*,rejected_calls=0,failed_calls=3} [cmdstat auth]
     }
 }
+
+start_server {tags {"modules"}} {
+    r module load $testmodule
+
+    test {Client disconnects while blocking module auth is postponed by client pause} {
+        assert_equal {OK} [r testmoduleone.rm_register_blocking_auth_cb]
+        r acl setuser foo >pwd on ~* &* +@all
+        set rd [valkey_deferring_client]
+
+        # Start a blocking module auth attempt. The module unblocks the client after 500 ms.
+        $rd AUTH foo block_allow
+        wait_for_blocked_clients_count 1
+
+        # Pause the clients, so the AUTH command is postponed when the unblocked client is
+        # reprocessed, and disconnect the client before the pause ends.
+        r client pause 2000 all
+        after 1000
+        $rd close
+
+        # Validate that no client is blocked on the module anymore, so it can be unloaded. This
+        # command is postponed too, until the pause ends.
+        assert_equal {OK} [r module unload testacl]
+    }
+}
