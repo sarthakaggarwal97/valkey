@@ -181,6 +181,33 @@ tags {"wait aof network external:skip"} {
             assert_equal [$master waitaof 1 0 0] {1 0}
         }
 
+        test {WAITAOF local copy when fsync is skipped during a child process} {
+            r config set appendfsync everysec
+            r config set no-appendfsync-on-rewrite yes
+
+            # create an RDB child that takes a lot of time to run
+            r set x y
+            r config set rdb-key-save-delay 100000000  ;# 100 seconds
+            r bgsave
+            assert_equal [s rdb_bgsave_in_progress] 1
+
+            # the write is not fsynced while the child is running
+            $master incr foo
+            assert_equal [$master waitaof 1 0 200] {0 0} ;# exits on timeout
+
+            # kill the child, the write gets fsynced
+            r config set rdb-key-save-delay 0
+            catch {exec kill -9 [get_child_pid 0]}
+            wait_for_condition 50 100 {
+                [s rdb_bgsave_in_progress] == 0
+            } else {
+                fail "bgsave did not stop in time"
+            }
+            assert_equal [$master waitaof 1 0 0] {1 0}
+
+            r config set no-appendfsync-on-rewrite no
+        }
+
         test {WAITAOF local wait and then stop aof} {
             r config set appendfsync no
             set rd [valkey_deferring_client]

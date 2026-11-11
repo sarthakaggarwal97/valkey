@@ -1204,12 +1204,18 @@ void flushAppendOnlyFile(int force) {
                    server.aof_last_incr_fsync_offset != server.aof_last_incr_size) {
             goto try_fsync;
         } else {
-            /* All data is fsync'd already: Update fsynced_reploff_pending just in case.
+            /* If all data is fsync'd already: Update fsynced_reploff_pending just in case.
              * This is needed to avoid a WAITAOF hang in case a module used RM_Call with the NO_AOF flag,
              * in which case primary_repl_offset will increase but fsynced_reploff_pending won't be updated
              * (because there's no reason, from the AOF POV, to call fsync) and then WAITAOF may wait on
-             * the higher offset (which contains data that was only propagated to replicas, and not to AOF) */
-            if (!sync_in_progress && server.aof_fsync != AOF_FSYNC_NO)
+             * the higher offset (which contains data that was only propagated to replicas, and not to AOF).
+             *
+             * We can get here with data that was written but not fsync'd yet, e.g. when the last fsync
+             * was less than a second ago, when a background fsync is still pending or when it failed,
+             * so make sure that is not the case. */
+            if (server.aof_fsync != AOF_FSYNC_NO && server.aof_last_incr_fsync_offset == server.aof_last_incr_size &&
+                !aofFsyncInProgress() && bioPendingJobsOfType(BIO_CLOSE_AOF) == 0 &&
+                atomic_load_explicit(&server.aof_bio_fsync_status, memory_order_relaxed) == C_OK)
                 atomic_store_explicit(&server.fsynced_reploff_pending, server.primary_repl_offset,
                                       memory_order_relaxed);
             return;
