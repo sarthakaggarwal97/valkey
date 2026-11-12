@@ -675,9 +675,20 @@ start_server {} {
         $rdB client setname blpop_b
         $rdB flush
         assert_equal OK [$rdB read]
-        while {[client_field blpop_b tot-mem] < 2000000} {
-            $rdB get fat
-            $rdB flush
+        # Unread replies drain into the kernel socket buffers first. Add replies
+        # until the output buffer is large and the server has stopped writing
+        # to the socket, so the buffer stays large while the client is blocked.
+        set prev_net_out -1
+        while 1 {
+            set mem [client_field blpop_b tot-mem]
+            set net_out [client_field blpop_b tot-net-out]
+            if {$mem < 2000000} {
+                $rdB get fat
+                $rdB flush
+            } elseif {$net_out == $prev_net_out} {
+                break
+            }
+            set prev_net_out $net_out
         }
         # Leave GET replies unread so tot-mem stays large while blocked.
         $rdB blpop mylist 0

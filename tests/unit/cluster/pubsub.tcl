@@ -65,6 +65,11 @@ start_cluster 2 0 {tags {external:skip cluster}} {
         set rd [valkey_deferring_client -1]
         subscribe $rd {bigchannel}
 
+        # A PING queued behind the large packet gets no PONG until the packet is
+        # delivered. Set the sender's node timeout to 1 hour so it doesn't drop
+        # the link, and the packet with it, while the packet is in transit.
+        R 0 CONFIG SET cluster-node-timeout [expr 60*60*1000]
+
         set data [string repeat x [expr {20 * 1024 * 1024}]]
         R 0 PUBLISH bigchannel $data
         wait_for_condition 100 100 {
