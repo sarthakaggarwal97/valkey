@@ -69,11 +69,19 @@ proc cluster_find_available_replica {first} {
 }
 
 proc fix_cluster {addr} {
-    set code [catch {
-        exec $::VALKEY_CLI_BIN {*}[valkeycli_tls_config "./tests"] --cluster fix $addr << yes
-    } result]
-    if {$code != 0} {
+    # A node that loses contact with the majority of the primaries for a moment
+    # replies with CLUSTERDOWN until it sees them again. valkey-cli stops at
+    # that error and leaves the slots it did not reach open, and nothing else
+    # closes them, so run the fix again once the cluster is back up.
+    set attempts 5
+    while 1 {
+        set code [catch {
+            exec $::VALKEY_CLI_BIN {*}[valkeycli_tls_config "./tests"] --cluster fix $addr << yes
+        } result]
+        if {$code == 0} break
         puts "valkey-cli --cluster fix returns non-zero exit code, output below:\n$result"
+        if {![string match "*CLUSTERDOWN*" $result] || [incr attempts -1] == 0} break
+        wait_for_cluster_state ok
     }
     # Note: valkey-cli --cluster fix may return a non-zero exit code if nodes don't agree,
     # but we can ignore that and rely on the check below.
