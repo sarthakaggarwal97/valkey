@@ -1,3 +1,4 @@
+# A maintainer edit on the CI-sweep branch (S4).
 proc cmdstat {cmd} {
     return [cmdrstat $cmd r]
 }
