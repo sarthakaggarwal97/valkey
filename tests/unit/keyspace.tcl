@@ -668,3 +668,5 @@ start_cluster 1 0 {tags {"keyspace external:skip cluster"}} {
         assert_equal {} [r keys foo]
     }
 }
+
+# Backport touching keyspace.tcl at its end (S5).
