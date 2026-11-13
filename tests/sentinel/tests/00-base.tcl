@@ -66,7 +66,7 @@ test "SENTINEL PENDING-SCRIPTS returns the information about pending scripts" {
 
 test "SENTINEL PRIMARIES returns a list of monitored primaries" {
     assert_match "*mymaster*" [S 0 SENTINEL PRIMARIES]
-    assert_morethan_equal [llength [S 0 SENTINEL PRIMARIES]] 1
+    assert_morethan_equal [llength [S 0 SENTINEL PRIMARIES]] 1 ;# at least one
 }
 
 test "SENTINEL SENTINELS returns a list of sentinel instances" {
