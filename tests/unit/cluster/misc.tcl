@@ -72,6 +72,76 @@ start_cluster 1 1 {tags {external:skip cluster} overrides {cluster-config-save-b
     }
 }
 
+# Return 1 if the node still has the cluster link it accepted from the given peer.
+proc has_cluster_link_from_peer {srv_idx peer_id} {
+    foreach l [R $srv_idx cluster links] {
+        if {[dict get $l node] eq $peer_id && [dict get $l direction] eq "from"} {
+            return 1
+        }
+    }
+    return 0
+}
+
+# A low ping rate keeps the primary's link to the replica idle, so that the
+# only message queued on it is the one the test queues.
+start_cluster 1 1 {tags {external:skip cluster needs:debug} overrides {cluster-config-save-behavior sync cluster-ping-interval 1000}} {
+    test {cluster-config-save-behavior sync mode - failover vote is not sent before it is saved} {
+        set primary_id [R 0 cluster myid]
+
+        # The primary is the only voter. Make its config file impossible to
+        # replace, so the vote it grants can never be saved and it has to exit.
+        create_nodes_conf_folder 0
+
+        # Block the primary and then, in the same event loop iteration, queue
+        # a message on its link to the replica. The vote request arrives on
+        # another link while the primary is blocked, so the primary reads the
+        # request first and then finds the link to the replica writable with
+        # the vote queued behind that message, all before it saves the config.
+        set rd [valkey_deferring_client 0]
+        $rd multi
+        $rd debug log "the voter is blocked"
+        $rd debug sleep 1
+        $rd publish channel message
+        assert_equal {OK} [$rd read]
+        assert_equal {QUEUED} [$rd read]
+        assert_equal {QUEUED} [$rd read]
+        assert_equal {QUEUED} [$rd read]
+        $rd exec
+        wait_for_log_messages 0 {"*the voter is blocked*"} 0 1000 10
+
+        # The replica asks the blocked primary for its vote.
+        assert_equal {OK} [R 1 cluster failover force]
+        wait_for_condition 1000 10 {
+            [CI 1 cluster_stats_messages_auth-req_sent] >= 1
+        } else {
+            fail "The replica did not ask for a vote"
+        }
+
+        # The primary can't save the vote, so it exits.
+        wait_for_condition 1000 50 {
+            [process_is_alive [srv 0 pid]] == 0
+        } else {
+            fail "The primary did not exit"
+        }
+        $rd close
+
+        # Votes are sent on the link the replica accepted from the primary.
+        # Once the replica dropped it, it has read all the primary ever sent.
+        wait_for_condition 1000 50 {
+            [has_cluster_link_from_peer 1 $primary_id] == 0
+        } else {
+            fail "The replica did not drop the link from the primary"
+        }
+
+        # The vote was never saved, so it must never have reached the replica,
+        # and the replica can't have won the election.
+        set acks [CI 1 cluster_stats_messages_auth-ack_received]
+        if {$acks eq {}} { set acks 0 }
+        assert_equal $acks 0 "the primary exited without saving its vote, but the replica received that vote"
+        assert_equal [s -1 role] {slave} "the replica won the election with a vote that was never saved"
+    }
+}
+
 start_cluster 1 1 {tags {external:skip cluster} overrides {cluster-config-save-behavior best-effort}} {
     test {cluster-config-save-behavior best-effort mode - node continues running when config save fails} {
         # Create folder that can cause the rename fail.
