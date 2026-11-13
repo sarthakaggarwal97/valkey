@@ -399,3 +399,4 @@ Wilmington, Delaware 19802-4447
 [1]: https://github.com/valkey-io/valkey/blob/unstable/COPYING
 [2]: https://github.com/valkey-io/valkey/blob/unstable/CONTRIBUTING.md
 [3]: https://github.com/valkey-io/valkey/blob/unstable/SECURITY.md
+test note for the ci-sweep rebuild (S1)
