@@ -1,3 +1,4 @@
+# Synthetic CI-fix note B (follow-up publish test).
 start_server {tags {"expire"}} {
     test {EXPIRE - set timeouts multiple times} {
         r set x foobar
