@@ -60,17 +60,21 @@ start_cluster 3 0 {tags {external:skip cluster}} {
     }
 }
 
-start_cluster 2 0 {tags {external:skip cluster}} {
+# A PING queued behind the large packet is not answered until the packet has
+# been read, and a link whose PING is outstanding for a node timeout is dropped
+# together with what it was sending. The node timeout is longer than the wait
+# below so that a slow transfer is not cut off.
+start_cluster 2 0 {tags {external:skip cluster} overrides {cluster-node-timeout 60000}} {
     test "PUBLISH larger than the cluster bus packet cap reaches other nodes" {
         set rd [valkey_deferring_client -1]
         subscribe $rd {bigchannel}
 
         set data [string repeat x [expr {20 * 1024 * 1024}]]
         R 0 PUBLISH bigchannel $data
-        wait_for_condition 100 100 {
+        wait_for_condition 500 100 {
             [CI 1 cluster_stats_messages_publish_received] eq 1
         } else {
-            fail "node 1 didn't receive the clusterbus publish packet"
+            fail "node 1 didn't receive the clusterbus publish packet, sent: [CI 0 cluster_stats_messages_publish_sent], received: [CI 1 cluster_stats_messages_publish_received]"
         }
         assert_equal [string length $data] [string length [lindex [$rd read] 2]]
         $rd close

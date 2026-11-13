@@ -27,11 +27,39 @@ start_cluster 3 4 {tags {external:skip cluster} overrides {cluster-ping-interval
         if {[s -3 role] == "master"} {
             set replica_to_be_primary -6
             set paused_pid2 [srv -3 pid]
+            set paused_id2 [R 3 cluster myid]
         } else {
             set replica_to_be_primary -3
             set paused_pid2 [srv -6 pid]
+            set paused_id2 [R 6 cluster myid]
         }
+        set candidate [expr {-$replica_to_be_primary}]
+
+        # The replica asks for votes only once per election and needs the vote
+        # of both remaining primaries. A node reconnects its bus link to a peer
+        # that did not answer for half the node timeout, and a vote request or
+        # a vote sent while that link is down is lost, so the election times
+        # out. Hold the election until the voters see the paused primary as
+        # fail and the links between the replica and the voters are connected.
+        R $candidate config set cluster-replica-no-failover yes
         pause_process_persistent $paused_pid2
+
+        set candidate_id [R $candidate cluster myid]
+        set R1_nodeid [R 1 cluster myid]
+        set R2_nodeid [R 2 cluster myid]
+        wait_for_condition 1000 50 {
+            [cluster_all_see_flag [list 1 2 $candidate] [list $paused_id2] fail] &&
+            [dict get [cluster_get_node_by_id $candidate $R1_nodeid] linkstate] eq "connected" &&
+            [dict get [cluster_get_node_by_id $candidate $R2_nodeid] linkstate] eq "connected" &&
+            [dict get [cluster_get_node_by_id 1 $candidate_id] linkstate] eq "connected" &&
+            [dict get [cluster_get_node_by_id 2 $candidate_id] linkstate] eq "connected"
+        } else {
+            foreach j [list 1 2 $candidate] {
+                puts "R $j cluster nodes: [R $j cluster nodes]"
+            }
+            fail "Voters do not see the paused primary as fail, or the links between the replica and the voters are down"
+        }
+        R $candidate config set cluster-replica-no-failover no
     }
 
     test "Cluster should eventually be up again" {

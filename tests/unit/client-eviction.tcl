@@ -684,10 +684,13 @@ start_server {} {
         $rdB flush
 
         wait_for_blocked_clients_count 2
-        assert {[client_field blpop_b tot-mem] >= 2000000}
 
         # 128KiB is the server's minimum client-eviction limit.
         set low_limit [expr {128 * 1024}]
+        # The server keeps writing the unread replies while the socket accepts
+        # them, so tot-mem may have dropped since the fill loop sampled it. The
+        # successor only has to stay above the limit set below to be evicted.
+        assert_morethan [client_field blpop_b tot-mem] $low_limit
         r multi
         r config set maxmemory-clients $low_limit
         r lpush mylist v1
