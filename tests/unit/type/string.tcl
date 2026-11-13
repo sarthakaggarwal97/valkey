@@ -1114,6 +1114,18 @@ if {[string match {*jemalloc*} [s mem_allocator]]} {
         lappend res [r get bar]
     } {12 12}
 
+    test {APPEND with an empty string against integer-encoded key is a no-op} {
+        r set foo 42
+        assert_encoding "int" foo
+        set dirty [s rdb_changes_since_last_save]
+
+        # Shouldn't change encoding or count as a write when nothing is appended
+        assert_equal 2 [r append foo ""]
+        assert_encoding "int" foo
+        assert_equal 42 [r get foo]
+        assert_equal $dirty [s rdb_changes_since_last_save]
+    }
+
     test {DELIFEQ non-existing key} {
         r del foo
         assert_equal 0 [r delifeq foo "test"]
