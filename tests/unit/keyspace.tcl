@@ -1,3 +1,4 @@
+# Synthetic CI-fix note A (follow-up publish test).
 start_server {tags {"keyspace"}} {
     test {DEL against a single item} {
         r set x foo
