@@ -72,6 +72,66 @@ start_cluster 1 1 {tags {external:skip cluster} overrides {cluster-config-save-b
     }
 }
 
+# Return 1 if the node has a cluster bus link that was accepted from the given peer.
+proc has_link_from_peer {srv_idx peer_id} {
+    foreach l [R $srv_idx cluster links] {
+        if {[dict get $l direction] eq "from" && [dict get $l node] eq $peer_id} {
+            return 1
+        }
+    }
+    return 0
+}
+
+start_cluster 3 1 {tags {external:skip cluster} overrides {cluster-config-save-behavior sync cluster-ping-interval 1000 cluster-node-timeout 15000}} {
+    test {cluster-config-save-behavior sync mode - failover vote is not sent before it is saved} {
+        set CLUSTER_PACKET_TYPE_FAILOVER_AUTH_REQUEST 5
+        set voter_id [R 1 cluster myid]
+
+        # Let R0 and R2 drop FAILOVER_AUTH_REQUEST so that R1 is the only
+        # primary that can vote for R3.
+        R 0 debug drop-cluster-packet-filter $CLUSTER_PACKET_TYPE_FAILOVER_AUTH_REQUEST
+        R 2 debug drop-cluster-packet-filter $CLUSTER_PACKET_TYPE_FAILOVER_AUTH_REQUEST
+
+        # Create folder that can cause the rename fail. From now on R1 can not
+        # save a vote: it exits when it tries to, so no vote of it is ever on disk.
+        create_nodes_conf_folder 1
+
+        # Block R1 for longer than the ping interval. When it wakes up the vote
+        # request is waiting on the link from R3, and the cluster cron queues a
+        # PING on the link to R3 before the request is read. The log line is
+        # written by the same EXEC, right before the sleep starts.
+        set rd [valkey_deferring_client -1]
+        $rd multi
+        $rd debug log "voter is going to sleep"
+        $rd debug sleep 2
+        $rd exec
+        wait_for_log_messages -1 {"*voter is going to sleep*"} 0 1000 10
+
+        # R3 requests the votes while R1 is blocked.
+        R 3 cluster failover force
+
+        # Wait for R1 to exit due to config save failure.
+        wait_for_condition 1000 50 {
+            [process_is_alive [srv -1 pid]] == 0
+        } else {
+            fail "R1 did not exit"
+        }
+        $rd close
+
+        # R3 drops the link from R1 once it has read everything R1 sent on it.
+        wait_for_condition 1000 50 {
+            [has_link_from_peer 3 $voter_id] == 0
+        } else {
+            fail "R3 still has a link from R1"
+        }
+
+        # R1 never saved lastVoteEpoch, so R3 must not have received its vote.
+        set acks [CI 3 cluster_stats_messages_auth-ack_received]
+        if {$acks eq {}} { set acks 0 }
+        assert_equal $acks 0 "failover auth ACKs received by R3, the only voter R1 exited without saving its vote to nodes.conf"
+    }
+}
+
 start_cluster 1 1 {tags {external:skip cluster} overrides {cluster-config-save-behavior best-effort}} {
     test {cluster-config-save-behavior best-effort mode - node continues running when config save fails} {
         # Create folder that can cause the rename fail.

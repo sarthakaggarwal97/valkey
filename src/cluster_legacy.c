@@ -5492,7 +5492,15 @@ void clusterSendFailoverAuthIfNeeded(clusterNode *node, clusterMsg *request) {
 
     /* We can vote for this replica. */
     server.cluster->lastVoteEpoch = server.cluster->currentEpoch;
-    clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG | CLUSTER_TODO_FSYNC_CONFIG);
+    if (server.cluster_configfile_save_behavior == CLUSTER_CONFIGFILE_SAVE_BEHAVIOR_SYNC) {
+        /* Save the vote before queueing the ACK. The link to the candidate may
+         * already be writable in this event loop iteration, so the ACK could
+         * otherwise be sent before the save done in clusterBeforeSleep(), and
+         * a crash in between would let us vote twice in the same epoch. */
+        clusterSaveConfigOrDie(1);
+    } else {
+        clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG | CLUSTER_TODO_FSYNC_CONFIG);
+    }
     clusterSendFailoverAuth(node);
     serverLog(LL_NOTICE, "Failover auth granted to %.40s (%s) for epoch %llu", node->name, humanNodename(node),
               (unsigned long long)server.cluster->currentEpoch);
