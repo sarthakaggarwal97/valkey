@@ -293,6 +293,58 @@ start_cluster 3 1 {tags {external:skip cluster} overrides {cluster-ping-interval
     }
 } ;# start_cluster
 
+start_cluster 3 1 {tags {external:skip cluster} overrides {cluster-node-timeout 2000 cluster-replica-validity-factor 10}} {
+    test "Demoted primary can fail over if its new primary dies before the first sync" {
+        set R0_nodeid [R 0 cluster myid]
+        set R3_nodeid [R 3 cluster myid]
+
+        # R0 has no primaryauth, so once it is demoted its sync with R3 is
+        # rejected and its replication link never comes up.
+        R 3 config set requirepass x
+
+        R 3 cluster failover
+        wait_for_condition 1000 50 {
+            [s 0 role] eq {slave} &&
+            [s -3 role] eq {master}
+        } else {
+            fail "The manual failover does not happen"
+        }
+
+        # R0 should be a replica and R3 should be a primary in all views.
+        for {set j 0} {$j < [llength $::servers]} {incr j} {
+            wait_for_condition 1000 50 {
+                [check_cluster_node_mark slave $j $R0_nodeid] &&
+                [check_cluster_node_mark master $j $R3_nodeid]
+            } else {
+                puts "R $j cluster nodes:"
+                puts [R $j cluster nodes]
+                fail "Node role does not changed in the manual failover"
+            }
+        }
+
+        # R0 never completed a sync with R3.
+        assert_equal {down} [s 0 master_link_status]
+
+        # Kill the new primary.
+        set R3_pid [srv -3 pid]
+        exec kill -9 $R3_pid
+        wait_for_condition 1000 50 {
+            [process_is_alive $R3_pid] == 0
+        } else {
+            fail "R3 did not exit"
+        }
+
+        # R0 owned these slots right before the manual failover, so it
+        # should take them back with an automatic failover.
+        wait_for_condition 1000 50 {
+            [s 0 role] eq {master}
+        } else {
+            fail "The demoted primary did not fail over after its new primary died, R0 role: [s 0 role], R0 cluster_state: [CI 0 cluster_state]"
+        }
+        wait_for_cluster_state ok
+    }
+} ;# start_cluster
+
 start_cluster 3 1 {tags {external:skip cluster} overrides {cluster-ping-interval 1000 cluster-node-timeout 15000}} {
     test "Manual failover will reset the on-going election" {
         set CLUSTER_PACKET_TYPE_FAILOVER_AUTH_REQUEST 5
