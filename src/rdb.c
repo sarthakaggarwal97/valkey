@@ -115,6 +115,11 @@ void rdbReportError(int corruption_error, int linenum, char *reason, ...) {
     } else if (rdbCheckMode) {
         /* If we're inside the rdb checker, let it handle the error. */
         rdbCheckError("%s", msg);
+    } else if (server.loading_rio && rioGetAsyncCloseError(server.loading_rio)) {
+        /* The load was aborted on purpose by closing the rio, the payload is not at fault: don't exit.
+         * Reads refused after the close can also surface as corruption where their result is not checked. */
+        serverLog(LL_WARNING, "%s. RDB loading was aborted, resuming operation.", msg);
+        return;
     } else if (rdbFileBeingLoaded) {
         /* If we're loading an rdb file form disk, run rdb check (and exit) */
         serverLog(LL_WARNING, "%s", msg);
