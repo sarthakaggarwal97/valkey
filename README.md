@@ -403,3 +403,4 @@ test note for the ci-sweep rebuild (S1)
 S4 release move
 S4b release move
 T2 release move
+R2 release move
