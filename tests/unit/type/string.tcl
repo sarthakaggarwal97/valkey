@@ -1114,6 +1114,26 @@ if {[string match {*jemalloc*} [s mem_allocator]]} {
         lappend res [r get bar]
     } {12 12}
 
+    test {APPEND with an empty string against integer-encoded key is a no-op} {
+        r set mykey 42
+        assert_encoding int mykey
+        assert_equal 2 [r append mykey ""]
+        assert_encoding int mykey
+        assert_equal 42 [r get mykey]
+
+        # Nothing was appended, so nothing should be propagated either.
+        set repl [attach_to_replication_stream]
+        r set mykey 42
+        assert_equal 2 [r append mykey ""]
+        r set foo bar
+        assert_replication_stream $repl {
+            {select *}
+            {set mykey 42}
+            {set foo bar}
+        }
+        close_replication_stream $repl
+    } {} {needs:repl}
+
     test {DELIFEQ non-existing key} {
         r del foo
         assert_equal 0 [r delifeq foo "test"]
