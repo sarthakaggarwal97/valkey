@@ -115,6 +115,11 @@ void rdbReportError(int corruption_error, int linenum, char *reason, ...) {
     } else if (rdbCheckMode) {
         /* If we're inside the rdb checker, let it handle the error. */
         rdbCheckError("%s", msg);
+    } else if (!corruption_error && server.loading_rio && rioGetAsyncCloseError(server.loading_rio)) {
+        /* The load was cancelled on purpose (e.g. the replication link dropped
+         * during a full sync), the payload is not at fault: don't exit. */
+        serverLog(LL_WARNING, "%s. RDB loading was aborted, resuming operation.", msg);
+        return;
     } else if (rdbFileBeingLoaded) {
         /* If we're loading an rdb file form disk, run rdb check (and exit) */
         serverLog(LL_WARNING, "%s", msg);

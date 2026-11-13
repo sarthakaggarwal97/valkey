@@ -301,4 +301,57 @@ tags {"repl external:skip"} {
             }
         }
     }
+
+    # Test 7: A dual-channel full sync loaded from disk must be cancelled and
+    # retried when the primary closes the main channel during the load.
+    test "Dual-channel replica retries full sync when main channel closes during disk-based RDB load" {
+        start_server {overrides {dual-channel-replication-enabled yes repl-diskless-sync yes repl-diskless-sync-delay 0 rdbcompression no save ""}} {
+            set primary [srv 0 client]
+            set primary_host [srv 0 host]
+            set primary_port [srv 0 port]
+
+            # Uncompressed values larger than loading-process-events-interval-bytes,
+            # so the replica processes events on every key it loads.
+            for {set i 0} {$i < 200} {incr i} {
+                $primary set "key:$i" [string repeat x 2048]
+            }
+            # Let the main channel establish PSYNC before the RDB is fully transferred.
+            $primary config set rdb-key-save-delay 5000
+
+            start_server {overrides {dual-channel-replication-enabled yes repl-diskless-load disabled loading-process-events-interval-bytes 1024 key-load-delay 50000 save ""}} {
+                set replica [srv 0 client]
+                set replica_pid [srv 0 pid]
+
+                $replica replicaof $primary_host $primary_port
+
+                # Wait for the replica to load the RDB from disk while its main
+                # channel is still buffering the replication stream.
+                wait_for_condition 500 100 {
+                    [string match "*slave*,state=bg_transfer*,type=main-channel*" [$primary info replication]] &&
+                    [status $replica loading] eq 1
+                } else {
+                    fail "Replica didn't start loading the RDB from disk in time"
+                }
+
+                # Primary closes the replica's main channel during the load
+                set replica_main_conn_id [get_client_id_by_last_cmd $primary "psync"]
+                assert {$replica_main_conn_id != ""}
+                $primary client kill id $replica_main_conn_id
+
+                # The replica should drop the aborted load and sync again
+                wait_for_condition 600 100 {
+                    [process_is_alive $replica_pid] == 0 ||
+                    [string match "*slave0:*state=online*" [$primary info replication]]
+                } else {
+                    fail "Replica didn't sync again after its main channel was closed during the RDB load from disk"
+                }
+                if {![process_is_alive $replica_pid]} {
+                    fail "Replica exited instead of retrying the sync after its main channel was closed during the RDB load from disk"
+                }
+
+                # Verify data integrity
+                assert_equal 200 [$replica dbsize]
+            }
+        }
+    }
 }
