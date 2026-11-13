@@ -651,13 +651,6 @@ start_server {} {
         r flushdb
         r client no-evict on
         r config set maxmemory-clients 100mb
-        r config set client-output-buffer-limit "normal 0 0 0"
-        # Disable copy avoidance so unread replies stay in client output buffers
-        r config set min-io-threads-avoid-copy-reply 0
-        r config set min-string-size-avoid-copy-reply 0
-        r config set min-string-size-avoid-copy-reply-threaded 0
-
-        r setrange fat 300000 x
 
         # First waiter (served first). Must not be the eviction victim.
         set rdA [valkey_deferring_client]
@@ -670,20 +663,16 @@ start_server {} {
         $rdA blpop mylist 0
         $rdA flush
 
-        # Second waiter: inflate server-side output buffer, then block as successor.
+        # Second waiter: blocks as successor. A blocked client keeps its argv,
+        # so the long second key name holds tot-mem large while blocked.
         set rdB [valkey_deferring_client]
         $rdB client setname blpop_b
         $rdB flush
         assert_equal OK [$rdB read]
-        while {[client_field blpop_b tot-mem] < 2000000} {
-            $rdB get fat
-            $rdB flush
-        }
-        # Leave GET replies unread so tot-mem stays large while blocked.
-        $rdB blpop mylist 0
+        $rdB blpop mylist [string repeat k 2000000] 0
         $rdB flush
 
-        wait_for_blocked_clients_count 2
+        wait_for_blocked_clients_count 2 1000 10
         assert {[client_field blpop_b tot-mem] >= 2000000}
 
         # 128KiB is the server's minimum client-eviction limit.
