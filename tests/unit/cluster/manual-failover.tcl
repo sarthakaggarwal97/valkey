@@ -584,6 +584,59 @@ start_cluster 3 2 {tags {external:skip cluster}} {
     }
 }
 
+start_cluster 3 1 {tags {external:skip cluster} overrides {cluster-ping-interval 1000 cluster-node-timeout 2000}} {
+    # In the R0/R3 shard, R0 is the primary node and R3 is the replica.
+    #
+    # R3 wins a manual failover and R0 becomes its replica. R3 is then killed
+    # before R0 has completed its first sync with it. R0 owned the slots just
+    # before and has the same data, so it should fail over and take them back.
+    test "Demoted primary can fail over if its new primary dies before the first sync" {
+        set R0_nodeid [R 0 cluster myid]
+        set R3_nodeid [R 3 cluster myid]
+
+        # R0 has no primaryauth, so once it is demoted it can never complete
+        # a sync with R3.
+        R 3 config set requirepass x
+
+        R 3 cluster failover
+        wait_for_condition 1000 50 {
+            [s 0 role] eq {slave} &&
+            [s -3 role] eq {master}
+        } else {
+            fail "The manual failover does not happen"
+        }
+
+        # Make sure every node knows that R0 is now a replica of R3, so that
+        # the other primaries are able to vote for R0 later.
+        for {set j 0} {$j < [llength $::servers]} {incr j} {
+            wait_for_condition 1000 50 {
+                [cluster_has_flag [cluster_get_node_by_id $j $R3_nodeid] master] eq 1 &&
+                [cluster_has_flag [cluster_get_node_by_id $j $R0_nodeid] slave] eq 1 &&
+                [dict get [cluster_get_node_by_id $j $R0_nodeid] slaveof] eq $R3_nodeid
+            } else {
+                puts "R $j cluster nodes:"
+                puts [R $j cluster nodes]
+                fail "Node R$j does not see R0 as a replica of R3"
+            }
+        }
+
+        # R0 has not synced with its new primary.
+        assert_equal {down} [s 0 master_link_status]
+
+        # Kill the new primary.
+        exec kill -9 [srv -3 pid]
+
+        # R0 should be elected and serve the slots again.
+        wait_for_condition 1000 50 {
+            [s 0 role] eq {master}
+        } else {
+            fail "The demoted primary did not fail over after its new primary died: role is [s 0 role], cluster_state is [CI 0 cluster_state]"
+        }
+        wait_for_cluster_state ok
+        assert_equal {0-5461} [dict get [cluster_get_myself 0] slots]
+    }
+} ;# start_cluster
+
 # Disable this test case due to #2441.
 if {false} {
 start_cluster 3 2 {tags {external:skip cluster}} {

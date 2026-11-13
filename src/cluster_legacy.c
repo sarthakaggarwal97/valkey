@@ -6920,8 +6920,9 @@ static inline void removeAllNotOwnedShardChannelSubscriptions(void) {
 static void clusterSetPrimary(clusterNode *n, int closeSlots, int full_sync_required) {
     serverAssert(n != myself);
     serverAssert(myself->numslots == 0);
+    int was_primary = clusterNodeIsPrimary(myself);
 
-    if (clusterNodeIsPrimary(myself)) {
+    if (was_primary) {
         myself->flags &= ~(CLUSTER_NODE_PRIMARY | CLUSTER_NODE_MIGRATE_TO);
         myself->flags |= CLUSTER_NODE_REPLICA;
     } else {
@@ -6932,6 +6933,10 @@ static void clusterSetPrimary(clusterNode *n, int closeSlots, int full_sync_requ
     updateShardId(myself, n->shard_id);
     clusterNodeAddReplica(n, myself);
     replicationSetPrimary(n->ip, getNodeDefaultReplicationPort(n), full_sync_required, true);
+    /* A primary demoted within its own shard holds the shard's data as of now.
+     * Without this, repl_down_since stays 0 until the first sync completes and
+     * the data age check refuses a failover if the new primary dies before it. */
+    if (was_primary && !full_sync_required) server.repl_down_since = server.unixtime;
     removeAllNotOwnedShardChannelSubscriptions();
     resetManualFailover();
 
