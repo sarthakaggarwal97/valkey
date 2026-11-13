@@ -1114,6 +1114,31 @@ if {[string match {*jemalloc*} [s mem_allocator]]} {
         lappend res [r get bar]
     } {12 12}
 
+    test {APPEND with an empty string against integer-encoded key is a no-op} {
+        r del foo
+        r set foo 42
+        assert_encoding int foo
+        set dirty [s rdb_changes_since_last_save]
+
+        # Nothing is appended: the value, its encoding and the dirty counter stay as they are.
+        assert_equal 2 [r append foo ""]
+        assert_encoding int foo
+        assert_equal 42 [r get foo]
+        assert_equal $dirty [s rdb_changes_since_last_save] "APPEND of an empty string changed the dirty counter"
+
+        # And the empty APPEND is not propagated.
+        set repl [attach_to_replication_stream]
+        r set foo 42
+        assert_equal 2 [r append foo ""]
+        r del foo
+        assert_replication_stream $repl {
+            {select *}
+            {set foo 42}
+            {del foo}
+        }
+        close_replication_stream $repl
+    } {} {needs:repl}
+
     test {DELIFEQ non-existing key} {
         r del foo
         assert_equal 0 [r delifeq foo "test"]

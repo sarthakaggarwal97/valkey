@@ -817,6 +817,13 @@ void appendCommand(client *c) {
 
         /* "append" is an argument, so always an sds */
         append = c->argv[2];
+
+        /* Return existing string length when appending nothing */
+        if (sdslen(objectGetVal(append)) == 0) {
+            addReplyLongLong(c, stringObjectLen(o));
+            return;
+        }
+
         if (checkStringLength(c, stringObjectLen(o), sdslen(objectGetVal(append))) != C_OK)
             return;
 
