@@ -1248,7 +1248,15 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
                         }
                     }
                     if {$all_drop == "timeout"} {
-                        wait_for_log_messages -2 {"*Diskless rdb transfer, done reading from pipe, 1 replicas still up*"} $loglines 1 1
+                        # A full sync timeout removes the replica before pipe EOF,
+                        # while a streaming sync timeout happens after pipe EOF.
+                        if {[count_log_message -2 "Disconnecting timedout replica (full sync)"] == 1} {
+                            set expected_replicas 1
+                        } else {
+                            set expected_replicas 2
+                        }
+                        set expected_pipe_log [list "*Diskless rdb transfer, done reading from pipe, $expected_replicas replicas still up*"]
+                        wait_for_log_messages -2 $expected_pipe_log $loglines 1 1
                         # master disconnected the slow replica, remove from array
                         set replicas_alive [lreplace $replicas_alive 0 0]
                         # release it
@@ -2520,7 +2528,8 @@ start_server {tags {"repl external:skip"} overrides {save {} forkless-infrastruc
     set primary_port [srv 0 port]
     $primary config set repl-diskless-sync yes
     $primary config set repl-diskless-sync-delay 0
-    $primary debug populate 800000
+    # Valgrind saves and loads keys far slower, so sync a smaller dataset.
+    $primary debug populate [expr {$::valgrind ? 80000 : 800000}]
     start_server {overrides {save {}}} {
         set replica [srv 0 client]
         test "Writes after bg iterator termination still reach the replica" {
@@ -2541,7 +2550,7 @@ start_server {tags {"repl external:skip"} overrides {save {} forkless-infrastruc
             }
             after 200
             $replica replicaof $primary_host $primary_port
-            wait_for_condition 500 100 {
+            wait_for_condition [expr {$::valgrind ? 5000 : 500}] 100 {
                 [s 0 master_link_status] eq {up}
             } else {
                 fail "Replica didn't sync"
@@ -2596,6 +2605,7 @@ foreach primary_diskless {yes no} {
                             fail "Write load handlers didn't connect"
                         }
                         $primary config set rdb-key-save-delay 100
+                        set loglines [count_log_lines -1]
                         $replica replicaof $ph $pp
                         wait_for_condition 50 100 {
                             [s -1 rdb_bgsave_in_progress] == 1
@@ -2605,7 +2615,13 @@ foreach primary_diskless {yes no} {
                         $primary select $cmd_db
                         assert_not_equal 0 [$primary {*}$cmd]
                         $primary select 0
-                        assert_equal 1 [s -1 rdb_bgsave_in_progress]
+                        if {$primary_diskless eq "no" && $cmd eq "flushdb"} {
+                            # A save to disk is a consistent snapshot, which any
+                            # FLUSHDB cancels, so the replica syncs again.
+                            wait_for_log_messages -1 {"*forkless save cancelled*"} $loglines 100 100
+                        } else {
+                            assert_equal 1 [s -1 rdb_bgsave_in_progress]
+                        }
                         $primary config set rdb-key-save-delay 0
                         wait_for_condition 500 100 {
                             [s 0 master_link_status] eq {up}
@@ -2804,7 +2820,8 @@ foreach load_mode {disabled on-empty-db} {
         $primary config set forkless-policy prefer-forkless
         $primary config set repl-diskless-sync yes
         $primary config set repl-diskless-sync-delay 0
-        $primary debug populate 200000
+        # Valgrind saves and loads keys far slower, so sync a smaller dataset.
+        $primary debug populate [expr {$::valgrind ? 20000 : 200000}]
 
         start_server {overrides {save ""}} {
             set replica [srv 0 client]
@@ -2826,7 +2843,7 @@ foreach load_mode {disabled on-empty-db} {
                 wait_for_log_messages -1 {"*target: replicas sockets*method: forkless*"} $loglines 100 100
 
                 # Replica must sync while writes are still flowing.
-                wait_for_condition 100 100 {
+                wait_for_condition [expr {$::valgrind ? 3000 : 100}] 100 {
                     [s 0 master_link_status] eq {up}
                 } else {
                     fail "Replica didn't sync (repl-diskless-load=$load_mode)"
