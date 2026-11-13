@@ -1,3 +1,4 @@
+# Maintainer edit on the CI-sweep branch (R2).
 proc cmdstat {cmd} {
     return [cmdrstat $cmd r]
 }
