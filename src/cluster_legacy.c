@@ -4568,6 +4568,26 @@ int clusterProcessPacket(clusterLink *link) {
                 /* Node is a replica. */
                 clusterNode *sender_claimed_primary = clusterLookupNode(msg->replicaof, CLUSTER_NAMELEN);
 
+                /* We only learn the primary of a node from its own packets, so we may
+                 * still know the claimed primary as a (sub-)replica of the sender. This
+                 * happens if the packet is an old one that was delayed, or if it is
+                 * processed before the promotion announcement of the claimed primary.
+                 * Never close a replicaof loop: ignore the packet before changing
+                 * anything, and wait. Once the claimed primary is known as a primary, a
+                 * later packet from the sender applies cleanly. A primary following a
+                 * node of its own shard is the exception: that branch below promotes
+                 * the claimed primary first, or drops the packet as stale. */
+                if (sender_claimed_primary && sender->replicaof != sender_claimed_primary &&
+                    !(sender_last_reported_as_primary && areInSameShard(sender_claimed_primary, sender)) &&
+                    clusterReplicaofWouldLoop(sender, sender_claimed_primary)) {
+                    serverLog(LL_NOTICE,
+                              "Ignore primary change of node %.40s (%s) to node %.40s (%s) in shard %.40s;"
+                              " it would form a replication loop",
+                              sender->name, humanNodename(sender), sender_claimed_primary->name,
+                              humanNodename(sender_claimed_primary), sender_claimed_primary->shard_id);
+                    return 1;
+                }
+
                 if (sender_last_reported_as_primary) {
                     serverLog(LL_DEBUG, "Node %.40s (%s) announces that it is a replica in shard %.40s",
                               sender->name, humanNodename(sender), sender->shard_id);
@@ -4662,21 +4682,6 @@ int clusterProcessPacket(clusterLink *link) {
 
                 /* Primary node changed for this replica? */
                 if (sender_claimed_primary && sender->replicaof != sender_claimed_primary) {
-                    /* We only learn the primary of a node from its own packets, so we may
-                     * still know the claimed primary as a (sub-)replica of the sender. This
-                     * happens if the packet is an old one that was delayed, or if it is
-                     * processed before the promotion announcement of the claimed primary.
-                     * Never close a replicaof loop: keep what we have and wait. Once the
-                     * claimed primary is known as a primary, a later packet from the sender
-                     * applies cleanly. */
-                    if (clusterReplicaofWouldLoop(sender, sender_claimed_primary)) {
-                        serverLog(LL_NOTICE,
-                                  "Ignore primary change of node %.40s (%s) to node %.40s (%s) in shard %.40s;"
-                                  " it would form a replication loop",
-                                  sender->name, humanNodename(sender), sender_claimed_primary->name,
-                                  humanNodename(sender_claimed_primary), sender_claimed_primary->shard_id);
-                        return 1;
-                    }
                     if (sender->replicaof) clusterNodeRemoveReplica(sender->replicaof, sender);
                     serverLog(LL_NOTICE, "Node %.40s (%s) is now a replica of node %.40s (%s) in shard %.40s",
                               sender->name, humanNodename(sender), sender_claimed_primary->name,

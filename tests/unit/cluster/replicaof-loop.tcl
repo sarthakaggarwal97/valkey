@@ -12,17 +12,21 @@
 # injected into the observer from a plain TCP socket, which is the only way to
 # get a deterministic processing order.
 
-# Build a PING as the node 'sender_id' would send it, with no gossip section
-# and no extensions. 'primary_id' is the primary the sender claims to replicate
-# from, or "" if it claims to be a primary. 'slots' is the list of slot ranges
-# claimed for the sender's shard. The layout matches packet.tcl.
-proc create_cluster_ping_packet {sender_id sender_port epoch primary_id slots} {
+# Build a PING as the node 'sender_id' would send it, with no gossip section.
+# 'primary_id' is the primary the sender claims to replicate from, or "" if it
+# claims to be a primary. 'slots' is the list of slot ranges claimed for the
+# sender's shard. With 'shard_id', the PING carries a shard id extension. The
+# layout matches packet.tcl.
+proc create_cluster_ping_packet {sender_id sender_port epoch primary_id slots {shard_id ""}} {
     set CLUSTER_NAMELEN 40
     set CLUSTER_SLOTS 16384
     set NET_IP_STR_LEN 46
     set CLUSTERMSG_TYPE_PING 0
     set CLUSTER_NODE_PRIMARY 1
     set CLUSTER_NODE_REPLICA 2
+    set CLUSTERMSG_FLAG0_EXT_DATA 4
+    set CLUSTERMSG_EXT_TYPE_SHARDID 3
+    set extensions [expr {$shard_id eq "" ? 0 : 1}]
 
     set bits [string repeat 0 $CLUSTER_SLOTS]
     foreach range $slots {
@@ -51,14 +55,29 @@ proc create_cluster_ping_packet {sender_id sender_port epoch primary_id slots} {
         set flags $CLUSTER_NODE_REPLICA
     }
     append packet [string repeat "\x00" $NET_IP_STR_LEN]   ;# myip
-    append packet [binary format S 0]                      ;# extensions
+    append packet [binary format S $extensions]
     append packet [string repeat "\x00" 30]                ;# notused1
     append packet [binary format S 0]                      ;# pport
     append packet [binary format S [expr {$sender_port + 10000}]] ;# cport
     append packet [binary format S $flags]
     append packet [binary format c 0]                      ;# state
-    append packet [binary format ccc 0 0 0]                ;# mflags
+    append packet [binary format ccc [expr {$extensions ? $CLUSTERMSG_FLAG0_EXT_DATA : 0}] 0 0] ;# mflags
+    if {$extensions} {
+        # length, type, unused, then the 40 byte shard id (already 8 byte aligned)
+        append packet [binary format ISS [expr {8 + $CLUSTER_NAMELEN}] $CLUSTERMSG_EXT_TYPE_SHARDID 0]
+        append packet $shard_id
+    }
     return [string replace $packet 4 7 [binary format I [string length $packet]]]
+}
+
+# The shard id that instance 'id' records for node 'node_id'.
+proc shard_id_in_view {id node_id} {
+    foreach shard [R $id cluster shards] {
+        foreach n [dict get $shard nodes] {
+            if {[dict get $n id] eq $node_id} {return [dict get $shard id]}
+        }
+    }
+    return ""
 }
 
 proc send_cluster_ping_packet {cport packet} {
@@ -146,6 +165,45 @@ start_cluster 2 4 {tags {external:skip cluster tls:skip}} {
             [cluster_node_is_replica_of 1 $id0 $id2]
         } else {
             fail "Observer does not see node 0 as a replica of node 2"
+        }
+    }
+
+    test "A primary following its replica of another shard is ignored before it loses its slots" {
+        # The observer can record a replica in another shard than its primary,
+        # here because the primary announces a new shard id. Node 2 does so, and
+        # node 0, which the observer knows as its replica, keeps the old one.
+        set shard_id [string repeat f 40]
+        send_cluster_ping_packet $observer_cport [create_cluster_ping_packet $id2 $port2 $epoch "" $slots $shard_id]
+        wait_for_condition 1000 50 {
+            [shard_id_in_view 1 $id2] eq $shard_id
+        } else {
+            fail "Observer did not apply the new shard id of node 2"
+        }
+        assert_not_equal $shard_id [shard_id_in_view 1 $id0]
+
+        # Node 0 wins a failover and node 2 follows it, but the packet of node
+        # 2 is processed before the one of node 0. Node 2 must keep its slots.
+        set from_line [count_log_lines -1]
+        incr epoch
+        send_cluster_ping_packet $observer_cport [create_cluster_ping_packet $id2 $port2 $epoch $id0 $slots]
+        wait_for_log_messages -1 [list "*Ignore primary change of node $id2 * to node $id0 *replication loop*"] $from_line 1000 50
+
+        assert {[cluster_has_flag [cluster_get_node_by_id 1 $id2] master]}
+        assert_equal $slots [dict get [cluster_get_node_by_id 1 $id2] slots]
+        assert {[cluster_node_is_replica_of 1 $id0 $id2]}
+        assert_equal ok [CI 1 cluster_state]
+
+        send_cluster_ping_packet $observer_cport [create_cluster_ping_packet $id0 $port0 $epoch "" $slots]
+        wait_for_condition 1000 50 {
+            [cluster_has_flag [cluster_get_node_by_id 1 $id0] master]
+        } else {
+            fail "Observer does not see node 0 as a primary"
+        }
+        send_cluster_ping_packet $observer_cport [create_cluster_ping_packet $id2 $port2 $epoch $id0 $slots]
+        wait_for_condition 1000 50 {
+            [cluster_node_is_replica_of 1 $id2 $id0]
+        } else {
+            fail "Observer does not see node 2 as a replica of node 0"
         }
     }
 }
