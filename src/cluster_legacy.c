@@ -1534,6 +1534,17 @@ static inline uint64_t nodeEpoch(clusterNode *n) {
     return n->replicaof ? n->replicaof->configEpoch : n->configEpoch;
 }
 
+/* Return 1 if setting 'primary' as the primary of 'replica' would leave
+ * 'replica' on a replicaof chain that never ends, i.e. in our view 'primary'
+ * already replicates, directly or not, from 'replica'. The walk is bounded so
+ * that it also terminates, and reports 1, if the chain of 'primary' already
+ * contains a loop. */
+static int clusterReplicaofWouldLoop(clusterNode *replica, clusterNode *primary) {
+    size_t hops = dictSize(server.cluster->nodes);
+    while (primary && primary != replica && hops--) primary = primary->replicaof;
+    return primary != NULL;
+}
+
 /* Update my hostname based on server configuration values */
 void clusterUpdateMyselfHostname(void) {
     if (!myself) return;
@@ -4651,6 +4662,21 @@ int clusterProcessPacket(clusterLink *link) {
 
                 /* Primary node changed for this replica? */
                 if (sender_claimed_primary && sender->replicaof != sender_claimed_primary) {
+                    /* We only learn the primary of a node from its own packets, so we may
+                     * still know the claimed primary as a (sub-)replica of the sender. This
+                     * happens if the packet is an old one that was delayed, or if it is
+                     * processed before the promotion announcement of the claimed primary.
+                     * Never close a replicaof loop: keep what we have and wait. Once the
+                     * claimed primary is known as a primary, a later packet from the sender
+                     * applies cleanly. */
+                    if (clusterReplicaofWouldLoop(sender, sender_claimed_primary)) {
+                        serverLog(LL_NOTICE,
+                                  "Ignore primary change of node %.40s (%s) to node %.40s (%s) in shard %.40s;"
+                                  " it would form a replication loop",
+                                  sender->name, humanNodename(sender), sender_claimed_primary->name,
+                                  humanNodename(sender_claimed_primary), sender_claimed_primary->shard_id);
+                        return 1;
+                    }
                     if (sender->replicaof) clusterNodeRemoveReplica(sender->replicaof, sender);
                     serverLog(LL_NOTICE, "Node %.40s (%s) is now a replica of node %.40s (%s) in shard %.40s",
                               sender->name, humanNodename(sender), sender_claimed_primary->name,
