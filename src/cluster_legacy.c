@@ -1184,6 +1184,18 @@ void clusterSaveConfigOrLog(int do_fsync) {
     }
 }
 
+/* Save the cluster configuration file now, a failed save is handled the way
+ * cluster-config-save-behavior asks for. */
+static void clusterSaveConfigByBehavior(int do_fsync) {
+    if (server.cluster_configfile_save_behavior == CLUSTER_CONFIGFILE_SAVE_BEHAVIOR_SYNC) {
+        /* Sync mode: exit the process if saving fails. */
+        clusterSaveConfigOrDie(do_fsync);
+    } else if (server.cluster_configfile_save_behavior == CLUSTER_CONFIGFILE_SAVE_BEHAVIOR_BEST_EFFORT) {
+        /* Best-effort mode: log (don't exit) if saving fails and wait for the next retry. */
+        clusterSaveConfigOrLog(do_fsync);
+    }
+}
+
 /* Lock the cluster config using flock(), and retain the file descriptor used to
  * acquire the lock so that the file will be locked as long as the process is up.
  *
@@ -5490,9 +5502,15 @@ void clusterSendFailoverAuthIfNeeded(clusterNode *node, clusterMsg *request) {
         }
     }
 
-    /* We can vote for this replica. */
+    /* We can vote for this replica.
+     *
+     * The vote must be saved before it is queued: the request came in on the
+     * inbound link but the ACK goes out on node->link, a different connection
+     * that can be written before we get to clusterBeforeSleep(). If we sent a
+     * vote we did not save and then restarted, we could vote again in the same
+     * epoch. */
     server.cluster->lastVoteEpoch = server.cluster->currentEpoch;
-    clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG | CLUSTER_TODO_FSYNC_CONFIG);
+    clusterSaveConfigByBehavior(1);
     clusterSendFailoverAuth(node);
     serverLog(LL_NOTICE, "Failover auth granted to %.40s (%s) for epoch %llu", node->name, humanNodename(node),
               (unsigned long long)server.cluster->currentEpoch);
@@ -6482,14 +6500,7 @@ void clusterBeforeSleep(void) {
 
     /* Save the config, possibly using fsync. */
     if (flags & CLUSTER_TODO_SAVE_CONFIG) {
-        int fsync = flags & CLUSTER_TODO_FSYNC_CONFIG;
-        if (server.cluster_configfile_save_behavior == CLUSTER_CONFIGFILE_SAVE_BEHAVIOR_SYNC) {
-            /* Sync mode: exit the process if saving fails. */
-            clusterSaveConfigOrDie(fsync);
-        } else if (server.cluster_configfile_save_behavior == CLUSTER_CONFIGFILE_SAVE_BEHAVIOR_BEST_EFFORT) {
-            /* Best-effort mode: log (don't exit) if saving fails and wait for the next retry. */
-            clusterSaveConfigOrLog(fsync);
-        }
+        clusterSaveConfigByBehavior(flags & CLUSTER_TODO_FSYNC_CONFIG);
     }
 
     if (flags & CLUSTER_TODO_BROADCAST_ALL) {

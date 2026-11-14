@@ -72,6 +72,84 @@ start_cluster 1 1 {tags {external:skip cluster} overrides {cluster-config-save-b
     }
 }
 
+start_cluster 1 1 {tags {external:skip cluster needs:debug} overrides {cluster-config-save-behavior sync}} {
+    test {cluster-config-save-behavior sync mode - failover vote is not sent before it is saved} {
+        # R0 is the primary that votes, R1 is the replica that asks for the vote.
+        set voter_id [R 0 cluster myid]
+        set candidate_id [R 1 cluster myid]
+
+        wait_for_condition 1000 50 {
+            [s -1 master_link_status] eq {up}
+        } else {
+            fail "The replica did not sync with its primary"
+        }
+
+        # Silence the cluster bus, so that the only packets on the links
+        # between the two nodes are the ones triggered below.
+        R 0 config set cluster-ping-interval 3600000
+        R 1 config set cluster-ping-interval 3600000
+        R 0 debug disable-cluster-random-ping 1
+        R 1 debug disable-cluster-random-ping 1
+        wait_for_condition 1000 50 {
+            [dict get [cluster_get_node_by_id 0 $candidate_id] ping_sent] == 0 &&
+            [dict get [cluster_get_node_by_id 1 $voter_id] ping_sent] == 0
+        } else {
+            fail "The cluster bus pings were not answered"
+        }
+
+        # Create folder that can cause the rename fail, from now on the voter
+        # can not save a vote in its nodes.conf.
+        create_nodes_conf_folder 0
+
+        # Block the voter, and when it wakes up leave a message queued on its
+        # outbound link to the candidate, which is the link a vote is sent on.
+        set from_line [count_log_lines 0]
+        set rd [valkey_deferring_client 0]
+        $rd multi
+        $rd debug log voter-is-blocked
+        $rd debug sleep 2
+        $rd publish somechannel somemessage
+        $rd exec
+        wait_for_log_messages 0 {"*voter-is-blocked*"} $from_line 1000 10
+
+        # The candidate requests the vote while the voter is blocked, so the
+        # voter handles the request while its outbound link is already writable.
+        assert_equal {OK} [R 1 cluster failover force]
+        wait_for_condition 1000 10 {
+            [CI 1 cluster_stats_messages_auth-req_sent] ne {}
+        } else {
+            fail "The candidate did not request the vote"
+        }
+
+        assert_equal {OK} [$rd read]
+        assert_equal {QUEUED} [$rd read]
+        assert_equal {QUEUED} [$rd read]
+        assert_equal {QUEUED} [$rd read]
+        assert_equal {OK OK 0} [$rd read]
+        $rd close
+
+        # Wait for the voter to exit due to config save failure.
+        wait_for_condition 1000 50 {
+            [process_is_alive [srv 0 pid]] == 0
+        } else {
+            fail "The voter did not exit"
+        }
+
+        # Once the candidate dropped the link the voter was sending on, it has
+        # processed everything the voter sent before it exited.
+        wait_for_condition 1000 50 {
+            ![string match {*direction from*} [R 1 cluster links]]
+        } else {
+            fail "The candidate did not drop the link from the voter"
+        }
+
+        # The voter never saved the vote, so the candidate must not have it.
+        set acks [CI 1 cluster_stats_messages_auth-ack_received]
+        if {$acks eq {}} { set acks 0 }
+        assert_equal $acks 0 "failover votes the candidate received from a voter that exited without saving its vote in nodes.conf"
+    }
+}
+
 start_cluster 1 1 {tags {external:skip cluster} overrides {cluster-config-save-behavior best-effort}} {
     test {cluster-config-save-behavior best-effort mode - node continues running when config save fails} {
         # Create folder that can cause the rename fail.
