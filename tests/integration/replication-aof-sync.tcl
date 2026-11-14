@@ -301,4 +301,66 @@ tags {"repl external:skip"} {
             }
         }
     }
+
+    # Test 7: A dual-channel full sync loaded from disk whose main channel is
+    # closed during the load must be cancelled and retried, the RDB file on
+    # disk is valid and the replica must not treat the abort as a short read.
+    test "Dual-channel replica retries full sync when main channel closes during disk-based RDB load" {
+        start_server {overrides {repl-diskless-sync yes repl-diskless-sync-delay 0 save ""}} {
+            set primary [srv 0 client]
+            set primary_host [srv 0 host]
+            set primary_port [srv 0 port]
+
+            $primary config set dual-channel-replication-enabled yes
+            $primary debug populate 500 primary 65536
+
+            start_server {overrides {repl-diskless-load disabled save ""}} {
+                set replica [srv 0 client]
+                set replica_pid [srv 0 pid]
+
+                $replica config set dual-channel-replication-enabled yes
+                # Loading the RDB from disk takes at least 5 seconds (500 * 10ms),
+                # and the replica processes events often enough to notice the
+                # closed channel.
+                $replica config set key-load-delay 10000
+                $replica config set loading-process-events-interval-bytes 1024
+
+                $replica replicaof $primary_host $primary_port
+
+                # Wait for the replica to load the RDB from disk while its main
+                # channel is buffering the replication stream.
+                wait_for_condition 1000 50 {
+                    [s 0 loading] eq 1 &&
+                    [string match "*slave*,state=bg_transfer*,type=main-channel*" [$primary info replication]]
+                } else {
+                    fail "replica didn't start loading the RDB from disk in time"
+                }
+
+                for {set i 0} {$i < 10} {incr i} {
+                    $primary set "during-load:$i" [string repeat x 65536]
+                }
+
+                set replica_main_conn_id [get_client_id_by_last_cmd $primary "psync"]
+                assert {$replica_main_conn_id != ""}
+                $primary client kill id $replica_main_conn_id
+
+                # The primary reports a dual channel replica as online only once
+                # it is done loading, so this waits for the retried sync to complete.
+                wait_for_condition 1000 100 {
+                    ![process_is_alive $replica_pid] ||
+                    [string match "*slave0:*state=online*" [$primary info replication]]
+                } else {
+                    fail "Replica did not sync again after its main channel was closed during the RDB load from disk"
+                }
+                if {![process_is_alive $replica_pid]} {
+                    fail "Replica exited after its main channel was closed during the RDB load from disk, instead of retrying the sync"
+                }
+
+                wait_for_sync $replica
+                wait_for_ofs_sync $primary $replica
+                assert_equal 510 [$replica dbsize]
+                assert_equal [$primary debug digest] [$replica debug digest]
+            }
+        }
+    }
 }

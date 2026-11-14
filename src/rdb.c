@@ -115,6 +115,12 @@ void rdbReportError(int corruption_error, int linenum, char *reason, ...) {
     } else if (rdbCheckMode) {
         /* If we're inside the rdb checker, let it handle the error. */
         rdbCheckError("%s", msg);
+    } else if (server.loading_rio && rioGetAsyncCloseError(server.loading_rio)) {
+        /* The load was aborted on purpose (e.g. a dual channel sync lost its
+         * main channel), so reads fail on a payload that may be perfectly valid.
+         * Log and proceed (don't exit), the caller discards the partial data. */
+        serverLog(LL_WARNING, "%s. RDB load was aborted, resuming operation.", msg);
+        return;
     } else if (rdbFileBeingLoaded) {
         /* If we're loading an rdb file form disk, run rdb check (and exit) */
         serverLog(LL_WARNING, "%s", msg);
