@@ -1146,7 +1146,11 @@ static int filterFactor(compiler *c) {
             filterCmp(c, LHS_SELF, addNameBytes(c->path, "", 0), 0, op, &v);
         }
     } else {
-        /* The value is on the left: value op @[.name[[index]]] */
+        /* The value is on the left: value op @[.name[[index]]]. The spaces
+         * skipped above follow the value's first character, so they belong to
+         * the value: scan it from that character. (The module scans past them,
+         * which drops them from a string and reads "5 0" as 5.) */
+        if (lx->type != T_DOLLAR) lx->p = lx->ts + 1;
         if (!filterValue(c, &v)) goto out;
         lexSkipSpaces(lx);
         if (!filterOp(c, &op)) goto out;
@@ -1393,7 +1397,9 @@ static uint32_t compileBracketNames(compiler *c) {
     first = name;
     count = 1;
     while (lexMatch(lx, T_COMMA, 1)) {
-        lexSkipSpaces(lx);
+        /* Skip spaces before the name only. The module also skips the spaces
+         * that follow the opening quote, which loses them from the name. */
+        if (lx->type == T_SPACE) lexSkipSpaces(lx);
         e = quotedName(c, &name);
         if (e != JSON_PATH_OK) return errStep(p, e, 0);
         count++;

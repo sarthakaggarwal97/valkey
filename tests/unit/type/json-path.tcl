@@ -475,7 +475,7 @@ start_server {tags {"json"}} {
             assert_equal {integer} [r json.type a {$..[3,3]}]
             # Several paths in one JSON.GET are evaluated one by one.
             assert_equal {{"$[2,0]":[2,0],"$[0,0]":[0,0]}} [r json.get a {$[2,0]} {$[0,0]}]
-            r del a o
+            foreach key {a o} { r del $key }
         }
 
         # ---------------------------------------------------------------------------------
@@ -754,7 +754,7 @@ start_server {tags {"json"}} {
             assert_equal 9 [r json.del store {$..title}]
             assert_equal {[]} [r json.get store {$..title}]
             assert_equal {[8.95,12.99,9,22.99,6.99,22.99,10.69,8.59,19.64]} [r json.get store {$..price}]
-            r del store store2
+            foreach key {store store2} { r del $key }
         }
 
         test "JSON path: recursive insert, update and delete of array elements (caps $caps)" {
@@ -782,7 +782,7 @@ start_server {tags {"json"}} {
             assert_equal 2 [r json.del input {$..e}]
             assert_equal 0 [r json.del input {$..e}]
             assert_equal {[]} [r json.get input {$..e}]
-            r del input input2
+            foreach key {input input2} { r del $key }
         }
 
         # ---------------------------------------------------------------------------------
@@ -845,7 +845,7 @@ start_server {tags {"json"}} {
             # MERGE
             assert_equal OK [r json.merge k11 {$[1,1,-9]} {{"m":1}}]
             assert_equal {[9,{"m":1},2,3,4,5,6,7,8,9]} [r json.get k11]
-            r del k1 k2 k3 k4 k5 k6 k7 k8 k9 k10 k11 k12
+            foreach key {k1 k2 k3 k4 k5 k6 k7 k8 k9 k10 k11 k12} { r del $key }
         }
 
         test "JSON path: insert, update and delete modes (caps $caps)" {
@@ -952,16 +952,18 @@ start_server {tags {"json"}} {
         }
 
         test "JSON.SET \$..a with a nested value does not deepen the document on each call (B4) (caps $caps)" {
-            # The module's test_v2_path_limit_recursive_descent relies on each call adding one
-            # level. With B4 the outermost match is replaced and the depth stays at 2.
-            r config set json.max-path-limit 10
-            assert_equal OK [r json.set k1 {$} {{"a":0}}]
-            for {set j 0} {$j < 12} {incr j} {
-                assert_equal OK [r json.set k1 {$..a} {{"a":0}}]
+            with_config json.max-path-limit 128 {
+                # The module's test_v2_path_limit_recursive_descent relies on each call adding one
+                # level. With B4 the outermost match is replaced and the depth stays at 2.
+                r config set json.max-path-limit 10
+                assert_equal OK [r json.set k1 {$} {{"a":0}}]
+                for {set j 0} {$j < 12} {incr j} {
+                    assert_equal OK [r json.set k1 {$..a} {{"a":0}}]
+                }
+                assert_equal 2 [r json.debug depth k1]
+                assert_equal {{"a":{"a":0}}} [r json.get k1]
+                r config set json.max-path-limit 128
             }
-            assert_equal 2 [r json.debug depth k1]
-            assert_equal {{"a":{"a":0}}} [r json.get k1]
-            r config set json.max-path-limit 128
         }
 
         test "JSON.DEL, JSON.CLEAR with nested matches: every match is counted, the outermost wins (B4) (caps $caps)" {
@@ -1122,26 +1124,31 @@ start_server {tags {"json"}} {
         }
 
         test "JSON multi-match writes refused by a limit change nothing (B6) (caps $caps)" {
-            # Nesting limit: the value fits under the first match and not under the second.
-            r config set json.max-path-limit 3
-            r json.set lim . {[0,[0]]}
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.set lim {$..[0]} {[[1]]}}
-            assert_equal {[0,[0]]} [r json.get lim]
-            r config set json.max-path-limit 128
-            # Size limit: the sum over all matches is what counts.
-            r json.set lim . {{"a":["x"],"b":["y"],"c":["z"],"s":["p","q"]}}
-            r config set json.max-document-size [expr {[r json.debug memory lim] + 4096}]
-            set big "\"[string repeat w 2000]\""
-            assert_error "LIMIT Document size limit is exceeded" {r json.arrappend lim {$.*} $big}
-            assert_error "LIMIT Document size limit is exceeded" {r json.strappend lim {$.*[*]} $big}
-            assert_error "LIMIT Document size limit is exceeded" {r json.set lim {$.*[0]} $big}
-            assert_error "LIMIT Document size limit is exceeded" {r json.arrinsert lim {$.*} 0 $big}
-            assert_error "LIMIT Document size limit is exceeded" {r json.merge lim {$.*} "{\"m\":$big}"}
-            assert_equal {{"a":["x"],"b":["y"],"c":["z"],"s":["p","q"]}} [r json.get lim]
-            # One match alone fits.
-            assert_equal 2 [r json.arrappend lim {$.a} $big]
-            r config set json.max-document-size 0
-            r del lim
+            with_cleanup {
+                # Nesting limit: the value fits under the first match and not under the second.
+                r config set json.max-path-limit 3
+                r json.set lim . {[0,[0]]}
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.set lim {$..[0]} {[[1]]}}
+                assert_equal {[0,[0]]} [r json.get lim]
+                r config set json.max-path-limit 128
+                # Size limit: the sum over all matches is what counts.
+                r json.set lim . {{"a":["x"],"b":["y"],"c":["z"],"s":["p","q"]}}
+                r config set json.max-document-size [expr {[r json.debug memory lim] + 4096}]
+                set big "\"[string repeat w 2000]\""
+                assert_error "LIMIT Document size limit is exceeded" {r json.arrappend lim {$.*} $big}
+                assert_error "LIMIT Document size limit is exceeded" {r json.strappend lim {$.*[*]} $big}
+                assert_error "LIMIT Document size limit is exceeded" {r json.set lim {$.*[0]} $big}
+                assert_error "LIMIT Document size limit is exceeded" {r json.arrinsert lim {$.*} 0 $big}
+                assert_error "LIMIT Document size limit is exceeded" {r json.merge lim {$.*} "{\"m\":$big}"}
+                assert_equal {{"a":["x"],"b":["y"],"c":["z"],"s":["p","q"]}} [r json.get lim]
+                # One match alone fits.
+                assert_equal 2 [r json.arrappend lim {$.a} $big]
+                r config set json.max-document-size 0
+                r del lim
+            } {
+                r config set json.max-path-limit 128
+                r config set json.max-document-size 0
+            }
         }
 
         # ---------------------------------------------------------------------------------
@@ -1149,67 +1156,73 @@ start_server {tags {"json"}} {
         # ---------------------------------------------------------------------------------
 
         test "json.max-path-limit: a value inserted by a sub-path write counts from its position (caps $caps)" {
-            r config set json.max-path-limit 3
-            assert_equal OK [r json.set k1 {$} {{"a":{"a":{"a":0}}}}]
-            assert_equal 3 [r json.debug depth k1]
-            # insert a nesting object
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.set k1 {$.a.a.b} {{"b":0}}}
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.set k1 {$.a.a.a} {[1]}}
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.set k1 . {{"a":{"a":{"a":{"a":0}}}}}}
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.set k1 . {[[[[1]]]]}}
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.mset k1 {$.a.a.b} {{"b":0}}}
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.mset fresh . {[[[[1]]]]}}
-            assert_equal {{"a":{"a":{"a":0}}}} [r json.get k1]
-            assert_equal 0 [r exists fresh]
-            # increase limit by 1
-            r config set json.max-path-limit 4
-            assert_equal OK [r json.set k1 {$.a.a.b} {{"b":0}}]
-            assert_equal {{"a":{"a":{"a":0,"b":{"b":0}}}}} [r json.get k1]
-            assert_equal 4 [r json.debug depth k1]
-            r config set json.max-path-limit 128
+            with_config json.max-path-limit 128 {
+                r config set json.max-path-limit 3
+                assert_equal OK [r json.set k1 {$} {{"a":{"a":{"a":0}}}}]
+                assert_equal 3 [r json.debug depth k1]
+                # insert a nesting object
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.set k1 {$.a.a.b} {{"b":0}}}
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.set k1 {$.a.a.a} {[1]}}
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.set k1 . {{"a":{"a":{"a":{"a":0}}}}}}
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.set k1 . {[[[[1]]]]}}
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.mset k1 {$.a.a.b} {{"b":0}}}
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.mset fresh . {[[[[1]]]]}}
+                assert_equal {{"a":{"a":{"a":0}}}} [r json.get k1]
+                assert_equal 0 [r exists fresh]
+                # increase limit by 1
+                r config set json.max-path-limit 4
+                assert_equal OK [r json.set k1 {$.a.a.b} {{"b":0}}]
+                assert_equal {{"a":{"a":{"a":0,"b":{"b":0}}}}} [r json.get k1]
+                assert_equal 4 [r json.debug depth k1]
+                r config set json.max-path-limit 128
+            }
         }
 
         test "json.max-path-limit: reached step by step through a recursive path (caps $caps)" {
-            # Each call replaces the innermost member, adding one level, until the limit.
-            r config set json.max-path-limit 10
-            assert_equal OK [r json.set k1 {$} {{"a":0}}]
-            for {set j 0} {$j < 9} {incr j} {
+            with_config json.max-path-limit 128 {
+                # Each call replaces the innermost member, adding one level, until the limit.
+                r config set json.max-path-limit 10
+                assert_equal OK [r json.set k1 {$} {{"a":0}}]
+                for {set j 0} {$j < 9} {incr j} {
+                    assert_equal OK [r json.set k1 {$..[?(@.a==0)].a} {{"a":0}}]
+                }
+                assert_equal 10 [r json.debug depth k1]
+                set before [r json.get k1]
+                # one more increase should exceed the path limit
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.set k1 {$..[?(@.a==0)].a} {{"a":0}}}
+                assert_equal $before [r json.get k1]
+                r config set json.max-path-limit 128
                 assert_equal OK [r json.set k1 {$..[?(@.a==0)].a} {{"a":0}}]
+                assert_equal 11 [r json.debug depth k1]
             }
-            assert_equal 10 [r json.debug depth k1]
-            set before [r json.get k1]
-            # one more increase should exceed the path limit
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.set k1 {$..[?(@.a==0)].a} {{"a":0}}}
-            assert_equal $before [r json.get k1]
-            r config set json.max-path-limit 128
-            assert_equal OK [r json.set k1 {$..[?(@.a==0)].a} {{"a":0}}]
-            assert_equal 11 [r json.debug depth k1]
         }
 
         test "json.max-path-limit CONFIG SET, GET and the limit of 0 (caps $caps)" {
-            assert_equal {json.max-path-limit 128} [r config get json.max-path-limit]
-            r config set json.max-path-limit 0
-            assert_equal {json.max-path-limit 0} [r config get json.max-path-limit]
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.set z . {[1]}}
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.set z . {{}}}
-            assert_equal OK [r json.set z . 1]
-            assert_error "ERR CONFIG SET failed*" {r config set json.max-path-limit -1}
-            assert_error "ERR CONFIG SET failed*" {r config set json.max-path-limit abc}
-            r config set json.max-path-limit 300
-            assert_equal OK [r json.set z . [json_path_nested 250]]
-            assert_equal 250 [r json.debug depth z]
-            # Reads are not limited by the document's depth, in either syntax.
-            assert_equal {[1]} [r json.get z "\$[string repeat .a 250]"]
-            assert_equal 1 [r json.get z "[string repeat .a 250]"]
-            assert_equal {[]} [r json.get z "\$[string repeat .a 251]"]
-            assert_equal {integer} [r json.type z "\$[string repeat .a 250]"]
-            # Lowering the limit keeps the stored document readable and editable in place.
-            r config set json.max-path-limit 128
-            assert_equal 250 [r json.debug depth z]
-            assert_equal {[2]} [r json.numincrby z "\$[string repeat .a 250]" 1]
-            assert_equal 1 [r json.del z "\$[string repeat .a 200]"]
-            assert_equal 199 [r json.debug depth z]
-            r del z
+            with_config json.max-path-limit 128 {
+                assert_equal {json.max-path-limit 128} [r config get json.max-path-limit]
+                r config set json.max-path-limit 0
+                assert_equal {json.max-path-limit 0} [r config get json.max-path-limit]
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.set z . {[1]}}
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.set z . {{}}}
+                assert_equal OK [r json.set z . 1]
+                assert_error "ERR CONFIG SET failed*" {r config set json.max-path-limit -1}
+                assert_error "ERR CONFIG SET failed*" {r config set json.max-path-limit abc}
+                r config set json.max-path-limit 300
+                assert_equal OK [r json.set z . [json_path_nested 250]]
+                assert_equal 250 [r json.debug depth z]
+                # Reads are not limited by the document's depth, in either syntax.
+                assert_equal {[1]} [r json.get z "\$[string repeat .a 250]"]
+                assert_equal 1 [r json.get z "[string repeat .a 250]"]
+                assert_equal {[]} [r json.get z "\$[string repeat .a 251]"]
+                assert_equal {integer} [r json.type z "\$[string repeat .a 250]"]
+                # Lowering the limit keeps the stored document readable and editable in place.
+                r config set json.max-path-limit 128
+                assert_equal 250 [r json.debug depth z]
+                assert_equal {[2]} [r json.numincrby z "\$[string repeat .a 250]" 1]
+                assert_equal 1 [r json.del z "\$[string repeat .a 200]"]
+                assert_equal 199 [r json.debug depth z]
+                r del z
+            }
         }
 
         test "JSON path limit: expression nesting (caps $caps)" {
@@ -1268,6 +1281,31 @@ start_server {tags {"json"}} {
             assert_equal {[1,2,3]} [r json.get s]
             r del s
         }
+    }
+    json_set_caps {4096 128}
+
+    test {JSON path: a quoted literal keeps the spaces at its start, and a number with a space in it is an error} {
+        set doc {{"x":3," ":4," a":5,"name":3,"c":1,"v":[{"n":" a"},{"n":"a"},{"n":12}]}}
+        assert_equal OK [r json.set k $ $doc]
+        # Quoted member names in a union, with either quote and a space before the comma.
+        assert_equal {[3,4]} [r json.get k {$['x'," "]}]
+        assert_equal {[3,5]} [r json.get k {$['x',' a']}]
+        assert_equal {[3,5]} [r json.get k {$['x' ,' a']}]
+        assert_equal {[3,5]} [r json.get k {$["x"," a"]}]
+        # An unclosed union is an error for a read and for a write.
+        assert_error "*Invalid JSON path*" {r json.get k {$['x'," "}}
+        assert_error "*Invalid JSON path*" {r json.set k {$['x'," "} 9}
+        # String literals in a filter, with either quote.
+        assert_equal {[{"n":" a"}]} [r json.get k {$.v[?(" a"==@.n)]}]
+        assert_equal {[{"n":" a"}]} [r json.get k {$.v[?(' a'==@.n)]}]
+        # A space after a number literal ends it; a space inside one is an error.
+        assert_equal {[{"n":12}]} [r json.get k {$.v[?(12 ==@.n)]}]
+        assert_error "*Invalid JSON path*" {r json.get k {$.v[?(1 2==@.n)]}}
+        assert_error "*Invalid JSON path*" {r json.get k {$[?(5 0!= @.name)]}}
+        assert_error "*Invalid JSON path*" {r json.set k {$[?(5 0!= @.name)].c} 9}
+        assert_error "*Invalid JSON path*" {r json.nummultby k {$[?(5 0!= @.name)].c} 2}
+        assert_equal $doc [r json.get k]
+        r del k
     }
 }
 
