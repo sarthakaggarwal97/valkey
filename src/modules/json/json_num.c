@@ -806,9 +806,21 @@ static inline int isDigit(char c) {
 }
 
 /* Eight digits at a time, for the long fractions of 15 to 17 digit numbers.
- * The bytes are read as one little-endian word. */
-#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ && !defined(JSON_NUM_PORTABLE)
+ * The bytes are read as one little-endian word, the first digit lowest: a
+ * plain load on a little-endian target, a load and a byte swap (one
+ * instruction on most) on a big-endian one. */
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ || __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__) && \
+    !defined(JSON_NUM_PORTABLE)
 #define JSON_NUM_EIGHT_DIGITS 1
+
+static inline uint64_t loadEightLE(const char *p) {
+    uint64_t v;
+    memcpy(&v, p, 8);
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    v = __builtin_bswap64(v);
+#endif
+    return v;
+}
 
 /* Whether each of the 8 bytes of v is an ASCII digit: the high bit of a byte
  * comes up in v + 0x46 for a byte above '9' and in v - 0x30 for one below '0'
@@ -1407,8 +1419,7 @@ double jsonDoubleParse(const char *s, size_t n, int *overflow) {
         dot = p++;
 #ifdef JSON_NUM_EIGHT_DIGITS
         while (end - p >= 8) {
-            uint64_t v;
-            memcpy(&v, p, 8);
+            const uint64_t v = loadEightLE(p);
             if (!isEightDigits(v)) break;
             w = w * 100000000 + parseEightDigits(v);
             p += 8;

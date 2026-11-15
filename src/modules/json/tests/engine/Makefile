@@ -1,7 +1,8 @@
 # Standalone tests and benchmark for src/modules/json/json_engine.c.
 #
 #   make             build everything into build/
-#   make check       unit tests, the differential tests against Python and the
+#   make check       unit tests, the white-box layout checks (byte order and
+#                    widths), the differential tests against Python and the
 #                    model-based tests of changes and defrag, plain and under
 #                    ASan+UBSan
 #   make check-quick the same on a smaller corpus
@@ -16,7 +17,11 @@ CC = clang
 PYTHON ?= python3
 OPT ?= -O2
 WARN = -W -Wall -Wextra -Wshadow -Wstrict-prototypes
-CFLAGS_ALL = -std=gnu11 -g $(WARN) $(CFLAGS)
+# As in the module build: SSE2 double arithmetic on 32-bit x86.
+ifeq ($(shell echo __i386__ | $(CC) $(CFLAGS) -x c -E -P - 2>/dev/null | tr -d ' \n'),1)
+X86_32_FP = -msse2 -mfpmath=sse
+endif
+CFLAGS_ALL = -std=gnu11 -g $(WARN) $(X86_32_FP) $(CFLAGS)
 SAN = -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -DJSON_ENGINE_DEBUG
 
 JSON_DIR = ../..
@@ -31,7 +36,7 @@ endif
 SRC = $(JSON_DIR)/json_engine.c $(NUM_SRC)
 HDR = $(JSON_DIR)/json_engine.h $(JSON_DIR)/json_engine_format.h $(JSON_DIR)/json_engine_stats.h $(JSON_DIR)/json_num.h
 
-all: $(B)/engine_test $(B)/engine_test_san $(B)/engine_bench
+all: $(B)/engine_test $(B)/engine_test_san $(B)/layout_test $(B)/layout_test_san $(B)/engine_bench
 
 $(B):
 	mkdir -p $(B)
@@ -42,14 +47,23 @@ $(B)/engine_test: engine_test.c $(SRC) $(HDR) | $(B)
 $(B)/engine_test_san: engine_test.c $(SRC) $(HDR) | $(B)
 	$(CC) $(CFLAGS_ALL) $(SAN) -o $@ engine_test.c $(SRC) $(LDFLAGS) -lpthread -lm
 
+# layout_test.c includes json_engine.c itself.
+$(B)/layout_test: layout_test.c $(SRC) $(HDR) | $(B)
+	$(CC) $(CFLAGS_ALL) $(OPT) -DJSON_ENGINE_DEBUG -o $@ layout_test.c $(NUM_SRC) $(LDFLAGS) -lpthread -lm
+
+$(B)/layout_test_san: layout_test.c $(SRC) $(HDR) | $(B)
+	$(CC) $(CFLAGS_ALL) $(SAN) -o $@ layout_test.c $(NUM_SRC) $(LDFLAGS) -lpthread -lm
+
 $(B)/engine_bench: engine_bench.c $(SRC) $(HDR) | $(B)
 	$(CC) $(CFLAGS_ALL) -O3 -mcpu=native -o $@ engine_bench.c $(SRC) $(LDFLAGS) -lpthread -lm
 
-check: $(B)/engine_test $(B)/engine_test_san
+check: $(B)/engine_test $(B)/engine_test_san $(B)/layout_test $(B)/layout_test_san
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) check_layout.py $(B)
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) check_engine.py $(B) full
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) check_mutate.py $(B) full
 
-check-quick: $(B)/engine_test $(B)/engine_test_san
+check-quick: $(B)/engine_test $(B)/engine_test_san $(B)/layout_test $(B)/layout_test_san
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) check_layout.py $(B)
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) check_engine.py $(B) quick
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) check_mutate.py $(B) quick
 

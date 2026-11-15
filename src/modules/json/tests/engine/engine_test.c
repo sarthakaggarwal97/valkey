@@ -54,10 +54,15 @@ static long g_line; /* Input line being processed, for messages. */
  * the sanitizer sees any access past what the engine asked for.
  * ------------------------------------------------------------------------- */
 
+/* 24 bytes on every target, so that a block is aligned to 8 bytes and not to
+ * 16 (malloc gives 16): the engine may count on the 8 of the smallest
+ * allocator classes, and on nothing more. */
 typedef struct blockHeader {
-    size_t size;
-    size_t magic;
+    uint64_t size;
+    uint64_t magic;
+    uint64_t pad;
 } blockHeader;
+_Static_assert(sizeof(blockHeader) == 24, "the block header keeps blocks 8 bytes off 16");
 
 #define BLOCK_MAGIC 0x6A736F6E626C6B21ull
 
@@ -74,7 +79,7 @@ static blockHeader *blockOf(void *p) {
 
 static void *testAlloc(size_t n) {
     blockHeader *h = malloc(sizeof(*h) + n);
-    if (!h) abort();
+    if (!h || ((uintptr_t)h & 7)) abort();
     h->size = n;
     h->magic = BLOCK_MAGIC;
     live_bytes += n;
@@ -100,7 +105,7 @@ static void *testRealloc(void *p, size_t n) {
 }
 
 static size_t testUsable(void *p) {
-    return blockOf(p)->size;
+    return (size_t)blockOf(p)->size;
 }
 
 static const jsonAllocator test_allocator = {testAlloc, testRealloc, testFree, testUsable};
@@ -763,24 +768,25 @@ static void unitKeyTable(void) {
     jsonEngineGetStats(&s1);
     CHECK(s1.keytable_keys == s0.keytable_keys); /* Still in the table... */
     CHECK(jsonKeyFind("thr-2", 5) == 0);         /* ...but used by nothing. */
-    /* The live bytes fell at once, by five names of five bytes, though the
-     * memory waits for the sweep. A key revived before the sweep counts
-     * again, and the sweep itself changes nothing. */
-    CHECK(s1.keytable_live_bytes == s0.keytable_live_bytes - 25 && s1.keytable_bytes == s0.keytable_bytes);
+    /* The live bytes fell at once, by five names of five bytes (8 each with
+     * their serialised form), though the memory waits for the sweep. A key
+     * revived before the sweep counts again, and the sweep itself changes
+     * nothing. */
+    CHECK(s1.keytable_live_bytes == s0.keytable_live_bytes - 40 && s1.keytable_bytes == s0.keytable_bytes);
     d = mustParse("{\"thr-4\":7}");
     jsonEngineGetStats(&s1);
-    CHECK(s1.keytable_live_bytes == s0.keytable_live_bytes - 20);
+    CHECK(s1.keytable_live_bytes == s0.keytable_live_bytes - 32);
     while (jsonKeyTableSweep()) {
     }
     jsonEngineGetStats(&s1);
-    CHECK(s1.keytable_live_bytes == s0.keytable_live_bytes - 20 && s1.keytable_keys == s0.keytable_keys - 4);
+    CHECK(s1.keytable_live_bytes == s0.keytable_live_bytes - 32 && s1.keytable_keys == s0.keytable_keys - 4);
     CHECK(!jsonKeyFind("thr-1", 5) && !jsonKeyFind("thr-2", 5) && !jsonKeyFind("thr-3", 5) && !jsonKeyFind("thr-5", 5));
     const uint32_t revived = jsonKeyFind("thr-4", 5);
     CHECK(revived != 0);
     jsonKeyRelease(revived);
     jsonDocFree(d);
     jsonEngineGetStats(&s1);
-    CHECK(s1.keytable_live_bytes == s0.keytable_live_bytes - 25 && s1.keytable_keys == s0.keytable_keys - 5);
+    CHECK(s1.keytable_live_bytes == s0.keytable_live_bytes - 40 && s1.keytable_keys == s0.keytable_keys - 5);
     CHECK(jsonKeyTableSweep() == 0);
 }
 
@@ -851,28 +857,36 @@ static void unitFormat(void) {
 
 /* Runs first, on an empty key table, where the counts are exact. The test
  * allocator's usable size is the requested size, so the live bytes of a key
- * are the length of its name. */
+ * whose name needs no escaping are its serialised form, which holds the
+ * name: the length of the name plus 3 ("name":). */
 static void unitStats(void) {
     jsonEngineStats s;
     jsonEngineGetStats(&s);
     CHECK(s.keytable_keys == 0 && s.keytable_bytes == 0 && s.keytable_live_bytes == 0);
     jsonDoc d = mustParse("{\"a\":1,\"bcd\":{\"a\":2,\"ef\":3}}");
     jsonEngineGetStats(&s);
-    CHECK(s.keytable_keys == 3 && s.keytable_bytes >= 6 && s.keytable_live_bytes == 6);
+    CHECK(s.keytable_keys == 3 && s.keytable_bytes >= 15 && s.keytable_live_bytes == 15);
     const size_t bytes = s.keytable_bytes;
     const jsonDoc same = mustParse("{\"a\":1,\"bcd\":{\"a\":2,\"ef\":3}}");
     jsonEngineGetStats(&s);
-    CHECK(s.keytable_keys == 3 && s.keytable_bytes == bytes && s.keytable_live_bytes == 6);
+    CHECK(s.keytable_keys == 3 && s.keytable_bytes == bytes && s.keytable_live_bytes == 15);
     const uint32_t held = jsonKeyFind("ef", 2);
     jsonDocFree(d);
     jsonEngineGetStats(&s);
-    CHECK(s.keytable_keys == 3 && s.keytable_live_bytes == 6);
+    CHECK(s.keytable_keys == 3 && s.keytable_live_bytes == 15);
     jsonDocFree(same);
     jsonEngineGetStats(&s);
-    CHECK(s.keytable_keys == 1 && s.keytable_live_bytes == 2); /* Only the key this test holds. */
+    CHECK(s.keytable_keys == 1 && s.keytable_live_bytes == 5); /* Only the key this test holds. */
     jsonKeyRelease(held);
     jsonEngineGetStats(&s);
     CHECK(s.keytable_keys == 0 && s.keytable_live_bytes == 0);
+    /* A name that needs escaping is kept as it is and, after it, escaped:
+     * 3 + 7 ("a\nb":) and 1 + 9 ("\u0001":). */
+    d = mustParse("{\"a\\nb\":1,\"\\u0001\":{\"a\\nb\":[]}}");
+    jsonEngineGetStats(&s);
+    CHECK(s.keytable_keys == 2 && s.keytable_live_bytes == 20);
+    expectText(d, "{\"a\\nb\":1,\"\\u0001\":{\"a\\nb\":[]}}");
+    jsonDocFree(d);
     CHECK(jsonEngineShutdown() == 0 && live_bytes == 0 && live_blocks == 0);
     /* A document that is never freed is reported, and the engine can be
      * started again. */
@@ -1560,7 +1574,10 @@ static void unitDecimals(void) {
         CHECK(jsonRefDouble(&ref) == values[i] && !jsonRefInt(&ref, &unused));
     }
     CHECK(jsonArrayGet(&root, 0, &ref));
-    CHECK(strncmp(jsonRefNumText(&ref, num, &len), "19.90", 5) == 0 && len == 5);
+    /* The call first: an argument evaluated before it would read len unset. The
+     * text is not NUL-terminated, so it is compared by its length. */
+    const char *num_text = jsonRefNumText(&ref, num, &len);
+    CHECK(len == 5 && memcmp(num_text, "19.90", 5) == 0);
     jsonDocFree(d);
 
     /* A decimal beyond 2^53 or 10^22: dividing its digits by the power of ten
@@ -1587,7 +1604,10 @@ static void unitDecimals(void) {
         d = mustParse(wide[i].text); /* A root: in the word, or boxed. */
         jsonDocRoot(d, &root);
         CHECK(jsonRefType(&root) == JSON_RAWNUM && jsonRefDouble(&root) == wide[i].value);
-        CHECK(strncmp(jsonRefNumText(&root, num, &len), wide[i].text, len) == 0 && len == strlen(wide[i].text));
+        /* The call first: as an argument of the comparison, len could be read
+         * before it is set (gcc on x86-64 does), and the previous length used. */
+        const char *got = jsonRefNumText(&root, num, &len);
+        CHECK(len == strlen(wide[i].text) && memcmp(got, wide[i].text, len) == 0);
         expectText(d, wide[i].text);
         jsonDocFree(d);
     }
@@ -1725,6 +1745,177 @@ static void unitDecimals(void) {
     jsonDocFree(d);
 }
 
+/* Key IDs of every varint width a key can take in a packed object: 1 to 4
+ * bytes. A document holding 2^21 + 64 distinct names keeps the IDs taken,
+ * and small packed objects then use names that fall on each boundary. (A
+ * 5-byte varint needs 2^28 live names.) */
+static void unitKeyIdWidths(void) {
+    const uint32_t n = ((uint32_t)1 << 21) + 64;
+    enum {
+        NEDGES = 8
+    };
+    static const uint32_t edges[NEDGES] = {1, 127, 128, 16383, 16384, 2097151, 2097152, 2097152 + 63};
+    const size_t nedges = NEDGES;
+    char name[NEDGES][24], added[24], member[256];
+    text t = {0, 0, 0}, want = {0, 0, 0};
+    jsonRef root, val;
+    jsonStep step;
+    jsonEngineSetCaps(4096, 128);
+    textAddStr(&t, "{");
+    for (uint32_t i = 0; i < n; i++) {
+        snprintf(member, sizeof(member), "%s\"w%" PRIu32 "\":%" PRIu32, i ? "," : "", i, i & 31);
+        textAddStr(&t, member);
+    }
+    textAddStr(&t, "}");
+    const jsonDoc big = mustParse(t.p);
+    /* The table hands out the smallest free ID, so the names were numbered in
+     * order from that of w0. */
+    const uint32_t base = jsonKeyFind("w0", 2);
+    jsonKeyRelease(base);
+    CHECK(base >= 1 && base + n - 1 >= edges[nedges - 1]);
+    for (size_t e = 0; e < nedges; e++) {
+        snprintf(name[e], sizeof(name[e]), "w%" PRIu32, edges[e] - base);
+        const uint32_t id = jsonKeyFind(name[e], strlen(name[e]));
+        CHECK(id == edges[e]);
+        jsonKeyRelease(id);
+    }
+    snprintf(added, sizeof(added), "w%" PRIu32, edges[NEDGES - 1] - 1 - base); /* A 4-byte one the object lacks. */
+    /* Members of every width side by side, nested, and in an array of objects. */
+    want.len = 0;
+    textAddStr(&want, "{");
+    for (size_t e = 0; e < nedges; e++) {
+        snprintf(member, sizeof(member), "%s\"%s\":[%zu,{\"%s\":\"v%zu\"}]", e ? "," : "", name[e], e, name[nedges - 1 - e], e);
+        textAddStr(&want, member);
+    }
+    textAddStr(&want, ",\"fresh\":true}");
+    for (int spine = 0; spine < 2; spine++) {
+        jsonEngineSetCaps(spine ? 0 : 4096, spine ? 0 : 128);
+        jsonDoc d = mustParse(want.p);
+        CHECK(strcmp(jsonDocEncoding(d), spine ? "jtree" : "jpack") == 0);
+        expectText(d, want.p);
+        checkDoc(d);
+        jsonDocRoot(d, &root);
+        for (size_t e = 0; e < nedges; e++) {
+            jsonRef inner, str;
+            CHECK(jsonObjectGet(&root, name[e], strlen(name[e]), &val, NULL) && jsonRefCount(&val) == 2);
+            CHECK(jsonArrayGet(&val, 1, &inner) && jsonObjectGet(&inner, name[nedges - 1 - e], strlen(name[nedges - 1 - e]), &str, NULL));
+            uint32_t len;
+            const char *s = jsonRefString(&str, &len);
+            snprintf(member, sizeof(member), "v%zu", e);
+            CHECK(s && len == strlen(member) && memcmp(s, member, len) == 0);
+        }
+        /* Changes that splice varints of each width in and out. */
+        jsonVal *one = jsonValInt(1);
+        jsonObjectAdd(&d, NULL, 0, added, strlen(added), one);
+        jsonDocRoot(d, &root);
+        CHECK(jsonObjectGet(&root, name[nedges - 1], strlen(name[nedges - 1]), &val, &step));
+        jsonDelete(&d, &step, 1);
+        jsonDocRoot(d, &root);
+        CHECK(jsonObjectGet(&root, name[3], strlen(name[3]), &val, &step));
+        jsonDelete(&d, &step, 1);
+        jsonDocRoot(d, &root);
+        CHECK(jsonObjectGet(&root, added, strlen(added), &val, NULL) && jsonRefType(&val) == JSON_INT);
+        CHECK(!jsonObjectGet(&root, name[3], strlen(name[3]), &val, NULL));
+        CHECK(jsonRefCount(&root) == nedges + 1 + 1 - 2);
+        CHECK(jsonRefMemUsage(&root) == jsonDocMemUsage(d));
+        jsonValFree(one);
+        jsonDocFree(d);
+    }
+    jsonDocFree(big);
+    jsonEngineSetCaps(4096, 128);
+    free(t.p);
+    free(want.p);
+}
+
+static size_t wide_moves;
+
+static void *wideMove(void *p, void *ctx) {
+    (void)ctx;
+    const size_t size = (size_t)blockOf(p)->size;
+    void *np = testAlloc(size);
+    memcpy(np, p, size);
+    testFree(p);
+    wide_moves++;
+    return np;
+}
+
+static int stopAlways(void *ctx) {
+    (void)ctx;
+    return 1;
+}
+
+/* Defrag of a root with more children than a 32-bit cursor holds in its
+ * two-index form: spine children below and above root index 32767, and one
+ * with more than 65535 entries. Stopped after every step, it still offers
+ * each allocation exactly once and ends. */
+static void unitDefragWideRoot(void) {
+    const uint32_t n = 40000;
+    char member[64];
+    text t = {0, 0, 0}, out = {0, 0, 0};
+    jsonRef root;
+    jsonEngineSetCaps(16, 1);
+    textAddStr(&t, "[");
+    for (uint32_t i = 0; i < n; i++) {
+        if (i) textAddStr(&t, ",");
+        if (i == 100 || i == 35000) {
+            textAddStr(&t, "[");
+            for (uint32_t j = 0; j < 70000; j++) {
+                snprintf(member, sizeof(member), "%s\"e%06" PRIu32 "-0123456789\"", j ? "," : "", j);
+                textAddStr(&t, member);
+            }
+            textAddStr(&t, "]");
+        } else if (i % 97 == 0 || (i >= 32760 && i <= 32775)) {
+            snprintf(member, sizeof(member), "[%" PRIu32 ",\"c%" PRIu32 "-0123456789\",[1,\"x\"]]", i, i);
+            textAddStr(&t, member);
+        } else if (i % 5 == 0) {
+            snprintf(member, sizeof(member), "\"s%" PRIu32 "-0123456789\"", i);
+            textAddStr(&t, member);
+        } else {
+            snprintf(member, sizeof(member), "%" PRIu32, i);
+            textAddStr(&t, member);
+        }
+    }
+    textAddStr(&t, "]");
+    jsonDoc d = mustParse(t.p);
+    const size_t effort = jsonDocFreeEffort(d);
+    unsigned long cursor = 0;
+    size_t calls = 0;
+    wide_moves = 0;
+    while (jsonDocDefrag(&d, wideMove, stopAlways, NULL, &cursor)) {
+        CHECK(cursor != 0);
+        CHECK(++calls <= effort);
+    }
+    CHECK(cursor == 0 && wide_moves == effort);
+    jsonDocRoot(d, &root);
+    serialize(&root, NULL, &out);
+    CHECK(out.len == t.len && memcmp(out.p, t.p, t.len) == 0);
+    checkDoc(d);
+    jsonDocFree(d);
+    jsonEngineSetCaps(4096, 128);
+    free(t.p);
+    free(out.p);
+}
+
+/* A pooled tape whose arena was given back after a large value, then used
+ * to copy a document that holds empty strings in spine words: the strings
+ * must not point at a null arena (glibc's UBSan stops at memcpy(.., NULL, 0)
+ * there, and JSON_ENGINE_DEBUG asserts it). */
+static void unitEmptyStringAfterTrim(void) {
+    text t = {0, 0, 0};
+    jsonEngineSetCaps(0, 0);
+    const jsonDoc small = mustParse("[\"\",\"\",{\"e\":\"\"},\"x\"]");
+    textAddStr(&t, "[\"");
+    for (int i = 0; i < 100000; i++) textAdd(&t, "s", 1);
+    textAddStr(&t, "\"]");
+    jsonDocFree(mustParse(t.p)); /* Its tape returns to the pool with its arena trimmed. */
+    const jsonDoc copy = jsonDocCopy(small);
+    expectText(copy, "[\"\",\"\",{\"e\":\"\"},\"x\"]");
+    jsonDocFree(copy);
+    jsonDocFree(small);
+    jsonEngineSetCaps(4096, 128);
+    free(t.p);
+}
+
 static void runUnit(void) {
     unitStats();
     unitConstructors();
@@ -1739,6 +1930,9 @@ static void runUnit(void) {
     unitPhase2();
     unitDecimals();
     unitNumberEquals();
+    unitKeyIdWidths();
+    unitDefragWideRoot();
+    unitEmptyStringAfterTrim();
     puts("unit: ok");
 }
 

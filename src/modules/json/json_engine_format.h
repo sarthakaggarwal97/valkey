@@ -11,7 +11,9 @@
  *
  * A document is a tree in which any subtree that fits the caps is one PACKED
  * node, and what does not fit is built from "spine" nodes that point at
- * their children. Both encodings are little-endian and 64-bit only.
+ * their children. Neither is ever written out: a document is saved as JSON
+ * text. So both are in the byte order of the machine (see "Byte order"
+ * below), and a spine word is 64 bits wide whatever the width of a pointer.
  *
  *
  * 1. The packed format
@@ -25,7 +27,7 @@
  *   NULL         -                                                 1
  *   FALSE, TRUE  -                                                 1
  *   INT0 + v     - (integer v, 0..31, in the tag)                  1
- *   I8..I64      little-endian two's complement integer            2,3,5,9
+ *   I8..I64      two's complement integer                          2,3,5,9
  *   F64          IEEE-754 double                                   9
  *   DEC(k, w)    decimal with k fraction digits, k <= 15: its      2,3,5,9
  *                digits as a two's complement integer of 1, 2, 4 or
@@ -64,8 +66,8 @@
  * packed decimal when the scale is at most 15. Above that the tag is PK_DECX
  * and a scale byte and eight bytes of M follow.
  *
- * A typed array (TARR) holds only numbers of one kind, as raw little-endian
- * elements of width w: integers of 1, 2, 4 or 8 bytes, doubles, or decimals
+ * A typed array (TARR) holds only numbers of one kind, as raw elements of
+ * width w: integers of 1, 2, 4 or 8 bytes, doubles, or decimals
  * that all have one scale, as their M in 1, 2, 4 or 8 bytes. The emitter
  * makes one only from a non-empty array, but removing elements can leave it
  * empty.
@@ -76,7 +78,14 @@
  *
  * A value slot is one 64-bit word. Its low three bits are a tag:
  *
- *   000              pointer to a heap node (the node's first byte is its kind)
+ *   000              pointer to a heap node (the node's first byte is its
+ *                    kind). Every node comes from the allocator, whose
+ *                    blocks are aligned to at least 8 bytes on every target,
+ *                    32-bit ones included: glibc gives 16 (i386 since 2.26,
+ *                    8 before), jemalloc 8 for its 8-byte class and 16 above,
+ *                    and zmalloc's size prefix, where it has one, is 8 bytes.
+ *                    That leaves the three bits free. Where a pointer has 32
+ *                    bits, it is the low half of the word.
  *   001 101          a double: the word is the IEEE bits rotated left by 3,
  *                    so the tag is its sign and the top two exponent bits.
  *                    These are the doubles of magnitude in [2^-511, 2).
@@ -84,12 +93,14 @@
  *                    |M| * 22 + (scale - 1), for a scale of 1..22 and |M|
  *                    up to 61 bits / 22, which is every |M| of 17 digits
  *   011              a signed 61-bit integer in the upper bits
- *   100              a string of up to 7 bytes: byte 0 is tag, length and
- *                    flags, bytes 1..7 are the string
+ *   100              a string of up to 7 bytes: the low byte is tag, length
+ *                    and flags, and the string is the other seven bytes
+ *                    in memory order (see W_STR_AT)
  *   111              null, false, true, +0.0, -0.0 or, in an object entry, a
  *                    key ID in the upper 32 bits
  *
- * Heap nodes. Offsets are in bytes; every multi-byte field is little-endian.
+ * Heap nodes. Offsets are in bytes; every multi-byte field is in the
+ * machine's byte order.
  *
  *   PACKED   [0] kind  [1..2] blob length  [3..] one packed value
  *
@@ -135,61 +146,82 @@
 #include <stdint.h>
 #include <string.h>
 
-#if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__ || UINTPTR_MAX != UINT64_MAX
-#error "the JSON engine supports 64-bit little-endian targets only"
+/* Byte order. The format is private to the process, so multi-byte fields
+ * are in native order: every one is written and read through the helpers
+ * below, and so is every integer the engine takes from string bytes. The
+ * places that do depend on where the bytes of a word lie name it: an inline
+ * string (W_STR_AT, wordStrBytes), and code that treats eight bytes as one
+ * integer with the first byte lowest, to find a byte by counting bits or to
+ * hash them as SipHash defines it (loadU64LE). */
+#if !defined(__BYTE_ORDER__) || (__BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__ && __BYTE_ORDER__ != __ORDER_BIG_ENDIAN__)
+#error "the JSON engine needs a little-endian or a big-endian target"
 #endif
+#define JSON_BIG_ENDIAN (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+_Static_assert(sizeof(uintptr_t) <= sizeof(uint64_t), "a pointer must fit a spine word");
 
 #define JSON_LIKELY(x) __builtin_expect(!!(x), 1)
 #define JSON_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #define JSON_FALLTHROUGH __attribute__((fallthrough))
+/* For the small helpers of the hot paths: gcc's inliner gives up on some of
+ * them in large callers (the serialiser's loops), and a call there costs
+ * more than the helper itself. */
+#define JSON_INLINE inline __attribute__((always_inline))
 
 /* ----------------------------------------------------------------------------
  * Unaligned access
  * ------------------------------------------------------------------------- */
 
-static inline uint16_t loadU16(const uint8_t *p) {
+static JSON_INLINE uint16_t loadU16(const uint8_t *p) {
     uint16_t v;
     memcpy(&v, p, sizeof(v));
     return v;
 }
 
-static inline uint32_t loadU32(const uint8_t *p) {
+static JSON_INLINE uint32_t loadU32(const uint8_t *p) {
     uint32_t v;
     memcpy(&v, p, sizeof(v));
     return v;
 }
 
-static inline uint64_t loadU64(const uint8_t *p) {
+static JSON_INLINE uint64_t loadU64(const uint8_t *p) {
     uint64_t v;
     memcpy(&v, p, sizeof(v));
     return v;
 }
 
-static inline double loadF64(const uint8_t *p) {
+/* Eight bytes as the integer whose lowest byte is the first of them, on any
+ * byte order: for code that finds the position of a byte by counting bits. A
+ * plain load on little-endian. */
+static JSON_INLINE uint64_t loadU64LE(const uint8_t *p) {
+    const uint64_t v = loadU64(p);
+    return JSON_BIG_ENDIAN ? __builtin_bswap64(v) : v;
+}
+
+static JSON_INLINE double loadF64(const uint8_t *p) {
     double v;
     memcpy(&v, p, sizeof(v));
     return v;
 }
 
-static inline void storeU16(uint8_t *p, uint16_t v) {
+static JSON_INLINE void storeU16(uint8_t *p, uint16_t v) {
     memcpy(p, &v, sizeof(v));
 }
 
-static inline void storeU32(uint8_t *p, uint32_t v) {
+static JSON_INLINE void storeU32(uint8_t *p, uint32_t v) {
     memcpy(p, &v, sizeof(v));
 }
 
-static inline void storeU64(uint8_t *p, uint64_t v) {
+static JSON_INLINE void storeU64(uint8_t *p, uint64_t v) {
     memcpy(p, &v, sizeof(v));
 }
 
-static inline uint64_t doubleBits(double d) {
+static JSON_INLINE uint64_t doubleBits(double d) {
     uint64_t bits;
     memcpy(&bits, &d, sizeof(bits));
     return bits;
 }
 
-static inline double bitsDouble(uint64_t bits) {
+static JSON_INLINE double bitsDouble(uint64_t bits) {
     double d;
     memcpy(&d, &bits, sizeof(d));
     return d;
@@ -267,50 +299,50 @@ enum {
 
 static const uint8_t EK_WIDTH[12] = {0, 1, 2, 4, 8, 8, 1, 2, 4, 8, EK_STR_SIZE, 1};
 
-static inline int ekIsInt(uint32_t ekind) {
+static JSON_INLINE int ekIsInt(uint32_t ekind) {
     return ekind >= EK_I8 && ekind <= EK_I64;
 }
 
-static inline int ekIsDec(uint32_t ekind) {
+static JSON_INLINE int ekIsDec(uint32_t ekind) {
     return ekind >= EK_D8 && ekind <= EK_D64;
 }
 
 /* The integer kind that holds the elements of an integer or decimal array. */
-static inline uint32_t ekIntKind(uint32_t ekind) {
+static JSON_INLINE uint32_t ekIntKind(uint32_t ekind) {
     return ekind >= EK_D8 ? ekind - EK_DEC_BASE : ekind;
 }
 
-static inline int pkIsSmallInt(uint8_t tag) {
+static JSON_INLINE int pkIsSmallInt(uint8_t tag) {
     return tag >= PK_INT0 && tag < PK_SSTR;
 }
 
-static inline int pkIsString(uint8_t tag) {
+static JSON_INLINE int pkIsString(uint8_t tag) {
     return (tag >= PK_SSTR && tag < PK_DEC) || tag == PK_STR16 || tag == PK_STR16_NE;
 }
 
-static inline int pkIsDec(uint8_t tag) {
+static JSON_INLINE int pkIsDec(uint8_t tag) {
     return (tag >= PK_DEC && tag < PK_RAW8) || tag == PK_DECX;
 }
 
 /* Bytes of a packed decimal, tag included. */
-static inline uint32_t pkDecSize(uint8_t tag) {
+static JSON_INLINE uint32_t pkDecSize(uint8_t tag) {
     return tag == PK_DECX ? PK_DECX_SIZE : 1 + ((uint32_t)1 << (tag & 3));
 }
 
-static inline int pkIsArray(uint8_t tag) {
+static JSON_INLINE int pkIsArray(uint8_t tag) {
     return tag == PK_ARR8 || tag == PK_ARR16;
 }
 
-static inline int pkIsObject(uint8_t tag) {
+static JSON_INLINE int pkIsObject(uint8_t tag) {
     return tag == PK_OBJ8 || tag == PK_OBJ16;
 }
 
-static inline int pkIsTyped(uint8_t tag) {
+static JSON_INLINE int pkIsTyped(uint8_t tag) {
     return tag >= PK_TARR && tag < PK_TARR_END;
 }
 
 /* A container whose children are packed values: array or object, not typed. */
-static inline int pkIsNested(uint8_t tag) {
+static JSON_INLINE int pkIsNested(uint8_t tag) {
     return tag >= PK_ARR8 && tag <= PK_OBJ16;
 }
 
@@ -318,7 +350,7 @@ static inline int pkIsNested(uint8_t tag) {
  * Key IDs as varints
  * ------------------------------------------------------------------------- */
 
-static inline uint8_t *varintPut(uint8_t *p, uint32_t v) {
+static JSON_INLINE uint8_t *varintPut(uint8_t *p, uint32_t v) {
     while (v >= 0x80) {
         *p++ = (uint8_t)(v | 0x80);
         v >>= 7;
@@ -327,7 +359,7 @@ static inline uint8_t *varintPut(uint8_t *p, uint32_t v) {
     return p;
 }
 
-static inline const uint8_t *varintGet(const uint8_t *p, uint32_t *v) {
+static JSON_INLINE const uint8_t *varintGet(const uint8_t *p, uint32_t *v) {
     uint32_t b = *p++;
     if (JSON_LIKELY(b < 0x80)) {
         *v = b;
@@ -344,7 +376,7 @@ static inline const uint8_t *varintGet(const uint8_t *p, uint32_t *v) {
     return p;
 }
 
-static inline uint32_t varintSize(uint32_t v) {
+static JSON_INLINE uint32_t varintSize(uint32_t v) {
     if (v < 0x80) return 1;
     if (v < 0x4000) return 2;
     if (v < 0x200000) return 3;
@@ -356,7 +388,7 @@ static inline uint32_t varintSize(uint32_t v) {
  * ------------------------------------------------------------------------- */
 
 /* A plain array or object at p: its first child, its end and its count. */
-static inline const uint8_t *pkOpen(const uint8_t *p, const uint8_t **end, uint32_t *count) {
+static JSON_INLINE const uint8_t *pkOpen(const uint8_t *p, const uint8_t **end, uint32_t *count) {
     const uint8_t *first;
     uint32_t size;
     if (*p & 1) { /* The 16-bit form of each pair of tags is the odd one. */
@@ -374,7 +406,7 @@ static inline const uint8_t *pkOpen(const uint8_t *p, const uint8_t **end, uint3
 
 /* A typed array at p: its first element, element kind, count and, for a
  * decimal kind, scale. */
-static inline const uint8_t *pkTypedOpen(const uint8_t *p, uint32_t *ekind, uint32_t *count, uint8_t *scale) {
+static JSON_INLINE const uint8_t *pkTypedOpen(const uint8_t *p, uint32_t *ekind, uint32_t *count, uint8_t *scale) {
     const uint32_t x = (uint32_t)(*p - PK_TARR);
     const uint8_t *q;
     *ekind = x / 2 + 1;
@@ -425,7 +457,7 @@ static inline const uint8_t *pkSkip(const uint8_t *p) {
 }
 
 /* One integer element of a typed array, or the M of a decimal one. */
-static inline int64_t ekInt(const uint8_t *p, uint32_t ekind) {
+static JSON_INLINE int64_t ekInt(const uint8_t *p, uint32_t ekind) {
     switch (ekIntKind(ekind)) {
     case EK_I8: return (int8_t)p[0];
     case EK_I16: return (int16_t)loadU16(p);
@@ -435,7 +467,7 @@ static inline int64_t ekInt(const uint8_t *p, uint32_t ekind) {
 }
 
 /* The integer held by an integer tag. The caller checked the tag. */
-static inline int64_t pkInt(const uint8_t *p) {
+static JSON_INLINE int64_t pkInt(const uint8_t *p) {
     switch (*p) {
     case PK_I8: return (int8_t)p[1];
     case PK_I16: return (int16_t)loadU16(p + 1);
@@ -445,12 +477,12 @@ static inline int64_t pkInt(const uint8_t *p) {
     }
 }
 
-static inline int pkIsInt(uint8_t tag) {
+static JSON_INLINE int pkIsInt(uint8_t tag) {
     return pkIsSmallInt(tag) || (tag >= PK_I8 && tag <= PK_I64);
 }
 
 /* The M of the packed decimal at p, and its scale. */
-static inline int64_t pkDecimal(const uint8_t *p, uint32_t *scale) {
+static JSON_INLINE int64_t pkDecimal(const uint8_t *p, uint32_t *scale) {
     if (*p == PK_DECX) {
         *scale = p[1];
         return (int64_t)loadU64(p + 2);
@@ -460,7 +492,7 @@ static inline int64_t pkDecimal(const uint8_t *p, uint32_t *scale) {
 }
 
 /* The bytes of a string or raw number at p. */
-static inline const uint8_t *pkText(const uint8_t *p, uint32_t *len) {
+static JSON_INLINE const uint8_t *pkText(const uint8_t *p, uint32_t *len) {
     const uint8_t tag = *p;
     if (tag >= PK_SSTR && tag < PK_DEC) {
         *len = tag & PK_SSTR_LEN_MASK;
@@ -503,10 +535,17 @@ static inline const uint8_t *pkText(const uint8_t *p, uint32_t *len) {
 #define W_DEC_SCALES 22
 #define W_DEC_MAGNITUDE_MAX ((((uint64_t)1 << 61) - W_DEC_SCALES) / W_DEC_SCALES)
 
-/* Inline strings: byte 0 is 100 in bits 0..2, the length in bits 3..5 and
- * two flags. */
+/* Inline strings: the low byte of the word is 100 in bits 0..2, the length
+ * in bits 3..5 and two flags. The string is in the other seven bytes, read
+ * and written in memory order: jsonRefString hands out a pointer into the
+ * word. The value of the word as an integer therefore differs between byte
+ * orders, which nothing depends on: such a word is only compared whole. */
 #define W_STR_MAX 7
 #define W_STR_LEN_SHIFT 3
+/* Where the string's bytes start in the memory of the word: after the byte
+ * that holds tag, length and flags when that byte comes first, else at the
+ * front, the tag byte being the last. */
+#define W_STR_AT (JSON_BIG_ENDIAN ? 0 : 1)
 #define W_STR_NOESC 0x40
 #define W_STR_RAWNUM 0x80
 
@@ -515,49 +554,54 @@ static inline const uint8_t *pkText(const uint8_t *p, uint32_t *len) {
 #define W_INT_MIN (-((int64_t)1 << 60))
 #define W_INT_MAX (((int64_t)1 << 60) - 1)
 
-static inline unsigned wordTag(uint64_t w) {
+/* The bytes of the inline string in the word at w. */
+static JSON_INLINE const uint8_t *wordStrBytes(const uint64_t *w) {
+    return (const uint8_t *)w + W_STR_AT;
+}
+
+static JSON_INLINE unsigned wordTag(uint64_t w) {
     return (unsigned)(w & W_TAG_MASK);
 }
 
-static inline int wordIsDouble(uint64_t w) {
+static JSON_INLINE int wordIsDouble(uint64_t w) {
     const unsigned tag = wordTag(w);
     return tag == 1 || tag == 5;
 }
 
-static inline double wordDouble(uint64_t w) {
+static JSON_INLINE double wordDouble(uint64_t w) {
     return bitsDouble((w >> 3) | (w << 61));
 }
 
-static inline int wordIsDec(uint64_t w) {
+static JSON_INLINE int wordIsDec(uint64_t w) {
     const unsigned tag = wordTag(w);
     return tag == W_DEC_POS || tag == W_DEC_NEG;
 }
 
-static inline uint64_t decMagnitude(int64_t mantissa) {
+static JSON_INLINE uint64_t decMagnitude(int64_t mantissa) {
     return mantissa < 0 ? 0 - (uint64_t)mantissa : (uint64_t)mantissa;
 }
 
 /* 1 if a word holds the decimal. Otherwise it is a BOXNUM. */
-static inline int wordDecFits(int64_t mantissa, uint32_t scale) {
+static JSON_INLINE int wordDecFits(int64_t mantissa, uint32_t scale) {
     return scale <= W_DEC_SCALES && decMagnitude(mantissa) <= W_DEC_MAGNITUDE_MAX;
 }
 
-static inline uint64_t wordDec(int64_t mantissa, uint32_t scale) {
+static JSON_INLINE uint64_t wordDec(int64_t mantissa, uint32_t scale) {
     return ((decMagnitude(mantissa) * W_DEC_SCALES + (scale - 1)) << W_DEC_SHIFT) | (mantissa < 0 ? W_DEC_NEG : W_DEC_POS);
 }
 
 /* The M of an inline decimal, and its scale. */
-static inline int64_t wordDecimal(uint64_t w, uint32_t *scale) {
+static JSON_INLINE int64_t wordDecimal(uint64_t w, uint32_t *scale) {
     const uint64_t x = w >> W_DEC_SHIFT, magnitude = x / W_DEC_SCALES;
     *scale = (uint32_t)(x - magnitude * W_DEC_SCALES) + 1;
     return wordTag(w) == W_DEC_NEG ? -(int64_t)magnitude : (int64_t)magnitude;
 }
 
-static inline uint64_t wordKey(uint32_t keyid) {
+static JSON_INLINE uint64_t wordKey(uint32_t keyid) {
     return ((uint64_t)keyid << 32) | W_KEYID;
 }
 
-static inline uint32_t wordKeyId(uint64_t w) {
+static JSON_INLINE uint32_t wordKeyId(uint64_t w) {
     return (uint32_t)(w >> 32);
 }
 
@@ -609,33 +653,34 @@ enum {
 #define OBJECT_HASH_MULT 0x9E3779B1u
 #define OBJECT_NO_ENTRY 0xFFFFFFFFu
 
-static inline uint8_t *wordNode(uint64_t w) {
+static JSON_INLINE uint8_t *wordNode(uint64_t w) {
     return (uint8_t *)(uintptr_t)w;
 }
 
-static inline uint64_t nodeWord(const uint8_t *n) {
+static JSON_INLINE uint64_t nodeWord(const uint8_t *n) {
     return (uint64_t)(uintptr_t)n;
 }
 
-static inline unsigned nodeKind(const uint8_t *n) {
+static JSON_INLINE unsigned nodeKind(const uint8_t *n) {
     return n[0] & NK_MASK;
 }
 
-static inline uint32_t nodeLen(const uint8_t *n) {
+static JSON_INLINE uint32_t nodeLen(const uint8_t *n) {
     return loadU32(n + SPINE_LEN);
 }
 
 /* The words of an ARRAY, or the entries of an OBJECT. A node comes from the
- * allocator, so offset 32 is aligned for a 64-bit word. */
-static inline uint64_t *nodeWords(const uint8_t *n) {
+ * allocator, aligned to 8 bytes at least, so offset 32 is aligned for a
+ * 64-bit word on every target. */
+static JSON_INLINE uint64_t *nodeWords(const uint8_t *n) {
     return (uint64_t *)(void *)(uintptr_t)(n + SPINE_HDR);
 }
 
-static inline const uint8_t *tarrayData(const uint8_t *n) {
+static JSON_INLINE const uint8_t *tarrayData(const uint8_t *n) {
     return n + TARRAY_HDR;
 }
 
-static inline const uint8_t *strNodeBytes(const uint8_t *n, uint32_t *len) {
+static JSON_INLINE const uint8_t *strNodeBytes(const uint8_t *n, uint32_t *len) {
     if (n[0] & STR_LONG) {
         *len = loadU32(n + 1);
         return n + STR_LONG_HDR;
@@ -644,11 +689,11 @@ static inline const uint8_t *strNodeBytes(const uint8_t *n, uint32_t *len) {
     return n + STR_SHORT_HDR;
 }
 
-static inline const uint8_t *objectIndex(const uint8_t *n) {
+static JSON_INLINE const uint8_t *objectIndex(const uint8_t *n) {
     return n + SPINE_HDR + (size_t)loadU32(n + SPINE_CAP) * OBJECT_ENTRY;
 }
 
-static inline uint32_t objectIndexGet(const uint8_t *index, uint32_t width, uint32_t i) {
+static JSON_INLINE uint32_t objectIndexGet(const uint8_t *index, uint32_t width, uint32_t i) {
     if (width == 1) return index[i] == 0xFF ? OBJECT_NO_ENTRY : index[i];
     if (width == 2) {
         const uint16_t v = loadU16(index + (size_t)i * 2);
@@ -657,7 +702,7 @@ static inline uint32_t objectIndexGet(const uint8_t *index, uint32_t width, uint
     return loadU32(index + (size_t)i * 4);
 }
 
-static inline uint32_t objectHome(uint32_t keyid, uint32_t lg) {
+static JSON_INLINE uint32_t objectHome(uint32_t keyid, uint32_t lg) {
     return (keyid * OBJECT_HASH_MULT) >> (32 - lg);
 }
 

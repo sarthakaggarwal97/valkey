@@ -11,7 +11,11 @@
 CC ?= cc
 SRC = ../..
 WARN = -std=gnu11 -W -Wall -Wextra -Wshadow -Wstrict-prototypes
-CFLAGS_T = $(WARN) -g -DJSON_PATH_DEBUG -I$(SRC)
+# As in the module build: SSE2 double arithmetic on 32-bit x86.
+ifeq ($(shell echo __i386__ | $(CC) $(CFLAGS) -x c -E -P - 2>/dev/null | tr -d ' \n'),1)
+X86_32_FP = -msse2 -mfpmath=sse
+endif
+CFLAGS_T = $(WARN) -g -DJSON_PATH_DEBUG -I$(SRC) $(X86_32_FP) $(CFLAGS)
 ENGINE = $(SRC)/json_engine.c $(SRC)/json_num.c
 SAN = -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
 # The external valkey-json checkout's tst directory, for regenerating the corpus.

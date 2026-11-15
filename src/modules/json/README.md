@@ -19,9 +19,10 @@ It replaces the external valkey-json module and is compatible with it:
 The module is built by default. `make BUILD_JSON=no` (or `-DBUILD_JSON=OFF`
 with CMake) leaves it out of the binary.
 
-The engine assumes a 64-bit little-endian target: a document is one 8-byte
-word that can hold a pointer, and that word is stored in the key's value
-pointer. On 32-bit and big-endian targets the build leaves the module out.
+The engine runs on 64-bit and 32-bit targets of either byte order. A
+document is one 8-byte word. Where a pointer is 8 bytes the word is stored in
+the key's value pointer. On a 32-bit target it is stored in a heap cell of 8
+bytes that the value pointer refers to.
 
 At run time, `json-enabled no` in the configuration starts the server without
 it, for example to load an external JSON module instead. Loading both is an

@@ -1955,11 +1955,14 @@ section(
         ],
         "JSON.DEBUG", "HELP",
     ),  # fmt: skip
-    N(ErrPrefix("ERR unknown subcommand"), "JSON.DEBUG", "KEYTABLE-CHECK"),
-    N(ErrPrefix("ERR unknown subcommand"), "JSON.DEBUG", "KEYTABLE-CORRUPT", "x"),
-    N(ErrPrefix("ERR unknown subcommand"), "JSON.DEBUG", "KEYTABLE-DISTRIBUTION", "1"),
+    # The removed subcommands go to the candidate only: on the reference,
+    # KEYTABLE-CORRUPT really corrupts the key table, and the server can crash
+    # on a later command (seen on Linux x86-64).
+    O(ErrPrefix("ERR unknown subcommand"), "JSON.DEBUG", "KEYTABLE-CHECK"),
+    O(ErrPrefix("ERR unknown subcommand"), "JSON.DEBUG", "KEYTABLE-CORRUPT", "x"),
+    O(ErrPrefix("ERR unknown subcommand"), "JSON.DEBUG", "KEYTABLE-DISTRIBUTION", "1"),
     T("JSON.SET", "k", ".", "1"),
-    N(ErrPrefix("ERR unknown subcommand"), "JSON.DEBUG", "TEST-SHARED-API", "k", "."),
+    O(ErrPrefix("ERR unknown subcommand"), "JSON.DEBUG", "TEST-SHARED-API", "k", "."),
 )
 
 section(

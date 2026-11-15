@@ -51,11 +51,6 @@ if (NOT BUILD_LUA STREQUAL "no")
 endif ()
 unset(BUILD_LUA CACHE)
 
-# The JSON module needs a 64-bit little-endian target.
-if (BUILD_JSON AND NOT (CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_C_BYTE_ORDER STREQUAL "LITTLE_ENDIAN"))
-    message(STATUS "The built-in JSON module is not built: it needs a 64-bit little-endian target")
-    set(BUILD_JSON OFF)
-endif ()
 if (BUILD_JSON)
     message(STATUS "Build the built-in JSON module")
     add_subdirectory(modules/json)

@@ -11,7 +11,11 @@ CC ?= cc
 PYTHON ?= python3
 OPT ?= -O2
 WARN = -W -Wall -Wextra -Wshadow -Wstrict-prototypes
-CFLAGS_ALL = -std=gnu11 $(OPT) -g $(WARN) $(CFLAGS)
+# As in the module build: SSE2 double arithmetic on 32-bit x86.
+ifeq ($(shell echo __i386__ | $(CC) $(CFLAGS) -x c -E -P - 2>/dev/null | tr -d ' \n'),1)
+X86_32_FP = -msse2 -mfpmath=sse
+endif
+CFLAGS_ALL = -std=gnu11 $(OPT) -g $(WARN) $(X86_32_FP) $(CFLAGS)
 SAN = -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
 
 JSON_DIR = ../..

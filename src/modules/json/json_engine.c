@@ -35,6 +35,7 @@
 #include "json_engine_stats.h"
 #include "json_num.h"
 
+#include <float.h>
 #include <pthread.h>
 #include <stdatomic.h>
 
@@ -71,10 +72,16 @@
 #define KEY_CACHE_MAX_KEYS 256 /* Keys remembered per object. */
 #define TAPE_POOL_MAX 4
 
+/* A key's name and, in the same allocation, its serialised form: the name
+ * quoted and escaped as the writer escapes it, then ':'. A name that needs
+ * no escaping is stored once, inside its serialised form ("name":), and
+ * `bytes` points after the opening quote. Otherwise the name comes first and
+ * the serialised form after it. */
 typedef struct keyInfo {
-    const uint8_t *bytes;
+    const uint8_t *bytes; /* The name. */
     uint32_t len_flags;
     uint32_t hash;
+    uint32_t ser_len; /* Bytes of the serialised form. */
 } keyInfo;
 
 typedef struct keySeg {
@@ -138,6 +145,49 @@ static void *engGrow(void *p, size_t n) {
     return p ? E.alloc.realloc(p, n) : E.alloc.alloc(n);
 }
 
+/* Sizes. Where size_t has 64 bits nothing the engine counts brings a size
+ * near its limit. Where it has 32 bits, a count times an element size or a
+ * buffer that keeps doubling can pass it, and wrapping around would give a
+ * small allocation that is then written as a large one. Such a size is more
+ * than the address space, so the engine stops there, as it would when the
+ * allocation failed. Sizes are computed in 64 bits and go through engSize,
+ * which is a plain conversion on a 64-bit target. sizeSat is for estimates,
+ * which say "too much" instead. */
+#if SIZE_MAX < UINT64_MAX
+static inline size_t engSize(uint64_t n) {
+    if (JSON_UNLIKELY(n > SIZE_MAX)) __builtin_trap();
+    return (size_t)n;
+}
+static inline size_t sizeSat(uint64_t n) {
+    return n > SIZE_MAX ? SIZE_MAX : (size_t)n;
+}
+#else
+static inline size_t engSize(uint64_t n) {
+    return (size_t)n;
+}
+static inline size_t sizeSat(uint64_t n) {
+    return (size_t)n;
+}
+#endif
+
+/* A computed double rounded to 64 bits. Where doubles are evaluated in a
+ * wider format (x87: FLT_EVAL_METHOD 2) a value can keep excess precision
+ * in a register, and then two numbers that are equal as doubles compare
+ * unequal: (double)9007199254740993 would differ from 9007199254740992.0.
+ * Going through memory rounds it. Nothing to do elsewhere. */
+#if defined(FLT_EVAL_METHOD) && (FLT_EVAL_METHOD == 0 || FLT_EVAL_METHOD == 1)
+#define JSON_DOUBLE_EXACT 1
+static inline double doubleRound(double d) {
+    return d;
+}
+#else
+#define JSON_DOUBLE_EXACT 0
+static inline double doubleRound(double d) {
+    volatile double v = d;
+    return v;
+}
+#endif
+
 static int engOnMainThread(void) {
     return pthread_equal(pthread_self(), E.main_thread);
 }
@@ -160,8 +210,8 @@ static inline void walkStackInit(walkStack *s, void *inline_frames, uint32_t cap
 }
 
 static void walkStackGrow(walkStack *s) {
-    const size_t bytes = (size_t)s->cap * s->frame_size;
-    void *nb = engAlloc(bytes * 2);
+    const size_t bytes = (size_t)s->cap * s->frame_size; /* Allocated already: it fits. */
+    void *nb = engAlloc(engSize((uint64_t)bytes * 2));
     memcpy(nb, s->base, bytes);
     if (s->heap) engFree(s->base);
     s->base = nb;
@@ -189,7 +239,7 @@ static inline void walkStackFree(walkStack *s) {
  * is copied with a length the compiler cannot bound is given
  * COPY_SMALL_SPAN bytes. */
 #define COPY_SMALL_SPAN 64
-static inline void copySmall(void *dv, const void *sv, size_t n) {
+static JSON_INLINE void copySmall(void *dv, const void *sv, size_t n) {
     uint8_t *d = dv;
     const uint8_t *s = sv;
     if (n >= 16) {
@@ -236,6 +286,54 @@ static int bytesNoEscape(const uint8_t *s, size_t n) {
     return 1;
 }
 
+/* What the module's writer does with a byte: 0 = copy it, 'u' = \u00XX,
+ * anything else = a backslash and that character. Control characters, the
+ * quote and the backslash are escaped. '/', 0x7F and bytes of 0x80 and above
+ * (UTF-8, valid or not) are copied. */
+static inline char serEscapeOf(uint8_t c) {
+    if (c >= 0x20) return (c == '"' || c == '\\') ? (char)c : 0;
+    switch (c) {
+    case '\b': return 'b';
+    case '\t': return 't';
+    case '\n': return 'n';
+    case '\f': return 'f';
+    case '\r': return 'r';
+    default: return 'u';
+    }
+}
+
+/* Writes n bytes escaped as the module's writer escapes them, at most 6
+ * bytes each, and returns the end. */
+static char *escapeBytes(char *o, const uint8_t *s, size_t n) {
+    static const char HEX[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < n; i++) {
+        const uint8_t c = s[i];
+        const char esc = serEscapeOf(c);
+        if (JSON_LIKELY(!esc)) {
+            *o++ = (char)c;
+            continue;
+        }
+        *o++ = '\\';
+        *o++ = esc;
+        if (esc == 'u') {
+            *o++ = '0';
+            *o++ = '0';
+            *o++ = HEX[c >> 4];
+            *o++ = HEX[c & 15];
+        }
+    }
+    return o;
+}
+
+static uint64_t escapedLength(const uint8_t *s, size_t n) {
+    uint64_t total = 0;
+    for (size_t i = 0; i < n; i++) {
+        const char esc = serEscapeOf(s[i]);
+        total += !esc ? 1 : (esc == 'u' ? 6 : 2);
+    }
+    return total;
+}
+
 void jsonEngineInit(const jsonAllocator *a) {
     memset(&E, 0, sizeof(E));
     E.alloc = *a;
@@ -253,8 +351,9 @@ const jsonAllocator *jsonEngineAllocator(void) {
 }
 
 void jsonEngineSetHashSeed(const uint8_t seed[16]) {
-    E.hash_k0 = loadU64(seed);
-    E.hash_k1 = loadU64(seed + 8);
+    /* SipHash reads its key as two little-endian words. */
+    E.hash_k0 = loadU64LE(seed);
+    E.hash_k1 = loadU64LE(seed + 8);
 }
 
 /* A cap of 0 is allowed: nothing is packed then, not even an empty container. */
@@ -304,14 +403,14 @@ static inline uint32_t ktSegBase(uint32_t seg) {
     return (KT_SEG0_SIZE << seg) - KT_SEG0_SIZE;
 }
 
-static inline void ktLocate(uint32_t id, uint32_t *seg, uint32_t *off) {
+static JSON_INLINE void ktLocate(uint32_t id, uint32_t *seg, uint32_t *off) {
     const uint32_t x = id + KT_SEG0_SIZE;
     const uint32_t lg = 31 - (uint32_t)__builtin_clz(x);
     *seg = lg - KT_SEG0_BITS;
     *off = x - ((uint32_t)1 << lg);
 }
 
-static inline const keyInfo *ktInfo(uint32_t id) {
+static JSON_INLINE const keyInfo *ktInfo(uint32_t id) {
     uint32_t seg, off;
     ktLocate(id, &seg, &off);
     return &E.seg[seg].info[off];
@@ -323,8 +422,18 @@ static inline _Atomic size_t *ktCount(uint32_t id) {
     return &E.seg[seg].cnt[off];
 }
 
-static inline uint32_t ktInfoLen(const keyInfo *ki) {
+static JSON_INLINE uint32_t ktInfoLen(const keyInfo *ki) {
     return ki->len_flags & KT_LEN_MASK;
+}
+
+/* The serialised form of a key: `"name":`. */
+static JSON_INLINE const uint8_t *ktInfoSer(const keyInfo *ki) {
+    return (ki->len_flags & KT_NOESC) ? ki->bytes - 1 : ki->bytes + ktInfoLen(ki);
+}
+
+/* The allocation that holds a key's name and serialised form. */
+static inline void *ktInfoBlock(const keyInfo *ki) {
+    return (void *)(uintptr_t)((ki->len_flags & KT_NOESC) ? ki->bytes - 1 : ki->bytes);
 }
 
 #define SIP_ROTL(x, b) (uint64_t)(((x) << (b)) | ((x) >> (64 - (b))))
@@ -346,7 +455,11 @@ static inline uint32_t ktInfoLen(const keyInfo *ki) {
         v2 = SIP_ROTL(v2, 32);    \
     } while (0)
 
-/* SipHash-1-2 of a member name, folded to 32 bits. */
+/* SipHash-1-2 of a member name, folded to 32 bits. The message is read as
+ * little-endian words on every target, as SipHash defines it: read in native
+ * order on a big-endian one, the last bytes of a name would land in the
+ * byte that holds its length, and names that differ only there would
+ * collide whatever the seed. */
 static uint32_t ktHash(const uint8_t *in, size_t len) {
     const uint64_t k0 = E.hash_k0, k1 = E.hash_k1;
     uint64_t v0 = 0x736f6d6570736575ull ^ k0, v1 = 0x646f72616e646f6dull ^ k1;
@@ -354,12 +467,13 @@ static uint32_t ktHash(const uint8_t *in, size_t len) {
     const uint8_t *end = in + (len & ~(size_t)7);
     uint64_t b = (uint64_t)len << 56, m, tail = 0;
     for (; in != end; in += 8) {
-        m = loadU64(in);
+        m = loadU64LE(in);
         v3 ^= m;
         SIP_ROUND(v0, v1, v2, v3);
         v0 ^= m;
     }
     memcpy(&tail, in, len & 7);
+    if (JSON_BIG_ENDIAN) tail = __builtin_bswap64(tail); /* The first byte lowest. */
     b |= tail;
     v3 ^= b;
     SIP_ROUND(v0, v1, v2, v3);
@@ -376,8 +490,8 @@ static void ktAddSegment(void) {
     if (s == KT_MAX_SEGS) __builtin_trap(); /* 2^32 live keys: unreachable in practice. */
     const size_t n = ktSegSize(s), words = n / 64;
     keySeg *g = &E.seg[s];
-    g->cnt = ktAlloc(n * sizeof(*g->cnt));
-    g->info = ktAlloc(n * sizeof(*g->info));
+    g->cnt = ktAlloc(engSize((uint64_t)n * sizeof(*g->cnt)));
+    g->info = ktAlloc(engSize((uint64_t)n * sizeof(*g->info)));
     g->freemap = ktAlloc(words * sizeof(*g->freemap));
     for (size_t i = 0; i < n; i++) atomic_init(&g->cnt[i], KT_FREE);
     memset(g->freemap, 0xFF, words * sizeof(*g->freemap));
@@ -417,7 +531,7 @@ static uint32_t ktNewId(void) {
 }
 
 static void ktHtResize(uint32_t ncap) {
-    uint32_t *nh = ktAlloc((size_t)ncap * sizeof(*nh));
+    uint32_t *nh = ktAlloc(engSize((uint64_t)ncap * sizeof(*nh)));
     memset(nh, 0, (size_t)ncap * sizeof(*nh));
     for (uint32_t i = 0; i < E.kt_htcap; i++) {
         const uint32_t id = E.kt_ht[i];
@@ -465,7 +579,7 @@ static uint32_t ktLookup(const uint8_t *s, uint32_t len, uint32_t hash) {
 
 /* The bytes a referenced key adds to kt_live_bytes: its name storage. */
 static inline size_t ktNameBytes(const keyInfo *ki) {
-    return E.alloc.usable((void *)(uintptr_t)ki->bytes);
+    return E.alloc.usable(ktInfoBlock(ki));
 }
 
 static inline void ktIncr(uint32_t id) {
@@ -494,11 +608,34 @@ static uint32_t ktIntern(const uint8_t *s, uint32_t len, int noesc) {
     id = ktNewId();
     uint32_t seg, off;
     ktLocate(id, &seg, &off);
-    uint8_t *bytes = ktAlloc(len ? len : 1);
-    memcpy(bytes, s, len);
+    /* The name and its serialised form, written before the count is
+     * published: a save thread that reaches the key through a document
+     * reads both only while the count is above zero. */
     keyInfo *ki = &E.seg[seg].info[off];
-    ki->bytes = bytes;
-    ki->len_flags = len | ((noesc || bytesNoEscape(s, len)) ? KT_NOESC : 0);
+    if (noesc || bytesNoEscape(s, len)) {
+        uint8_t *block = ktAlloc((size_t)len + 3); /* "name": */
+        block[0] = '"';
+        memcpy(block + 1, s, len);
+        block[1 + len] = '"';
+        block[2 + len] = ':';
+        ki->bytes = block + 1;
+        ki->len_flags = len | KT_NOESC;
+        ki->ser_len = len + 3;
+    } else {
+        const uint64_t esc_len = escapedLength(s, len) + 3;
+        /* Names are limited far below this. */
+        if (esc_len > UINT32_MAX) __builtin_trap();
+        uint8_t *block = ktAlloc(engSize((uint64_t)len + esc_len)); /* name, then "escaped name": */
+        memcpy(block, s, len);
+        char *o = (char *)block + len;
+        *o++ = '"';
+        o = escapeBytes(o, s, len);
+        *o++ = '"';
+        *o++ = ':';
+        ki->bytes = block;
+        ki->len_flags = len;
+        ki->ser_len = (uint32_t)esc_len;
+    }
     ki->hash = hash;
     atomic_store_explicit(&E.seg[seg].cnt[off], 1, memory_order_release);
     atomic_fetch_add_explicit(&E.kt_live_bytes, ktNameBytes(ki), memory_order_relaxed);
@@ -522,7 +659,7 @@ static void ktRelease(uint32_t id) {
     keySeg *g = &E.seg[seg];
     keyInfo *ki = &g->info[off];
     ktHtRemove(id, ki->hash);
-    ktFree((void *)(uintptr_t)ki->bytes);
+    ktFree(ktInfoBlock(ki));
     ki->bytes = NULL;
     atomic_store_explicit(&g->cnt[off], KT_FREE, memory_order_relaxed);
     g->freemap[off / 64] |= (uint64_t)1 << (off % 64);
@@ -636,7 +773,7 @@ size_t jsonEngineShutdown(void) {
     const size_t leaked = E.kt_live;
     for (uint32_t id = 1; id < ktSegBase(E.kt_nseg); id++) {
         if (atomic_load_explicit(ktCount(id), memory_order_acquire) == KT_FREE) continue;
-        ktFree((void *)(uintptr_t)ktInfo(id)->bytes);
+        ktFree(ktInfoBlock(ktInfo(id)));
     }
     while (E.kt_nseg) ktDropSegment();
     ktFree(E.kt_ht);
@@ -717,7 +854,11 @@ _Static_assert((int)T_NULL == (int)PK_NULL && (int)T_FALSE == (int)PK_FALSE && (
 #define TAPE_NOFIT ((uint64_t)1 << 40) /* Added to a frame's packed size by a child that cannot be packed. */
 #define TAPE_NOFIT32 0xFFFFFFFFu
 /* Tape indexes and arena offsets are 32 bits, and a text can need three tape
- * entries per byte ("[[[["). 512 MB of text keeps the entry count below 2^31. */
+ * entries per byte ("[[[["). 512 MB of text keeps the entry count below 2^31.
+ * The limit is the same where size_t has 32 bits: the format holds such a
+ * text there too, and a text whose tape would not fit the address space
+ * stops at engSize like any allocation that fails, rather than refusing
+ * texts that do fit, such as 100 MB of long strings. */
 #define TAPE_MAX_INPUT ((size_t)1 << 29)
 #define TAPE_MAX_TEXT 0xFFFFFFF0u   /* Longest single string. */
 #define TAPE_KEEP_ENTRIES 8192      /* Buffers larger than these are released */
@@ -803,6 +944,14 @@ static jsonVal *tapeAcquire(void) {
         P->scap = 32;
         P->stk = engAlloc(sizeof(tapeFrame) * P->scap);
     }
+    if (!P->acap) {
+        /* Never without an arena: a string entry points into it even when
+         * it has no bytes, and an empty string at a NULL arena would hand
+         * memcpy a null pointer (undefined, if harmless, and glibc's
+         * nonnull attribute makes UBSan stop there). */
+        P->acap = 1024;
+        P->arena = engAlloc(P->acap);
+    }
     P->tlen = 0;
     P->alen = 0;
     P->klen = 0;
@@ -871,18 +1020,18 @@ static inline void tapeNeed(jsonVal *P, uint32_t n) {
     if (JSON_LIKELY(P->tlen + n <= P->tcap)) return;
     uint32_t nc = P->tcap ? P->tcap * 2 : 256;
     while (nc < P->tlen + n) nc *= 2;
-    P->tape = engGrow(P->tape, (size_t)nc * sizeof(*P->tape));
+    P->tape = engGrow(P->tape, engSize((uint64_t)nc * sizeof(*P->tape)));
     P->tcap = nc;
 }
 
 /* Makes room for n more arena bytes. The tokeniser reserves the whole input
  * once, so that a string can be unescaped at the arena tail in place. */
 static void arenaReserve(jsonVal *P, size_t n) {
-    if (P->alen + n <= P->acap) return;
-    size_t nc = P->acap ? P->acap * 2 : 1024;
-    while (nc < P->alen + n) nc *= 2;
-    P->arena = engGrow(P->arena, nc);
-    P->acap = nc;
+    if ((uint64_t)P->alen + n <= P->acap) return;
+    uint64_t nc = P->acap ? (uint64_t)P->acap * 2 : 1024;
+    while (nc < (uint64_t)P->alen + n) nc *= 2;
+    P->arena = engGrow(P->arena, engSize(nc));
+    P->acap = (size_t)nc;
 }
 
 static inline tapeFrame *tapeTop(jsonVal *P) {
@@ -1049,7 +1198,7 @@ static inline void tapeDouble(jsonVal *P, double d) {
  * the room. */
 static inline uint32_t arenaPut(jsonVal *P, const uint8_t *s, uint32_t len) {
     const uint32_t off = (uint32_t)P->alen;
-    jsonAssert(P->alen + len <= P->acap);
+    jsonAssert(P->arena != NULL && P->alen + len <= P->acap);
     if (s != P->arena + P->alen) copySmall(P->arena + P->alen, s, len);
     P->alen += len;
     return off;
@@ -1098,7 +1247,7 @@ static inline void tapeDecimal(jsonVal *P, int64_t mantissa, uint32_t scale) {
 static inline void keyStackPush(jsonVal *P, uint32_t idx) {
     if (JSON_UNLIKELY(P->klen == P->kcap)) {
         P->kcap = P->kcap ? P->kcap * 2 : 64;
-        P->kstk = engGrow(P->kstk, (size_t)P->kcap * sizeof(*P->kstk));
+        P->kstk = engGrow(P->kstk, engSize((uint64_t)P->kcap * sizeof(*P->kstk)));
     }
     P->kstk[P->klen++] = idx;
 }
@@ -1150,7 +1299,7 @@ static inline tapeFrame *tapeOpen(jsonVal *P, int is_obj, int from_doc) {
     P->tlen += T_CONTAINER_ENTRIES;
     if (JSON_UNLIKELY(P->sp == P->scap)) {
         P->scap *= 2;
-        P->stk = engGrow(P->stk, sizeof(tapeFrame) * P->scap);
+        P->stk = engGrow(P->stk, engSize((uint64_t)sizeof(tapeFrame) * P->scap));
     }
     const tapeFrame *par = &P->stk[P->sp - 1];
     tapeFrame *f = &P->stk[P->sp++];
@@ -1222,7 +1371,7 @@ static uint32_t *tapeScratch(jsonVal *P, uint32_t n, uint32_t *cap) {
     while (need < n * 2) need *= 2;
     if (need > P->scratch_cap) {
         engFree(P->scratch);
-        P->scratch = engAlloc((size_t)need * sizeof(*P->scratch));
+        P->scratch = engAlloc(engSize((uint64_t)need * sizeof(*P->scratch)));
         P->scratch_cap = need;
     }
     memset(P->scratch, 0, (size_t)need * sizeof(*P->scratch));
@@ -1275,7 +1424,7 @@ static void tapeDedupe(jsonVal *P, tapeFrame *f) {
     uint32_t cap;
     uint32_t *set = tapeScratch(P, n, &cap);
     /* first[i]: tape index of the i-th distinct key. value[i]: its value. */
-    uint32_t *first = engAlloc((size_t)n * 2 * sizeof(*first));
+    uint32_t *first = engAlloc(engSize((uint64_t)n * 2 * sizeof(*first)));
     uint32_t *value = first + n;
     uint32_t distinct = 0;
     for (uint32_t j = 0; j < n; j++) {
@@ -1294,7 +1443,7 @@ static void tapeDedupe(jsonVal *P, tapeFrame *f) {
         }
     }
     const uint32_t base = f->open + T_CONTAINER_ENTRIES;
-    uint64_t *tmp = engAlloc((size_t)(P->tlen - base + 1) * sizeof(*tmp));
+    uint64_t *tmp = engAlloc(engSize((uint64_t)(P->tlen - base + 1) * sizeof(*tmp)));
     uint32_t m = 0;
     f->count = distinct;
     f->psize = 0;
@@ -1326,12 +1475,13 @@ static inline uint32_t objectIndexWidth(uint32_t cap) {
     return cap < 0xFFFF ? 2 : 4;
 }
 
-static inline size_t objectNodeSize(uint32_t cap) {
-    return SPINE_HDR + (size_t)cap * OBJECT_ENTRY + ((size_t)1 << objectIndexLg(cap)) * objectIndexWidth(cap);
+/* Node sizes are 64-bit: see engSize. */
+static inline uint64_t objectNodeSize(uint32_t cap) {
+    return SPINE_HDR + (uint64_t)cap * OBJECT_ENTRY + ((uint64_t)1 << objectIndexLg(cap)) * objectIndexWidth(cap);
 }
 
-static inline size_t strNodeSize(uint32_t len) {
-    return (len <= STR_SHORT_MAX ? STR_SHORT_HDR : STR_LONG_HDR) + (size_t)len;
+static inline uint64_t strNodeSize(uint32_t len) {
+    return (len <= STR_SHORT_MAX ? STR_SHORT_HDR : STR_LONG_HDR) + (uint64_t)len;
 }
 
 static inline int doubleFitsWord(uint64_t bits) {
@@ -1341,7 +1491,7 @@ static inline int doubleFitsWord(uint64_t bits) {
 
 /* Bytes the emitter requests for the value at idx when it is a child of a
  * spine container, not counting its slot. */
-static size_t tapeSpineChildBytes(const jsonVal *P, uint32_t idx) {
+static uint64_t tapeSpineChildBytes(const jsonVal *P, uint32_t idx) {
     const uint64_t *t = P->tape;
     const uint64_t e = t[idx];
     uint32_t len;
@@ -1358,7 +1508,7 @@ static size_t tapeSpineChildBytes(const jsonVal *P, uint32_t idx) {
         tapeText(P, idx, &len);
         return len <= W_STR_MAX ? 0 : strNodeSize(len);
     case T_ARR:
-    case T_OBJ: return tapeFits(t, idx) ? PACKED_HDR + (size_t)(uint32_t)t[idx + 1] : (size_t)t[idx + 2];
+    case T_OBJ: return tapeFits(t, idx) ? PACKED_HDR + (uint64_t)(uint32_t)t[idx + 1] : t[idx + 2];
     default: return 0; /* Literals are held in the word. */
     }
 }
@@ -1459,7 +1609,7 @@ static void tapeClose(jsonVal *P) {
 static inline const uint8_t *scanPlain(const uint8_t *p, const uint8_t *end, int stop_high) {
     const uint64_t high = stop_high ? SWAR_HIGHS : 0;
     while (end - p >= 8) {
-        const uint64_t w = loadU64(p);
+        const uint64_t w = loadU64LE(p); /* So that the first byte is the lowest: see above. */
         const uint64_t quote = w ^ (SWAR_ONES * '"'), bslash = w ^ (SWAR_ONES * '\\');
         const uint64_t low = ((w - SWAR_ONES * 0x20) | (quote - SWAR_ONES) | (bslash - SWAR_ONES)) & ~w & SWAR_HIGHS;
         const uint64_t m = low | (w & high);
@@ -1976,8 +2126,9 @@ typedef struct nodeAcct {
 } nodeAcct;
 
 /* Allocates a node. `acct` is NULL when the caller does not need totals. */
-static inline uint8_t *nodeAlloc(size_t n, nodeAcct *acct) {
-    uint8_t *node = engAlloc(n);
+static inline uint8_t *nodeAlloc(uint64_t n, nodeAcct *acct) {
+    uint8_t *node = engAlloc(engSize(n));
+    jsonAssert(((uintptr_t)node & W_TAG_MASK) == 0); /* See the spine word tags. */
     if (acct) {
         acct->bytes += E.alloc.usable(node);
         acct->nodes++;
@@ -2173,7 +2324,7 @@ static uint64_t emitPacked(const jsonVal *P, uint32_t idx, nodeAcct *acct) {
 static uint64_t emitText(const uint8_t *s, uint32_t len, int noesc, int rawnum, nodeAcct *acct) {
     if (len <= W_STR_MAX) {
         uint64_t w = 0;
-        memcpy((uint8_t *)&w + 1, s, len);
+        memcpy((uint8_t *)&w + W_STR_AT, s, len);
         return w | W_STR | ((uint64_t)len << W_STR_LEN_SHIFT) | (noesc ? W_STR_NOESC : 0) | (rawnum ? W_STR_RAWNUM : 0);
     }
     const uint8_t flags = (uint8_t)(NK_STR | (noesc ? STR_NOESC : 0) | (rawnum ? STR_RAWNUM : 0));
@@ -2251,7 +2402,7 @@ static inline void ekStoreString(uint8_t *p, const uint8_t *s, uint32_t len, int
 static uint64_t emitTypedArray(const jsonVal *P, uint32_t idx, nodeAcct *acct) {
     const uint64_t *t = P->tape;
     const uint32_t count = tapeCount(t[idx]), ekind = tapeEkind(t[idx]);
-    uint8_t *node = nodeAlloc(TARRAY_HDR + (size_t)count * EK_WIDTH[ekind], acct);
+    uint8_t *node = nodeAlloc(TARRAY_HDR + (uint64_t)count * EK_WIDTH[ekind], acct);
     memset(node, 0, TARRAY_HDR);
     node[0] = NK_TARRAY;
     node[TARRAY_EKIND] = (uint8_t)ekind;
@@ -2300,7 +2451,7 @@ static uint8_t *emitSpineNode(const jsonVal *P, uint32_t idx, nodeAcct *acct) {
     const uint32_t count = tapeCount(e);
     uint8_t *node;
     if (tapeType(e) == T_ARR) {
-        node = nodeAlloc(SPINE_HDR + (size_t)count * sizeof(uint64_t), acct);
+        node = nodeAlloc(SPINE_HDR + (uint64_t)count * sizeof(uint64_t), acct);
         memset(node, 0, SPINE_HDR);
         node[0] = NK_ARRAY;
     } else {
@@ -2311,7 +2462,7 @@ static uint8_t *emitSpineNode(const jsonVal *P, uint32_t idx, nodeAcct *acct) {
         node[OBJECT_IDXW] = (uint8_t)width;
         node[OBJECT_LG] = (uint8_t)lg;
         storeU32(node + OBJECT_LIVE, count);
-        memset(node + SPINE_HDR + (size_t)count * OBJECT_ENTRY, 0xFF, ((size_t)1 << lg) * width);
+        memset(node + SPINE_HDR + (size_t)count * OBJECT_ENTRY, 0xFF, (size_t)((uint64_t)1 << lg) * width);
     }
     storeU32(node + SPINE_LEN, count);
     storeU32(node + SPINE_CAP, count);
@@ -2334,7 +2485,7 @@ static uint64_t emitLeaf(const jsonVal *P, uint32_t idx, nodeAcct *acct) {
 static void emitPush(jsonVal *P, uint32_t *sp, uint8_t *node, uint32_t idx) {
     if (*sp == P->ecap) {
         P->ecap = P->ecap ? P->ecap * 2 : 16;
-        P->estk = engGrow(P->estk, sizeof(emitFrame) * P->ecap);
+        P->estk = engGrow(P->estk, engSize((uint64_t)sizeof(emitFrame) * P->ecap));
     }
     emitFrame *f = &P->estk[(*sp)++];
     f->node = node;
@@ -2495,9 +2646,9 @@ size_t jsonValSizeEstimate(const jsonVal *v) {
     const uint64_t *t = v->tape;
     if (!tapeIsContainer(t[0])) {
         const uint64_t packed = tapePackedSize(v, 0);
-        return packed < TAPE_NOFIT ? (size_t)packed : tapeSpineChildBytes(v, 0);
+        return packed < TAPE_NOFIT ? (size_t)packed : sizeSat(tapeSpineChildBytes(v, 0));
     }
-    return tapeFits(t, 0) ? PACKED_HDR + (size_t)(uint32_t)t[1] : (size_t)t[2];
+    return tapeFits(t, 0) ? PACKED_HDR + (size_t)(uint32_t)t[1] : sizeSat(t[2]);
 }
 
 jsonDoc jsonValToDoc(jsonVal *v) {
@@ -2766,7 +2917,7 @@ static const uint8_t *refText(const jsonRef *r, uint32_t *len) {
     }
     if (wordTag(r->w) == W_STR) {
         *len = (uint32_t)(r->w >> W_STR_LEN_SHIFT) & W_STR_MAX;
-        return (const uint8_t *)&r->w + 1;
+        return wordStrBytes(&r->w);
     }
     return strNodeBytes(wordNode(r->w), len);
 }
@@ -2802,8 +2953,11 @@ static __attribute__((noinline)) double decimalValueLong(int64_t mantissa, uint3
 static inline double decimalValue(int64_t mantissa, uint32_t scale) {
     static const double POW10[DEC_EXACT_SCALE_MAX + 1] = {1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
                                                           1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
-    /* |M| <= 2^53, in one comparison. */
-    if (JSON_LIKELY((uint64_t)mantissa + ((uint64_t)1 << 53) <= (uint64_t)1 << 54 && scale <= DEC_EXACT_SCALE_MAX)) {
+    /* |M| <= 2^53, in one comparison. Where doubles are evaluated in a wider
+     * format the division rounds twice, once to that format and once to a
+     * double, so the number library does all of them there. */
+    if (JSON_DOUBLE_EXACT &&
+        JSON_LIKELY((uint64_t)mantissa + ((uint64_t)1 << 53) <= (uint64_t)1 << 54 && scale <= DEC_EXACT_SCALE_MAX)) {
         return (double)mantissa / POW10[scale];
     }
     return decimalValueLong(mantissa, scale);
@@ -2821,14 +2975,14 @@ static const uint64_t POW10_U64[20] = {1ULL, 10ULL, 100ULL, 1000ULL, 10000ULL, 1
 /* The number of decimal digits of v; one for zero. 1233 / 4096 is log10(2)
  * closely enough for every bit length up to 64: t is the number of digits or
  * one less, and the comparison says which. */
-static inline uint32_t decimalDigits(uint64_t v) {
+static JSON_INLINE uint32_t decimalDigits(uint64_t v) {
     const uint32_t t = ((64 - (uint32_t)__builtin_clzll(v | 1)) * 1233) >> 12;
     return t + (t == 0 || v >= POW10_U64[t]);
 }
 
 /* Writes v, below 10^n, as exactly n digits with leading zeros, two digits
  * at a time. */
-static inline void printDigits(char *o, uint64_t v, uint32_t n) {
+static JSON_INLINE void printDigits(char *o, uint64_t v, uint32_t n) {
     char *end = o + n;
     for (; n >= 2; n -= 2) {
         const uint64_t q = v / 100;
@@ -2842,7 +2996,7 @@ static inline void printDigits(char *o, uint64_t v, uint32_t n) {
 /* The same for long numbers: eight digits at a time while there are that
  * many, since the four pairs of a block do not wait for one another as the
  * steps of a single chain of divisions do. */
-static inline void printLongDigits(char *o, uint64_t v, uint32_t n) {
+static JSON_INLINE void printLongDigits(char *o, uint64_t v, uint32_t n) {
     for (; n >= 8; n -= 8) {
         const uint64_t q = v / 100000000;
         const uint32_t low = (uint32_t)(v - q * 100000000);
@@ -2859,13 +3013,13 @@ static inline void printLongDigits(char *o, uint64_t v, uint32_t n) {
 }
 
 /* Writes an unsigned integer in decimal and returns the end. */
-static inline char *printU64(char *o, uint64_t v) {
+static JSON_INLINE char *printU64(char *o, uint64_t v) {
     const uint32_t n = decimalDigits(v);
     printLongDigits(o, v, n);
     return o + n;
 }
 
-static inline char *printI64(char *o, int64_t v) {
+static JSON_INLINE char *printI64(char *o, int64_t v) {
     if (v < 0) {
         *o++ = '-';
         return printU64(o, 0 - (uint64_t)v);
@@ -2875,15 +3029,26 @@ static inline char *printI64(char *o, int64_t v) {
 
 /* The text of a decimal of any scale, m being |M|. Out of line: see
  * printShortDecimal. */
+_Static_assert(DEC_SCALE_MAX - DEC_DIGITS_MAX <= 16, "printLongDecimal writes the zeros as one 16-byte block");
 static char *printLongDecimal(char *o, uint64_t m, uint32_t scale) {
     if (scale >= DEC_DIGITS_MAX) {
-        /* Nothing before the point, and zeros between it and the digits. */
+        /* Nothing before the point, and zeros between it and the digits:
+         * at most 13, written as 16 within the room every caller keeps for
+         * a number, of which the digits overwrite the rest. */
         *o++ = '0';
         *o++ = '.';
-        memset(o, '0', scale - DEC_DIGITS_MAX);
+        memcpy(o, "0000000000000000", 16);
         o += scale - DEC_DIGITS_MAX;
         printLongDigits(o, m, DEC_DIGITS_MAX);
         return o + DEC_DIGITS_MAX;
+    }
+    if (m < POW10_U64[scale]) {
+        /* Below 1, as nearly every full-precision coordinate or embedding
+         * component is: no division. */
+        *o++ = '0';
+        *o++ = '.';
+        printLongDigits(o, m, scale);
+        return o + scale;
     }
     const uint64_t whole = m / POW10_U64[scale];
     o = printU64(o, whole);
@@ -2895,7 +3060,7 @@ static char *printLongDecimal(char *o, uint64_t m, uint32_t scale) {
 /* The text of a decimal with a scale below 8, m being |M|: a few instructions
  * in the loops that print prices and coordinates. */
 #define DEC_SHORT_SCALES 8
-static inline char *printShortDecimal(char *o, uint64_t m, uint32_t scale) {
+static JSON_INLINE char *printShortDecimal(char *o, uint64_t m, uint32_t scale) {
     const uint64_t whole = m / POW10_U64[scale];
     const uint32_t n = decimalDigits(whole);
     printDigits(o, whole, n);
@@ -2926,7 +3091,7 @@ double jsonRefDouble(const jsonRef *r) {
     switch (jsonRefType(r)) {
     case JSON_INT:
         jsonRefInt(r, &iv);
-        return (double)iv;
+        return doubleRound((double)iv);
     case JSON_DOUBLE: return refDoubleValue(r);
     case JSON_RAWNUM: {
         if (refDecimal(r, &iv, &scale)) return decimalValue(iv, scale);
@@ -3441,27 +3606,27 @@ static void bufSetCap(jsonBuf *b, size_t nc) {
 }
 
 static void bufGrow(jsonBuf *b, size_t n) {
-    size_t nc = b->cap * 2 > BUF_MIN_HEAP ? b->cap * 2 : BUF_MIN_HEAP;
-    while (nc < b->len + n) nc *= 2;
-    bufSetCap(b, nc);
+    uint64_t nc = (uint64_t)b->cap * 2 > BUF_MIN_HEAP ? (uint64_t)b->cap * 2 : BUF_MIN_HEAP;
+    while (nc < (uint64_t)b->len + n) nc *= 2;
+    bufSetCap(b, engSize(nc));
 }
 
 void jsonBufReserve(jsonBuf *b, size_t n) {
-    if (b->cap - b->len < n) bufSetCap(b, b->len + n); /* What was asked for: the caller sized it. */
+    if (b->cap - b->len < n) bufSetCap(b, engSize((uint64_t)b->len + n)); /* What was asked for: the caller sized it. */
 }
 
 /* Returns where the next n bytes go. The caller adds to len. */
-static inline char *bufRoom(jsonBuf *b, size_t n) {
+static JSON_INLINE char *bufRoom(jsonBuf *b, size_t n) {
     if (JSON_UNLIKELY(b->cap - b->len < n)) bufGrow(b, n);
     return b->p + b->len;
 }
 
-static inline void bufPutc(jsonBuf *b, char c) {
+static JSON_INLINE void bufPutc(jsonBuf *b, char c) {
     *bufRoom(b, 1) = c;
     b->len++;
 }
 
-static inline void bufPut(jsonBuf *b, const void *s, size_t n) {
+static JSON_INLINE void bufPut(jsonBuf *b, const void *s, size_t n) {
     copySmall(bufRoom(b, n), s, n);
     b->len += n;
 }
@@ -3471,43 +3636,10 @@ void jsonBufAppend(jsonBuf *b, const char *s, size_t n) {
     b->len += n;
 }
 
-/* What the module's writer does with a byte: 0 = copy it, 'u' = \u00XX,
- * anything else = a backslash and that character. Control characters, the
- * quote and the backslash are escaped. '/', 0x7F and bytes of 0x80 and above
- * (UTF-8, valid or not) are copied. */
-static inline char serEscapeOf(uint8_t c) {
-    if (c >= 0x20) return (c == '"' || c == '\\') ? (char)c : 0;
-    switch (c) {
-    case '\b': return 'b';
-    case '\t': return 't';
-    case '\n': return 'n';
-    case '\f': return 'f';
-    case '\r': return 'r';
-    default: return 'u';
-    }
-}
-
 static void bufPutEscaped(jsonBuf *b, const uint8_t *s, size_t len) {
-    static const char HEX[] = "0123456789ABCDEF";
     while (len) {
         const size_t chunk = len < SER_ESCAPE_CHUNK ? len : SER_ESCAPE_CHUNK;
-        char *o = bufRoom(b, chunk * SER_ESCAPE_MAX);
-        for (size_t i = 0; i < chunk; i++) {
-            const uint8_t c = s[i];
-            const char esc = serEscapeOf(c);
-            if (JSON_LIKELY(!esc)) {
-                *o++ = (char)c;
-                continue;
-            }
-            *o++ = '\\';
-            *o++ = esc;
-            if (esc == 'u') {
-                *o++ = '0';
-                *o++ = '0';
-                *o++ = HEX[c >> 4];
-                *o++ = HEX[c & 15];
-            }
-        }
+        char *o = escapeBytes(bufRoom(b, chunk * SER_ESCAPE_MAX), s, chunk);
         b->len = (size_t)(o - b->p);
         s += chunk;
         len -= chunk;
@@ -3515,7 +3647,7 @@ static void bufPutEscaped(jsonBuf *b, const uint8_t *s, size_t len) {
 }
 
 /* Writes a JSON string literal. `noesc` says the bytes need no escaping. */
-static inline void serPutString(jsonBuf *b, const uint8_t *s, size_t len, int noesc) {
+static JSON_INLINE void serPutString(jsonBuf *b, const uint8_t *s, size_t len, int noesc) {
     if (JSON_LIKELY(noesc)) {
         char *o = bufRoom(b, len + 2);
         *o++ = '"';
@@ -3531,11 +3663,6 @@ static inline void serPutString(jsonBuf *b, const uint8_t *s, size_t len, int no
 
 void jsonBufAppendQuoted(jsonBuf *b, const char *s, size_t n) {
     serPutString(b, (const uint8_t *)s, n, 0);
-}
-
-static inline void serPutKey(jsonBuf *b, uint32_t keyid) {
-    const keyInfo *ki = ktInfo(keyid);
-    serPutString(b, ki->bytes, ktInfoLen(ki), (ki->len_flags & KT_NOESC) != 0);
 }
 
 static inline void serPutInt(jsonBuf *b, int64_t v) {
@@ -3571,12 +3698,12 @@ typedef struct outPos {
     char *o, *limit;
 } outPos;
 
-static inline outPos outBegin(const jsonBuf *b) {
+static JSON_INLINE outPos outBegin(const jsonBuf *b) {
     const outPos w = {b->p + b->len, b->p + b->cap};
     return w;
 }
 
-static inline void outEnd(jsonBuf *b, const outPos *w) {
+static JSON_INLINE void outEnd(jsonBuf *b, const outPos *w) {
     b->len = (size_t)(w->o - b->p);
 }
 
@@ -3587,7 +3714,7 @@ static void outGrow(jsonBuf *b, outPos *w, size_t n) {
 }
 
 /* Makes sure n more bytes can be written at w->o. */
-static inline void outRoom(jsonBuf *b, outPos *w, size_t n) {
+static JSON_INLINE void outRoom(jsonBuf *b, outPos *w, size_t n) {
     if (JSON_UNLIKELY((size_t)(w->limit - w->o) < n)) outGrow(b, w, n);
 }
 
@@ -3598,7 +3725,7 @@ static void outEscapedString(jsonBuf *b, outPos *w, const uint8_t *s, size_t len
     *w = outBegin(b);
 }
 
-static inline void outString(jsonBuf *b, outPos *w, const uint8_t *s, size_t len, int noesc) {
+static JSON_INLINE void outString(jsonBuf *b, outPos *w, const uint8_t *s, size_t len, int noesc) {
     if (JSON_UNLIKELY(!noesc)) {
         outEscapedString(b, w, s, len);
         return;
@@ -3670,15 +3797,22 @@ typedef struct compactFrame {
     char close;
 } compactFrame;
 
-/* Writes the packed value at p, whole, in compact form. */
-static void serPackedCompact(jsonBuf *b, const uint8_t *p) {
+/* Writes the packed value at p, whole, in compact form. `stop` is the byte
+ * after it.
+ *
+ * One room check per value: SER_SLACK bytes, beyond the serialised member
+ * name in an object, cover the comma and any value that is written without a
+ * check of its own (a number, a literal, a bracket, a short string that needs
+ * no escaping). Everything longer checks for itself. */
+static void serPackedCompact(jsonBuf *b, const uint8_t *p, const uint8_t *const stop) {
+    static const uint8_t INT_SIZE[4] = {2, 3, 5, 9}; /* PK_I8..PK_I64, tag included. */
     compactFrame inline_frames[SER_INLINE_FRAMES], *top = NULL;
     walkStack stack;
     outPos w = outBegin(b);
-    const uint8_t *const stop = pkSkip(p);
     uint32_t len, count, ekind, keyid;
     uint8_t scale;
-    int first = 1; /* Nothing written yet in the innermost container: no comma. */
+    int first = 1;  /* Nothing written yet in the innermost container: no comma. */
+    int in_obj = 0; /* The innermost container is an object. */
     walkStackInit(&stack, inline_frames, SER_INLINE_FRAMES, sizeof(compactFrame));
     for (;;) {
         while (top && p == top->end) {
@@ -3686,18 +3820,23 @@ static void serPackedCompact(jsonBuf *b, const uint8_t *p) {
             *w.o++ = top->close;
             first = 0;
             top = --stack.n ? walkStackTop(&stack) : NULL;
+            in_obj = top && top->close == '}';
         }
         if (p == stop) break;
-        outRoom(b, &w, SER_SLACK);
-        if (!first) *w.o++ = ',';
-        first = 0;
-        if (top && top->close == '}') {
+        if (in_obj) {
+            /* The member name as the key table keeps it: "name": */
             p = varintGet(p, &keyid);
             const keyInfo *ki = ktInfo(keyid);
-            outString(b, &w, ki->bytes, ktInfoLen(ki), (ki->len_flags & KT_NOESC) != 0);
+            const uint32_t klen = ki->ser_len;
+            outRoom(b, &w, (size_t)klen + SER_SLACK);
+            if (!first) *w.o++ = ',';
+            copySmall(w.o, ktInfoSer(ki), klen);
+            w.o += klen;
+        } else {
             outRoom(b, &w, SER_SLACK);
-            *w.o++ = ':';
+            if (!first) *w.o++ = ',';
         }
+        first = 0;
         const uint8_t tag = *p;
         if (tag >= PK_SSTR) {
             if (tag < PK_DEC) {
@@ -3712,9 +3851,14 @@ static void serPackedCompact(jsonBuf *b, const uint8_t *p) {
                 }
                 p += 1 + len;
             } else if (pkIsDec(tag)) {
+                /* printDecimal, with the short form always inline: prices. */
                 uint32_t dscale;
-                const int64_t m = pkDecimal(p, &dscale);
-                w.o = printDecimal(w.o, m, dscale);
+                uint64_t m = (uint64_t)pkDecimal(p, &dscale);
+                if ((int64_t)m < 0) {
+                    *w.o++ = '-';
+                    m = 0 - m;
+                }
+                w.o = dscale < DEC_SHORT_SCALES ? printShortDecimal(w.o, m, dscale) : printLongDecimal(w.o, m, dscale);
                 p += pkDecSize(tag);
             } else {
                 const uint8_t *text = pkText(p, &len);
@@ -3753,7 +3897,7 @@ static void serPackedCompact(jsonBuf *b, const uint8_t *p) {
         case PK_I32:
         case PK_I64:
             w.o = printI64(w.o, pkInt(p));
-            p = pkSkip(p);
+            p += INT_SIZE[tag - PK_I8];
             break;
         case PK_F64:
             w.o += jsonDoublePrint(loadF64(p + 1), w.o);
@@ -3770,8 +3914,9 @@ static void serPackedCompact(jsonBuf *b, const uint8_t *p) {
         case PK_OBJ8:
         case PK_OBJ16:
             top = walkStackPush(&stack);
-            top->close = pkIsObject(tag) ? '}' : ']';
-            *w.o++ = pkIsObject(tag) ? '{' : '[';
+            in_obj = pkIsObject(tag);
+            top->close = in_obj ? '}' : ']';
+            *w.o++ = in_obj ? '{' : '[';
             p = pkOpen(p, &top->end, &count);
             first = 1;
             break;
@@ -3834,8 +3979,8 @@ static inline void serClose(serializer *s, char bracket) {
 }
 
 static inline void serMemberName(serializer *s, uint32_t keyid) {
-    serPutKey(s->out, keyid);
-    bufPutc(s->out, ':');
+    const keyInfo *ki = ktInfo(keyid);
+    bufPut(s->out, ktInfoSer(ki), ki->ser_len); /* "name": */
     if (JSON_UNLIKELY(s->fmt != NULL) && s->fmt->space) bufPut(s->out, s->fmt->space, s->fmt->space_len);
 }
 
@@ -3933,9 +4078,9 @@ static void serOpenPacked(serializer *s, const uint8_t *p) {
 
 /* Writes the packed value at p, or starts it if it is a container and a
  * format has to be followed inside it. */
-static inline void serPacked(serializer *s, const uint8_t *p) {
+static inline void serPacked(serializer *s, const uint8_t *p, const uint8_t *stop) {
     if (!s->fmt) {
-        serPackedCompact(s->out, p);
+        serPackedCompact(s->out, p, stop);
     } else if (pkIsNested(*p)) {
         serOpenPacked(s, p);
     } else {
@@ -3987,7 +4132,7 @@ static void serWord(serializer *s, uint64_t w) {
                 serPutDouble(out, loadF64(node + BOXNUM_VALUE));
             }
             break;
-        case NK_PACKED: serPacked(s, node + PACKED_HDR); break;
+        case NK_PACKED: serPacked(s, node + PACKED_HDR, node + PACKED_HDR + loadU16(node + 1)); break;
         case NK_TARRAY: serTyped(s, tarrayData(node), nodeLen(node), node[TARRAY_EKIND], node[TARRAY_SCALE]); break;
         default: serOpenNode(s, node);
         }
@@ -3996,7 +4141,7 @@ static void serWord(serializer *s, uint64_t w) {
     case W_INT: serPutInt(out, (int64_t)w >> W_INT_SHIFT); break;
     case W_STR:
         len = (uint32_t)(w >> W_STR_LEN_SHIFT) & W_STR_MAX;
-        serPutTextWord(out, (const uint8_t *)&w + 1, len, (w & W_STR_NOESC) != 0, (w & W_STR_RAWNUM) != 0);
+        serPutTextWord(out, wordStrBytes(&w), len, (w & W_STR_NOESC) != 0, (w & W_STR_RAWNUM) != 0);
         break;
     case W_SPECIAL:
         switch (w & W_SPECIAL_MASK) {
@@ -4032,6 +4177,19 @@ static uint32_t serDecimalRun(jsonBuf *b, const uint64_t *words, uint32_t i, uin
         w.o = printDecimal(w.o, m, scale);
     }
     outEnd(b, &w);
+    return i;
+}
+
+/* Compact output of the PACKED nodes that follow one another in an ARRAY
+ * from index i: an array of records. Returns the index after the run. */
+static uint32_t serPackedRun(jsonBuf *b, const uint64_t *words, uint32_t i, uint32_t n, int first) {
+    for (; i < n; i++, first = 0) {
+        const uint64_t w = words[i];
+        if (wordTag(w) != W_PTR || nodeKind(wordNode(w)) != NK_PACKED) break;
+        const uint8_t *node = wordNode(w);
+        if (!first) bufPutc(b, ',');
+        serPackedCompact(b, node + PACKED_HDR, node + PACKED_HDR + loadU16(node + 1));
+    }
     return i;
 }
 
@@ -4071,6 +4229,14 @@ static inline void serStep(serializer *s) {
             f->first = 0;
             return;
         }
+        if (!s->fmt) {
+            const uint64_t w = nodeWords(node)[f->i];
+            if (wordTag(w) == W_PTR && nodeKind(wordNode(w)) == NK_PACKED) {
+                f->i = serPackedRun(s->out, nodeWords(node), f->i, nodeLen(node), f->first);
+                f->first = 0;
+                return;
+            }
+        }
         serChildPrefix(s, f);
         serWord(s, nodeWords(node)[f->i++]);
         return;
@@ -4099,12 +4265,12 @@ void jsonSerialize(const jsonRef *r, const jsonFormat *fmt, jsonBuf *out) {
     s.out = out;
     s.fmt = (fmt && (fmt->indent || fmt->newline || fmt->space)) ? fmt : NULL;
     if (r->kind == REF_PACKED && !s.fmt) {
-        serPackedCompact(out, r->p); /* The common case needs none of the rest. */
+        serPackedCompact(out, r->p, pkSkip(r->p)); /* The common case needs none of the rest. */
         return;
     }
     walkStackInit(&s.stack, inline_frames, SER_INLINE_FRAMES, sizeof(serFrame));
     switch (r->kind) {
-    case REF_PACKED: serPacked(&s, r->p); break;
+    case REF_PACKED: serPacked(&s, r->p, pkSkip(r->p)); break;
     case REF_WORD: serWord(&s, r->w); break;
     case REF_ELEM:
         if (r->b == EK_STR) {
@@ -4199,7 +4365,7 @@ static void refNumView(const jsonRef *r, jsonType type, numView *v) {
     if (type == JSON_INT) {
         jsonRefInt(r, &v->i);
         v->is_int = 1;
-        v->d = (double)v->i;
+        v->d = doubleRound((double)v->i);
     } else if (type == JSON_DOUBLE) {
         v->d = refDoubleValue(r);
     } else if (refDecimal(r, &v->i, &scale)) {
@@ -4593,9 +4759,10 @@ static void mutEnd(mutation *m) {
     storeU64(root + SPINE_NODES, nodes);
 }
 
-static uint8_t *nodeRealloc(uint8_t *node, size_t n, nodeAcct *acct) {
+static uint8_t *nodeRealloc(uint8_t *node, uint64_t n, nodeAcct *acct) {
     if (acct) acct->bytes -= E.alloc.usable(node);
-    node = E.alloc.realloc(node, n);
+    node = E.alloc.realloc(node, engSize(n));
+    jsonAssert(((uintptr_t)node & W_TAG_MASK) == 0);
     if (acct) acct->bytes += E.alloc.usable(node);
     return node;
 }
@@ -5082,7 +5249,7 @@ static int packedSetScalar(mutSite *s, const jsonStep *step, const scalarVal *sv
 /* ---- Spine ARRAY ---- */
 
 static uint8_t *arrayNodeResize(mutation *m, mutSite *s, uint32_t cap) {
-    uint8_t *node = nodeRealloc(s->node, SPINE_HDR + (size_t)cap * sizeof(uint64_t), m->acct);
+    uint8_t *node = nodeRealloc(s->node, SPINE_HDR + (uint64_t)cap * sizeof(uint64_t), m->acct);
     storeU32(node + SPINE_CAP, cap);
     siteSetNode(s, node);
     return node;
@@ -5110,7 +5277,7 @@ static void arrayNodeEdit(mutation *m, mutSite *s, uint32_t at, uint32_t ndel, c
 
 static uint8_t *tarrayResize(mutation *m, mutSite *s, uint32_t cap) {
     const size_t width = EK_WIDTH[s->node[TARRAY_EKIND]];
-    uint8_t *node = nodeRealloc(s->node, TARRAY_HDR + (size_t)cap * width, m->acct);
+    uint8_t *node = nodeRealloc(s->node, TARRAY_HDR + (uint64_t)cap * width, m->acct);
     storeU32(node + SPINE_CAP, cap);
     siteSetNode(s, node);
     return node;
@@ -5120,7 +5287,7 @@ static uint8_t *tarrayResize(mutation *m, mutSite *s, uint32_t cap) {
 static void tarrayWiden(mutation *m, mutSite *s, uint32_t ekind) {
     uint8_t *old = s->node;
     const uint32_t len = nodeLen(old), old_kind = old[TARRAY_EKIND];
-    uint8_t *node = nodeAlloc(TARRAY_HDR + (size_t)len * EK_WIDTH[ekind], m->acct);
+    uint8_t *node = nodeAlloc(TARRAY_HDR + (uint64_t)len * EK_WIDTH[ekind], m->acct);
     memcpy(node, old, TARRAY_HDR);
     node[TARRAY_EKIND] = (uint8_t)ekind;
     storeU32(node + SPINE_CAP, len);
@@ -5146,7 +5313,7 @@ static uint64_t elementWord(const uint8_t *elem, uint32_t ekind, uint8_t scale, 
 static void tarrayToArray(mutation *m, mutSite *s, uint32_t extra) {
     uint8_t *old = s->node;
     const uint32_t len = nodeLen(old), ekind = old[TARRAY_EKIND], cap = len + extra;
-    uint8_t *node = nodeAlloc(SPINE_HDR + (size_t)cap * sizeof(uint64_t), m->acct);
+    uint8_t *node = nodeAlloc(SPINE_HDR + (uint64_t)cap * sizeof(uint64_t), m->acct);
     memset(node, 0, SPINE_HDR);
     node[0] = NK_ARRAY;
     storeU32(node + SPINE_LEN, len);
@@ -5221,7 +5388,7 @@ static uint8_t *objectNodeRebuild(mutation *m, mutSite *s, uint32_t cap) {
     node[OBJECT_IDXW] = (uint8_t)width;
     node[OBJECT_LG] = (uint8_t)lg;
     storeU32(node + SPINE_CAP, cap);
-    memset(node + SPINE_HDR + (size_t)cap * OBJECT_ENTRY, 0xFF, ((size_t)1 << lg) * width);
+    memset(node + SPINE_HDR + (size_t)cap * OBJECT_ENTRY, 0xFF, (size_t)((uint64_t)1 << lg) * width);
     const uint64_t *from = nodeWords(old);
     uint64_t *to = nodeWords(node);
     uint32_t n = 0;
@@ -5500,7 +5667,7 @@ static void slotStringAppend(mutation *m, uint64_t *slot, const uint8_t *s, size
         const uint32_t old_len = (uint32_t)(w >> W_STR_LEN_SHIFT) & W_STR_MAX;
         const int noesc = (w & W_STR_NOESC) && suffix_noesc;
         if (old_len + len <= W_STR_MAX) {
-            memcpy(joined, (const uint8_t *)&w + 1, old_len);
+            memcpy(joined, wordStrBytes(&w), old_len);
             memcpy(joined + old_len, s, len);
             *slot = emitText(joined, old_len + (uint32_t)len, noesc, 0, m->acct);
             return;
@@ -5514,7 +5681,7 @@ static void slotStringAppend(mutation *m, uint64_t *slot, const uint8_t *s, size
         } else {
             storeU32(node + 1, new_len);
         }
-        memcpy(bytes, (const uint8_t *)&w + 1, old_len);
+        memcpy(bytes, wordStrBytes(&w), old_len);
         memcpy(bytes + old_len, s, len);
         *slot = nodeWord(node);
         return;
@@ -5527,7 +5694,7 @@ static void slotStringAppend(mutation *m, uint64_t *slot, const uint8_t *s, size
     if ((node[0] & STR_LONG) || new_len <= STR_SHORT_MAX) {
         /* The header keeps its form: grow the node where it is. */
         const size_t hdr = (size_t)(old_bytes - node);
-        node = nodeRealloc(node, hdr + new_len, m->acct);
+        node = nodeRealloc(node, (uint64_t)hdr + new_len, m->acct);
         memcpy(node + hdr + old_len, s, len);
         if (node[0] & STR_LONG) {
             storeU32(node + 1, new_len);
@@ -5537,7 +5704,7 @@ static void slotStringAppend(mutation *m, uint64_t *slot, const uint8_t *s, size
         *slot = nodeWord(node);
         return;
     }
-    uint8_t *grown = nodeAlloc(STR_LONG_HDR + (size_t)new_len, m->acct);
+    uint8_t *grown = nodeAlloc(STR_LONG_HDR + (uint64_t)new_len, m->acct);
     grown[0] = node[0] | STR_LONG;
     storeU32(grown + 1, new_len);
     memcpy(grown + STR_LONG_HDR, old_bytes, old_len);
@@ -5618,18 +5785,53 @@ void jsonStringAppend(jsonDoc *d, const jsonStep *loc, int n, const char *str, s
  *
  * Every allocation of a document is offered to `move` once. A document
  * whose root is not a spine container is a single allocation. A spine
- * document is done in steps that the cursor counts: its high half is the
- * index of a child of the root (plus one, so that a cursor in use is never
- * 0), its low half an index inside that child when the child is itself a
- * spine container. Anything below that second level is moved as one step.
+ * document is done in steps that the cursor counts: the index of a child of
+ * the root (plus one, so that a cursor in use is never 0), and an index
+ * inside that child when the child is itself a spine container. Anything
+ * below that second level is moved as one step.
  *
  * The cursor is positional and the document may change between calls, so
  * every step checks the root and its bounds again. After a change some nodes
  * may be offered twice and some not at all, which defragmentation tolerates.
  * Key bytes live in the key table and are not moved.
+ *
+ * The cursor is the server's unsigned long. With 64 bits each half has 32,
+ * which holds any index. With 32 bits there are two forms: bit 31 clear, 15
+ * bits of root index plus one and 16 bits of inner index; bit 31 set, 31 bits
+ * of root index plus one and an inner index of 0. A position that neither
+ * form holds is not one to stop at: the work goes on to the next that is,
+ * at the latest the start of the next child of the root. So on a 32-bit
+ * target the entries of a spine child past the 65535th, and from root index
+ * 32767 on the whole of each spine child, are done without a stop.
  * ========================================================================= */
 
-#define DEFRAG_HIGH_SHIFT 32
+#define DEFRAG_WIDE (sizeof(unsigned long) >= 8)
+#define DEFRAG_ROOT_ONLY 0x80000000u /* 32-bit cursor: the second form. */
+
+/* A 32-bit cursor for a position. Returns 0 if neither form holds it. A
+ * 64-bit one is written in place, in jsonDocDefrag. */
+static inline int defragCursorPut32(unsigned long *cursor, uint64_t high, uint64_t low) {
+    if (high + 1 <= 0x7FFF && low <= 0xFFFF) {
+        *cursor = (unsigned long)(((high + 1) << 16) | low);
+    } else if (low == 0 && high + 1 < DEFRAG_ROOT_ONLY) {
+        *cursor = (unsigned long)(DEFRAG_ROOT_ONLY | (high + 1));
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
+/* The position of a 32-bit cursor that is not 0. */
+static inline void defragCursorGet32(unsigned long cursor, uint64_t *high, uint64_t *low) {
+    const uint64_t c = cursor;
+    if (c & DEFRAG_ROOT_ONLY) {
+        *high = (c & ~(uint64_t)DEFRAG_ROOT_ONLY) - 1;
+        *low = 0;
+    } else {
+        *high = (c >> 16) - 1;
+        *low = c & 0xFFFF;
+    }
+}
 
 typedef void *(*defragMoveFn)(void *ptr, void *ctx);
 
@@ -5677,9 +5879,11 @@ int jsonDocDefrag(jsonDoc *d, void *(*move)(void *ptr, void *ctx), int (*stop)(v
     }
     if (*cursor == 0) {
         defragNode(d, move, ctx);
-    } else {
-        high = ((uint64_t)*cursor >> DEFRAG_HIGH_SHIFT) - 1;
+    } else if (DEFRAG_WIDE) {
+        high = ((uint64_t)*cursor >> 32) - 1;
         low = (uint64_t)*cursor & 0xFFFFFFFFu;
+    } else {
+        defragCursorGet32(*cursor, &high, &low);
     }
     uint8_t *root = wordNode(*d);
     while (high < nodeLen(root)) {
@@ -5708,8 +5912,11 @@ int jsonDocDefrag(jsonDoc *d, void *(*move)(void *ptr, void *ctx), int (*stop)(v
             }
         }
         if (stop && stop(ctx) && high < nodeLen(root)) {
-            *cursor = (unsigned long)(((high + 1) << DEFRAG_HIGH_SHIFT) | low);
-            return 1;
+            if (DEFRAG_WIDE) {
+                *cursor = (unsigned long)(((high + 1) << 32) | low);
+                return 1;
+            }
+            if (defragCursorPut32(cursor, high, low)) return 1;
         }
     }
     *cursor = 0;

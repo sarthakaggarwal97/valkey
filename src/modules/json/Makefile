@@ -9,6 +9,13 @@ override OPTIMIZATION:=$(subst -flto,,$(subst -ffat-lto-objects,,$(subst -flto=a
 JSON_TARGET=libvalkeyjson.a
 JSON_CFLAGS=-I. -fPIC -W -Wall -fno-common $(OPTIMIZATION) -std=gnu11 -D_GNU_SOURCE $(CFLAGS) $(CPPFLAGS)
 
+# On 32-bit x86 the compiler would keep doubles in x87 registers with extra
+# precision, so a comparison or a sum could differ from every other target.
+# SSE2 arithmetic rounds every operation to double, as JSON numbers require.
+ifeq ($(shell echo __i386__ | $(CC) $(CFLAGS) -x c -E -P - 2>/dev/null | tr -d ' \n'),1)
+	JSON_CFLAGS+=-msse2 -mfpmath=sse
+endif
+
 SRCS=json_module.c json_cmd.c json_path.c json_engine.c json_num.c
 OBJS=$(SRCS:.c=.o)
 

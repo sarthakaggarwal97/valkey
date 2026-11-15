@@ -31,6 +31,8 @@ DATA = os.path.join(BUILD, "data")
 BIN = os.path.join(BUILD, "engine_test")
 SAN = os.path.join(BUILD, "engine_test_san")
 CAPS = [(4096, 128), (64, 4), (16, 1), (65535, 65535)]
+# CHECK_ONLY=layout,numbers runs those corpora only, and none of the other checks: for trying one change quickly.
+ONLY = [c for c in os.environ.get("CHECK_ONLY", "").split(",") if c]
 
 from json_model import *
 
@@ -128,6 +130,7 @@ def corpora():
     c["edge"] = (G.EDGE, "model")
     c["random"] = (G.random_docs(100 if QUICK else 600), "model")
     c["caps"] = (G.caps_docs(), "model")
+    c["layout"] = (G.layout_docs(), "model")  # Byte order and widths: every encoding, with asymmetric bytes.
     c["deep"] = (G.deep_docs(), "same")
     return {k: ([l if isinstance(l, bytes) else l.encode("utf-8") for l in v[0]], v[1]) for k, v in c.items()}
 
@@ -237,6 +240,7 @@ def main():
 
     all_corpora = corpora()
     for name, (lines, mode) in all_corpora.items():
+        if ONLY and name not in ONLY: continue
         print("%-10s %6d documents, %9d bytes" % (name, len(lines), sum(map(len, lines))), flush=True)
         values = [parse(decode(l)) for l in lines] if mode == "model" else None
         compact_out = [encode(serialize(v)) for v in values] if values else lines
@@ -259,6 +263,8 @@ def main():
                 # Where the module's format and Python's agree, compare with json.dumps directly.
                 want = [json.dumps(json.loads(l), indent="  ", separators=(",", ": "), ensure_ascii=False).encode() for l in lines[:sub]]
                 check_roundtrip(name, BIN, CAPS[0], lines[:sub], want, format_args(FORMATS[0]), " json.dumps")
+
+    if ONLY: return finish()
 
     # Depth limit: a document is refused exactly when it nests deeper than the limit.
     lines = [l for l in all_corpora["deep"][0] if len(l) < 50000] + all_corpora["edge"][0]
@@ -294,7 +300,9 @@ def main():
                 continue
             bad = [i for i, (o, w) in enumerate(zip(outs, want)) if o != w]
             record("equals", cfg, "equals", len(lines) - len(bad), len(bad), "pair %r got %r" % (pairs[bad[0]], outs[bad[0]]) if bad else "")
+    finish()
 
+def finish():
     total_pass = sum(r[3] for r in results)
     total_fail = sum(r[4] for r in results)
     by_op = {}

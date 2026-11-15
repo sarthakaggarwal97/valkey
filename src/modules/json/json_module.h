@@ -22,13 +22,50 @@
 
 extern ValkeyModuleType *jsonModuleType;
 
-/* A key's value is the document word itself, stored in the value pointer, so
- * a document costs no allocation beyond its own nodes. */
-static inline jsonDoc jsonDocFromValue(void *value) {
+/* How a key's value holds the 8-byte document word.
+ *
+ * Where a pointer is as wide as the word, the word is stored in the value
+ * pointer itself, so a document costs no allocation beyond its own nodes. On
+ * a 32-bit target the value pointer is the address of a heap cell that holds
+ * the word. Building with -DJSON_DOC_BOXED=1 forces the boxed form on any
+ * target, which is how it is tested on 64-bit machines. */
+#ifndef JSON_DOC_BOXED
+#if UINTPTR_MAX >= UINT64_MAX
+#define JSON_DOC_BOXED 0
+#else
+#define JSON_DOC_BOXED 1
+#endif
+#endif
+
+/* The document a value holds. */
+static inline jsonDoc jsonDocFromValue(const void *value) {
+#if JSON_DOC_BOXED
+    return *(const jsonDoc *)value;
+#else
     return (jsonDoc)(uintptr_t)value;
+#endif
 }
-static inline void *jsonDocToValue(jsonDoc d) {
+
+/* A new value holding `d`, for a new key or a copy. */
+static inline void *jsonValueNew(jsonDoc d) {
+#if JSON_DOC_BOXED
+    jsonDoc *cell = ValkeyModule_Alloc(sizeof(*cell));
+    *cell = d;
+    return cell;
+#else
     return (void *)(uintptr_t)d;
+#endif
+}
+
+/* Makes a key that already holds a document hold `d` instead. The document it
+ * held before is not freed: the caller owns it. The key keeps its TTL. */
+static inline void jsonKeyStoreDoc(ValkeyModuleKey *key, jsonDoc d) {
+#if JSON_DOC_BOXED
+    *(jsonDoc *)ValkeyModule_ModuleTypeGetValue(key) = d;
+#else
+    void *old;
+    ValkeyModule_ModuleTypeReplaceValue(key, jsonModuleType, (void *)(uintptr_t)d, &old);
+#endif
 }
 
 /* Configuration, kept current by the config callbacks. */
