@@ -194,6 +194,57 @@ jobs:
             printf '%s: ' "$o"; /tmp/et$o unit > /dev/null 2>/tmp/et$o.err && echo ok || { echo FAIL; tail -3 /tmp/et$o.err; }
           done
 
+  profile-x86:
+    if: contains(github.event.inputs.jobs || 'bench,test', 'profile')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: valkey
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.VALKEY_JSON_REPO }}
+          ref: ${{ env.VALKEY_JSON_SHA }}
+          path: valkey-json
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: Tencent/rapidjson
+          ref: ${{ env.RAPIDJSON_SHA }}
+          path: rapidjson
+      - name: Install perf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)" || sudo apt-get install -y linux-tools-azure
+          sudo sysctl -w kernel.perf_event_paranoid=1
+          perf --version
+      - name: Build
+        run: |
+          cp -a valkey valkey-ref
+          make -C valkey -j"$(nproc)"
+          make -C valkey-ref -j"$(nproc)" BUILD_JSON=no
+          mkdir -p valkey-json/src/include
+          cp valkey/src/valkeymodule.h valkey-json/src/include/
+          cd valkey-json
+          g++ -O3 -DNDEBUG -g -fno-omit-frame-pointer -fPIC -std=gnu++17 -march=nehalem -Wno-mismatched-tags -Wno-format \
+            '-DVALKEYMODULE_ATTR_COMMON=__attribute__((weak))' -Isrc -Isrc/include -I../rapidjson/include \
+            src/json/*.cc -shared -o ../libjson.so
+      - name: Profile a whole-document read of 100,000 records
+        env:
+          BENCH_TMP: /dev/shm
+        run: |
+          B=valkey/.github/json-bench
+          for ev in cycles:u cpu-clock; do
+            echo "== built-in, $ev"
+            PERF_EVENT=$ev python3 $B/prof.py --server valkey/src/valkey-server --keys 100 --secs 8 --top 40 \
+              --server-cpu 0,1 --client-cpu 2 JSON.GET "{big:records100k}"
+          done
+          for ev in cycles:u cpu-clock; do
+            echo "== external module, $ev"
+            PERF_EVENT=$ev python3 $B/prof.py --server valkey-ref/src/valkey-server --module "$PWD/libjson.so" --keys 100 \
+              --secs 8 --top 40 --server-cpu 0,1 --client-cpu 2 JSON.GET "{big:records100k}"
+          done
+
   test-32bit:
     if: contains(github.event.inputs.jobs || 'bench,test', '32bit')
     runs-on: ubuntu-latest
