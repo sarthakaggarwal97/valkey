@@ -348,7 +348,8 @@ jobs:
             --enable-protected-configs yes --enable-debug-command yes --enable-module-command yes
           ./src/valkey-cli cluster addslots $(for slot in {0..16383}; do echo $slot; done); sleep 5
           if [ -n "$JSON_CI_TESTS" ]; then eval "set -- $JSON_CI_TESTS"; else set -- $(.github/json-bench/json-tcl-args.sh); fi
-          ./runtest --host 127.0.0.1 --port 6379 --verbose --cluster-mode \
+          # --durable: a CROSSSLOT exception would otherwise end the whole run.
+          ./runtest --host 127.0.0.1 --port 6379 --verbose --cluster-mode --durable \
             --failures-output test-failures/external-cluster.json "$@"
       - name: Cluster tests, tests/unit/cluster
         if: (success() || failure()) && (env.JSON_CI_TESTS == '' || contains(env.JSON_CI_TESTS, 'unit/cluster'))
