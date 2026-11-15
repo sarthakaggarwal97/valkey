@@ -9,8 +9,8 @@
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 dir="$here/run/ref"
-server=${REF_SERVER:-$HOME/workspace/valkey/json-m0/compat/bin/valkey-server-ref}
-module=${REF_MODULE:-$HOME/workspace/valkey-json-pr95/build/src/libjson.dylib}
+server=${REF_SERVER:?set REF_SERVER to a valkey-server built with BUILD_JSON=no}
+module=${REF_MODULE:?set REF_MODULE to the external valkey-json shared library}
 case "$1" in
 start)
     mkdir -p "$dir"

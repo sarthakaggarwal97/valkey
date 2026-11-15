@@ -33,9 +33,6 @@ proc json_external_module_path {} {
     set candidates {}
     if {[info exists ::env(VALKEY_JSON_EXTERNAL_MODULE)]} {
         lappend candidates $::env(VALKEY_JSON_EXTERNAL_MODULE)
-    } else {
-        set ext [expr {$::tcl_platform(os) eq "Darwin" ? "dylib" : "so"}]
-        lappend candidates [file join $::env(HOME) workspace valkey-json-pr95 build src libjson.$ext]
     }
     foreach path $candidates {
         if {[file exists $path]} { return [file normalize $path] }

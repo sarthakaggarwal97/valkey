@@ -14,7 +14,8 @@ WARN = -std=gnu11 -W -Wall -Wextra -Wshadow -Wstrict-prototypes
 CFLAGS_T = $(WARN) -g -DJSON_PATH_DEBUG -I$(SRC)
 ENGINE = $(SRC)/json_engine.c $(SRC)/json_num.c
 SAN = -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
-MODULE_TESTS ?= $(HOME)/workspace/valkey-json-pr95/tst
+# The external valkey-json checkout's tst directory, for regenerating the corpus.
+MODULE_TESTS ?=
 
 B = build
 

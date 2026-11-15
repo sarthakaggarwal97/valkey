@@ -46,10 +46,13 @@ sys.setrecursionlimit(100000)  # Replies nest as deep as the documents do.
 HERE = os.path.dirname(os.path.abspath(__file__))
 TREE = os.path.normpath(os.path.join(HERE, "..", "..", "..", "..", ".."))
 NEW_SERVER = os.environ.get("JSON_NEW_SERVER", os.path.join(TREE, "src", "valkey-server"))
-REF_SERVER = os.environ.get("JSON_REF_SERVER", "/Users/sarthagg/workspace/valkey/json-m0/compat/bin/valkey-server-ref")
-REF_MODULE = os.environ.get(
-    "JSON_REF_MODULE", os.path.expanduser("~/workspace/valkey-json-pr95/build/src/libjson.dylib")
-)
+# The reference: a valkey-server built without JSON (make BUILD_JSON=no) and
+# the external valkey-json module's shared library. Both must be given.
+REF_SERVER = os.environ.get("JSON_REF_SERVER", "")
+REF_MODULE = os.environ.get("JSON_REF_MODULE", "")
+if not REF_SERVER or not REF_MODULE:
+    sys.exit("Set JSON_REF_SERVER (a valkey-server built with BUILD_JSON=no) and "
+             "JSON_REF_MODULE (the external valkey-json shared library).")
 # Extra arguments for the candidate. Setting JSON_NEW_SERVER to the reference
 # binary and this to "--loadmodule <module>" runs the reference against itself,
 # which checks the harness.

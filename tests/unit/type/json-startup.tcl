@@ -7,17 +7,13 @@
 #     not start (design change B10).
 #
 # The tests that need the external valkey-json module look for its shared
-# library at $::env(VALKEY_JSON_EXTERNAL_MODULE), or at
-# ~/workspace/valkey-json-pr95/build/src/libjson.{dylib,so}. Without it they
-# are skipped with a message.
+# library at $::env(VALKEY_JSON_EXTERNAL_MODULE). Without it they are skipped
+# with a message.
 
 proc json_external_module_path {} {
     set candidates {}
     if {[info exists ::env(VALKEY_JSON_EXTERNAL_MODULE)]} {
         lappend candidates $::env(VALKEY_JSON_EXTERNAL_MODULE)
-    } else {
-        set ext [expr {$::tcl_platform(os) eq "Darwin" ? "dylib" : "so"}]
-        lappend candidates [file join $::env(HOME) workspace valkey-json-pr95 build src libjson.$ext]
     }
     foreach path $candidates {
         if {[file exists $path]} { return [file normalize $path] }
