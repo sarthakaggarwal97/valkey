@@ -182,6 +182,13 @@ jobs:
           make CC=gcc build/engine_test build/engine_test_san
           ./build/engine_test unit || true
           ASAN_OPTIONS=detect_leaks=0 ./build/engine_test_san unit || true
+          gcc -std=gnu11 -O2 -I../.. -o /tmp/probe ../../../../../.github/json-bench/numprobe.c ../../json_engine.c ../../json_num.c -lm
+          /tmp/probe 43591.010316006538 1.4262204137704003 0.9007199254740993 -0.000553789539555825165 \
+            0.0000000000000000000000000000012 0.0000000001234567890123456789012 999999999999999999.9 \
+            -9007199254740993.0 19.90 0.1 123456789012.345
+          clang --version | head -1 || true
+          clang -std=gnu11 -O2 -I../.. -o /tmp/probe-clang ../../../../../.github/json-bench/numprobe.c ../../json_engine.c ../../json_num.c -lm && \
+            /tmp/probe-clang 43591.010316006538 0.0000000001234567890123456789012 -9007199254740993.0 || true
           for o in -O0 -O1 -O2 -O3; do
             gcc -std=gnu11 -g $o -W -Wall -o /tmp/et$o engine_test.c ../../json_engine.c ../../json_num.c -lpthread -lm
             printf '%s: ' "$o"; /tmp/et$o unit > /dev/null 2>/tmp/et$o.err && echo ok || { echo FAIL; tail -3 /tmp/et$o.err; }
