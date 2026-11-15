@@ -456,8 +456,8 @@ jobs:
             tests/tmp
 
   valgrind:
-    # Upstream's test-valgrind-test, restricted to the JSON files and
-    # tests/unit/type, in shards so that each fits in a job.
+    # Upstream's test-valgrind-test: its shards unit, cluster and integration,
+    # with tests/unit/type split out into JSON and other shards.
     name: valgrind (${{ matrix.shard }})
     if: contains(format(',{0},', github.event.inputs.jobs), ',valgrind,')
     runs-on: ubuntu-latest
@@ -465,7 +465,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(github.event.inputs.tests != '' && '["targeted"]' || '["json-1", "json-2", "json-3", "type-1", "type-2"]') }}
+        shard: ${{ fromJSON(github.event.inputs.tests != '' && '["targeted"]' || '["json-1", "json-2", "json-3", "type-1", "type-2", "unit", "cluster", "integration"]') }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install libbacktrace
@@ -490,6 +490,9 @@ jobs:
             json-3) set -- $u/json-num $u/json-path $u/json-robust integration/json-persistence integration/json-replication ;;
             type-1) set -- $u/hash $u/incr $u/list $u/list-2 $u/list-3 $u/path_hash ;;
             type-2) set -- $u/set $u/stream $u/stream-cgroups $u/string $u/zset ;;
+            unit) set -- tests/unit ;;
+            cluster) set -- tests/unit/cluster ;;
+            integration) set -- tests/integration ;;
             targeted) set -- ;;
           esac
           args=""
