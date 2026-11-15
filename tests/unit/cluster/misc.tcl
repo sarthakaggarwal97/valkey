@@ -72,6 +72,79 @@ start_cluster 1 1 {tags {external:skip cluster} overrides {cluster-config-save-b
     }
 }
 
+# Return the lastVoteEpoch saved in the given cluster config file.
+proc get_saved_last_vote_epoch {cluster_conf_path} {
+    set fd [open $cluster_conf_path r]
+    set content [read $fd]
+    close $fd
+    if {![regexp {lastVoteEpoch (\d+)} $content -> epoch]} {
+        fail "No lastVoteEpoch found in $cluster_conf_path"
+    }
+    return $epoch
+}
+
+start_cluster 2 1 {tags {external:skip cluster} overrides {cluster-config-save-behavior sync}} {
+    test {cluster-config-save-behavior sync mode - failover vote is not sent before it is saved} {
+        # R0 and R1 are the primaries and R2 is a replica of R0, so R2 can
+        # only win an election with the votes of both R0 and R1.
+        set dir [lindex [R 1 config get dir] 1]
+        set cluster_conf [lindex [R 1 config get cluster-config-file] 1]
+        set cluster_conf_path [file join $dir $cluster_conf]
+
+        # Stall R1 in a busy script. It still handles the cluster bus, but it
+        # does not get to save its config file until the script is done.
+        R 1 config set busy-reply-threshold 10
+        set rd [valkey_deferring_client -1]
+        $rd eval {while true do end} 0
+        wait_for_condition 50 100 {
+            [catch {R 1 ping} e] == 1 && [string match {BUSY*} $e]
+        } else {
+            fail "R1 did not enter BUSY state"
+        }
+
+        # Use a long manual failover timeout, so that R2 can also be elected
+        # after the script in case R1 holds its vote until it is saved.
+        R 2 config set cluster-manual-failover-timeout 60000
+        R 2 cluster failover force
+
+        # See if R2 gets the vote of R1 while R1 is not able to save it.
+        set elected_while_busy 0
+        set retries 50
+        while {[incr retries -1] >= 0} {
+            if {[s -2 role] eq {master}} {
+                set elected_while_busy 1
+                break
+            }
+            after 100
+        }
+        set saved_epoch [get_saved_last_vote_epoch $cluster_conf_path]
+
+        # Take R1 out of the BUSY state before checking anything.
+        R 1 script kill
+        catch {$rd read}
+        $rd close
+        wait_for_condition 50 100 {
+            [catch {R 1 ping}] == 0
+        } else {
+            fail "R1 did not leave BUSY state"
+        }
+
+        if {!$elected_while_busy} {
+            wait_for_condition 1000 50 {
+                [s -2 role] eq {master}
+            } else {
+                fail "R2 did not win the election"
+            }
+            set saved_epoch [get_saved_last_vote_epoch $cluster_conf_path]
+        }
+
+        # By the time R2 counted the vote of R1 and won the election, the
+        # vote must have been in the config file of R1.
+        set epoch [CI 2 cluster_my_epoch]
+        assert_equal $saved_epoch $epoch "R2 won the election for epoch $epoch with the vote of R1, but the nodes.conf of R1 had lastVoteEpoch $saved_epoch"
+    }
+}
+
 start_cluster 1 1 {tags {external:skip cluster} overrides {cluster-config-save-behavior best-effort}} {
     test {cluster-config-save-behavior best-effort mode - node continues running when config save fails} {
         # Create folder that can cause the rename fail.
