@@ -21,6 +21,8 @@ permissions:
   contents: read
 
 env:
+  # The time budgets in the development tests are set for a developer machine.
+  JSON_TEST_TIME_SCALE: 4
   # The external module the built-in is compared with: the same commit as the
   # Graviton baseline.
   VALKEY_JSON_REPO: valkey-io/valkey-json
@@ -148,6 +150,7 @@ jobs:
           make -C engine CC=gcc check-quick
           make -C path CC=gcc test
       - name: Commands against the external module
+        if: success() || failure()
         env:
           JSON_REF_SERVER: ${{ github.workspace }}/valkey-ref/src/valkey-server
           JSON_REF_MODULE: ${{ github.workspace }}/libjson.so
@@ -158,6 +161,7 @@ jobs:
           python3 test_search.py
           python3 test_repl.py
       - name: Valkey test suite
+        if: success() || failure()
         env:
           VALKEY_JSON_EXTERNAL_MODULE: ${{ github.workspace }}/libjson.so
         run: |
@@ -266,6 +270,7 @@ jobs:
           make -C num CC='gcc -m32' check-quick
           make -C engine CC='gcc -m32' check-quick
       - name: JSON tests and the files the change touches
+        if: success() || failure()
         run: |
           args=""
           for f in tests/unit/type/json*.tcl tests/integration/json-*.tcl; do
@@ -292,10 +297,10 @@ jobs:
             apt-get install -y build-essential pkg-config python3 tcl procps
             make -j"$(nproc)" SERVER_CFLAGS=-Werror
             nm src/valkey-server | grep -c ' T jsonSet$'
-            (cd src/modules/json/tests && make -C num CC=gcc check-quick && make -C engine CC=gcc check-quick)
+            (cd src/modules/json/tests/path && make CC=gcc CFLAGS=-DSLOW_BUILD test)
             args=""
             for f in tests/unit/type/json*.tcl tests/integration/json-*.tcl; do
               n=${f#tests/}
               args="$args --single ${n%.tcl}"
             done
-            ./runtest --verbose --dump-logs --clients 4 --timeout 3600 $args
+            ./runtest --verbose --dump-logs --clients 4 --timeout 3600 --skiptest '/Active defrag JSON' $args

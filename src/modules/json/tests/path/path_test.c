@@ -1431,10 +1431,24 @@ static void stepTests(void) {
 #define SLOW_BUILD 1
 #endif
 #ifdef SLOW_BUILD
-#define TIME_SCALE 12.0
+#define TIME_SCALE_BUILD 12.0
 #else
-#define TIME_SCALE 1.0
+#define TIME_SCALE_BUILD 1.0
 #endif
+
+/* The time budgets are set for a developer machine. JSON_TEST_TIME_SCALE
+ * multiplies them on a slower one, such as a shared CI runner or an emulator.
+ * The memory budgets do not change. */
+static double timeScale(void) {
+    static double scale = 0;
+    if (scale == 0) {
+        const char *env = getenv("JSON_TEST_TIME_SCALE");
+        double f = env ? atof(env) : 1.0;
+        scale = TIME_SCALE_BUILD * (f >= 1.0 ? f : 1.0);
+    }
+    return scale;
+}
+#define TIME_SCALE (timeScale())
 
 static char *repeatText(const char *head, const char *unit, int times, const char *tail) {
     size_t hl = strlen(head), ul = strlen(unit), tl = strlen(tail);
