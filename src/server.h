@@ -1982,6 +1982,7 @@ struct valkeyServer {
     int enable_protected_configs;             /* Enable the modification of protected configs, see PROTECTED_ACTION_ALLOWED_* */
     int enable_debug_cmd;                     /* Enable DEBUG commands, see PROTECTED_ACTION_ALLOWED_* */
     int enable_module_cmd;                    /* Enable MODULE commands, see PROTECTED_ACTION_ALLOWED_* */
+    int json_enabled;                         /* Load the built-in JSON module at startup */
     int enable_debug_assert;                  /* Enable debug asserts */
     int debug_client_enforce_reply_list;      /* Force client to always use the reply list */
     int debug_force_free_primary_async;       /* Force freeClient on primary to use async path */

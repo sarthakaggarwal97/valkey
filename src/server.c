@@ -8208,6 +8208,13 @@ __attribute__((weak)) int main(int argc, char **argv) {
     }
     if (!server.sentinel_mode) {
         moduleInitModulesSystemLast();
+#ifdef JSON_ENABLED
+        /* The built-in JSON module is loaded before the configured modules,
+         * so that a module looking for "json" while it loads finds it. */
+        if (server.json_enabled && moduleLoadStatic("json", NULL, 0, 0) != C_OK) {
+            serverPanic("JSON module initialization failed, check the server logs.");
+        }
+#endif
         moduleLoadFromQueue();
     }
     ACLLoadUsersAtStartup();

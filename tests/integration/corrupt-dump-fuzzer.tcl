@@ -59,6 +59,16 @@ proc generate_types {} {
     # field names than the master recorded
     r xadd streambig * item 1 value 1
     r xadd streambig * item 1 unique value
+
+    # JSON documents, if the server has the built-in JSON module: one that fits
+    # a single packed block and one large enough to be stored as a tree.
+    if {![catch {r json.set json . {{"a":1,"b":[1,2.50,"x",true,null],"c":{"d":"e"}}}}]} {
+        set items {}
+        for {set j 0} {$j < 300} {incr j} {
+            lappend items "{\"id\":$j,\"name\":\"item-$j\",\"price\":[expr {$j * 3}].25,\"tags\":\[\"x\",\"y$j\"\]}"
+        }
+        r json.set jsonbig . "\[[join $items ,]\]"
+    }
 }
 
 proc corrupt_payload {payload} {

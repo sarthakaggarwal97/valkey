@@ -876,6 +876,16 @@ proc latencyrstat_percentiles {cmd r} {
 # When adding a new data type & its commands here, do create a key of that type
 # in generate_types in tests/integration/corrupt-dump-fuzzer.tcl, otherwise the
 # fuzzer has no coverage for it.
+# 1 if the server binary has the built-in JSON module. It is left out by
+# BUILD_JSON=no and on 32-bit and big-endian targets. The entry point's name is
+# in the binary exactly when the module is.
+proc server_has_json {} {
+    if {![info exists ::server_has_json]} {
+        set ::server_has_json [expr {![catch {exec grep -a -q "ValkeyModule_OnLoad_json" $::VALKEY_SERVER_BIN}]}]
+    }
+    return $::server_has_json
+}
+
 proc fuzzy_traffic_commands_by_type {} {
     # Commands per type, blocking commands removed
     # TODO: extract these from COMMAND DOCS, and improve to include other types
@@ -886,7 +896,13 @@ proc fuzzy_traffic_commands_by_type {} {
     set set_commands {SADD SCARD SDIFF SDIFFSTORE SINTER SINTERSTORE SISMEMBER SMEMBERS SMOVE SPOP SRANDMEMBER SREM SSCAN SUNION SUNIONSTORE}
     set stream_commands {XACK XADD XCLAIM XDEL XGROUP XINFO XLEN XPENDING XRANGE XREAD XREADGROUP XREVRANGE XTRIM}
     set pathhash_commands {PHPATHCOUNT PHDEL PHPATHDEL PHPATHEXISTS PHGET PHGETALL PHMGET PHMSET PHPREFIXES PHSCAN PHPATHSCAN PHSET}
-    return [dict create string $string_commands hash $hash_commands zset $zset_commands list $list_commands set $set_commands stream $stream_commands pathhash $pathhash_commands]
+    set json_commands {JSON.SET JSON.GET JSON.MGET JSON.MSET JSON.MERGE JSON.DEL JSON.FORGET JSON.TYPE JSON.RESP JSON.CLEAR JSON.TOGGLE JSON.NUMINCRBY JSON.NUMMULTBY JSON.STRLEN JSON.STRAPPEND JSON.OBJLEN JSON.OBJKEYS JSON.ARRLEN JSON.ARRAPPEND JSON.ARRINSERT JSON.ARRINDEX JSON.ARRPOP JSON.ARRTRIM}
+    set commands [dict create string $string_commands hash $hash_commands zset $zset_commands list $list_commands set $set_commands stream $stream_commands pathhash $pathhash_commands]
+    # The JSON type is there unless the server was built or started without it.
+    if {![catch {r command info json.set} info] && [lindex $info 0] ne ""} {
+        dict set commands ReJSON-RL $json_commands
+    }
+    return $commands
 }
 
 proc generate_fuzzy_traffic_on_key {key duration} {

@@ -1,0 +1,833 @@
+$	$ END
+.	END
+$.	$ ERR(12)
+$$	$ m:$! END
+$.$	$ m:$! END
+..	+1 .. END
+$..	$+1 .. END
+$...	$+1 ..! END
+....	+1 ..!+1 .. END
+$..a	$+1 .. m:a! END
+$..a..a	$+1 .. m:a+1 .. m:a! END
+$..a..b	$+1 .. m:a+1 .. m:b! END
+$..b	$+1 .. m:b! END
+$..*	$+1 .. * END
+$..[*]	$+1 .. * END
+$..[0]	$+1 .. i:0 END
+$..[0,0]	$+1 .. u:0,0 END
+$..[-1]	$+1 .. i:-1 END
+$..[?(@.a)]	$+1 .. f{attr(a)/3} END
+$..[?(@.a>1)]	$+1 .. f{cmp(a>1)/4} END
+$..a[?(@.a)]	$+1 .. m:a f{attr(a)/3} END
+$..['a','b']	$+1 .. n:a,b END
+..a	+1 .. m:a! END
+..a.a	+1 .. m:a m:a! END
+...a	+1 ..! m:a! END
+..$.a	+1 .. $ m:a! END
+..$	+1 .. $ END
+$..$	$+1 .. $ END
+$..$.a	$+1 .. $ m:a! END
+$.a..	$ m:a!+1 .. END
+$.a...a	$ m:a+1 ..! m:a! END
+$..a.b..a	$+1 .. m:a m:b+1 .. m:a! END
+$..x..a	$+1 .. m:x+1 .. m:a! END
+$.a	$ m:a! END
+$.a.a	$ m:a m:a! END
+$.a.a.a	$ m:a m:a m:a! END
+$.a.a.a.a	$ m:a m:a m:a m:a! END
+$.b	$ m:b! END
+$.b.c	$ m:b m:c! END
+$.b.a.a	$ m:b m:a m:a! END
+$.zz	$ m:zz! END
+$.zz.yy	$ m:zz m:yy! END
+$.zz.yy.xx	$ m:zz m:yy m:xx! END
+$.new	$ m:new! END
+$.newkey	$ m:newkey! END
+$.b.newkey	$ m:b m:newkey! END
+$.b.zz.yy	$ m:b m:zz m:yy! END
+$.a.newkey	$ m:a m:newkey! END
+$.s.newkey	$ m:s m:newkey! END
+$.e.newkey	$ m:e m:newkey! END
+$.newkey]	$ m:newkey! ERR(12)
+$.newkey[	$ m:newkey! ERR(16)
+$.newkey.	$ m:newkey! ERR(12)
+$.newkey..	$ m:newkey!+1 .. END
+$.newkey*	$ m:newkey*! END
+$.newkey[0]	$ m:newkey i:0 END
+$['newkey']	$ m:newkey! END
+$['newkey'].	$ m:newkey! ERR(12)
+$['newkey'].x	$ m:newkey m:x! END
+$["newkey"]	$ m:newkey! END
+$['newkey','b']	$ n:newkey,b END
+$.*.newkey	$ * m:newkey! END
+$[*].newkey	$ * m:newkey! END
+$..newkey	$+1 .. m:newkey! END
+$.b~1c	$ m:b~1c! END
+$.b~0c	$ m:b~0c! END
+$.b/c	$ m:b/c! END
+$.k~1	$ m:k~1! END
+$['k~1']	$ m:k~1! END
+$['a/b']	$ m:a/b! END
+$.a/b	$ m:a/b! END
+$.a.b	$ m:a m:b! END
+$['a.b']	$ m:a.b! END
+$.a b	$ m:a ERR(12)
+$['a b']	$ m:a b! END
+$["a b"]	$ m:a b! END
+$.a'b	$ m:a ERR(12)
+$['a\'b']	$ m:a'b! END
+$["a'b"]	$ m:a'b! END
+$['q"r']	$ m:q"r! END
+$["q\"r"]	$ m:q"r! END
+$["q\\"]	$ ERR(21)
+$["q\\" ]	$ ERR(21)
+$['']	$ m:! END
+$[""]	$ m:! END
+$.''	$ ERR(12)
+$.$x	$ m:$x! END
+$['$x']	$ m:$x! END
+$.*	$ * END
+$.*.*	$ * * END
+$.*.*.*	$ * * * END
+$[*]	$ * END
+$[*][*]	$ * * END
+$[*].*	$ * * END
+$.*[*]	$ * * END
+$.*.a	$ * m:a! END
+$.*a	$ * m:a! END
+$.**	$ * * END
+$.*.	$ * END
+$[*].	$ * END
+$[*]..	$ *+1 .. END
+$[*]$	$ * $ END
+$.*$	$ * $ END
+$[*].$	$ * m:$! END
+$.a*	$ m:a*! END
+$.a[*]	$ m:a * END
+$.a.*	$ m:a * END
+$.b.*	$ m:b * END
+$.s.*	$ m:s * END
+$.s[*]	$ m:s * END
+$.n.*	$ m:n * END
+$.o.*	$ m:o * END
+$.e[*]	$ m:e * END
+.*	* END
+.*.*	* * END
+.a.*	m:a * END
+.s.*	m:s * END
+.a[*]	m:a * END
+[*]	* END
+*	* END
+*.a	* m:a! END
+$[ * ]	$ * END
+$[* ]	$ * END
+$[ *]	$ * END
+$[*] .a	$ * m:a! END
+$[*]. a	$ * ERR(12)
+$.a[0]	$ m:a i:0 END
+$.a[1]	$ m:a i:1 END
+$.a[4]	$ m:a i:4 END
+$.a[5]	$ m:a i:5 END
+$.a[-1]	$ m:a i:-1 END
+$.a[-5]	$ m:a i:-5 END
+$.a[-6]	$ m:a i:-6 END
+$.a[+1]	$ m:a i:1 END
+$.a[ 1 ]	$ m:a i:1 END
+$.a[1 ]	$ m:a i:1 END
+$.a[ 1]	$ m:a i:1 END
+$.a[01]	$ m:a i:1 END
+$.a[1x]	$ m:a ERR(1)
+$.a[x]	$ m:a ERR(17)
+$.a[- 1]	$ m:a ERR(17)
+$.a[--1]	$ m:a ERR(17)
+$.a[1.0]	$ m:a ERR(1)
+$.a[]	$ m:a ERR(17)
+$.a[	$ m:a! ERR(16)
+$.a[1	$ m:a ERR(1)
+$.a]	$ m:a! ERR(12)
+$.a[0].x	$ m:a i:0 m:x! END
+$.b[0]	$ m:b i:0 END
+$.s[0]	$ m:s i:0 END
+$.e[0]	$ m:e i:0 END
+$[0]	$ i:0 END
+$[1]	$ i:1 END
+$[0][0]	$ i:0 i:0 END
+$[0][1]	$ i:0 i:1 END
+$[3][0][1]	$ i:3 i:0 i:1 END
+$[0].a	$ i:0 m:a! END
+$[0].c[1]	$ i:0 m:c i:1 END
+$[3]	$ i:3 END
+[0]	i:0 END
+.[0]	i:0 END
+$.[0]	$ i:0 END
+$.a.[0]	$ m:a i:0 END
+$..[1]	$+1 .. i:1 END
+.a[0]	m:a i:0 END
+.a[5]	m:a i:5 END
+.a[-1]	m:a i:-1 END
+.b[0]	m:b i:0 END
+.a.b	m:a m:b! END
+.zz	m:zz! END
+.zz.yy	m:zz m:yy! END
+.b.zz	m:b m:zz! END
+.a[0].b	m:a i:0 m:b! END
+a	m:a! END
+a.a	m:a m:a! END
+a[0]	m:a i:0 END
+b.c	m:b m:c! END
+store.books[0].title	m:store m:books i:0 m:title! END
+$.a[0:2]	$ m:a s:0:2:1 END
+$.a[1:]	$ m:a s:1:E:1 END
+$.a[:2]	$ m:a s:0:2:1 END
+$.a[:]	$ m:a s:0:E:1 END
+$.a[::]	$ m:a s:0:E:1 END
+$.a[::2]	$ m:a s:0:E:2 END
+$.a[1::2]	$ m:a s:1:E:2 END
+$.a[:3:2]	$ m:a s:0:3:2 END
+$.a[1:4:2]	$ m:a s:1:4:2 END
+$.a[-2:]	$ m:a s:-2:E:1 END
+$.a[:-2]	$ m:a s:0:-2:1 END
+$.a[-3:-1]	$ m:a s:-3:-1:1 END
+$.a[3:1]	$ m:a s:3:1:1 END
+$.a[4:1:-1]	$ m:a s:4:1:-1 END
+$.a[5:0:-1]	$ m:a s:5:0:-1 END
+$.a[::-1]	$ m:a s:0:E:-1 END
+$.a[4::-1]	$ m:a s:4:E:-1 END
+$.a[-1::-1]	$ m:a s:-1:E:-1 END
+$.a[0:100]	$ m:a s:0:100:1 END
+$.a[-100:100]	$ m:a s:-100:100:1 END
+$.a[100:]	$ m:a s:100:E:1 END
+$.a[1:2:0]	$ m:a ERR(18,arr)
+$.a[::0]	$ m:a ERR(18,arr)
+$.a[ 1 : 3 ]	$ m:a s:1:3:1 END
+$.a[1 :3]	$ m:a s:1:3:1 END
+$.a[1: 3]	$ m:a s:1:3:1 END
+$.a[1:3 ]	$ m:a s:1:3:1 END
+$.a[ : ]	$ m:a s:0:E:1 END
+$.a[ :2]	$ m:a s:0:2:1 END
+$.a[: 2]	$ m:a s:0:2:1 END
+$.a[1:3: 1]	$ m:a s:1:3:1 END
+$.a[1:3 :1]	$ m:a s:1:3:1 END
+$.a[1:3:1 ]	$ m:a s:1:3:1 END
+$.a[::1 ]	$ m:a s:0:E:1 END
+$.a[::1 ] .x	$ m:a s:0:E:1 m:x! END
+$.a[1:x]	$ m:a ERR(17,arr)
+$.a[x:1]	$ m:a ERR(17)
+$.a[1:2:x]	$ m:a ERR(17,arr)
+$.a[1:2:3:4]	$ m:a ERR(1,arr)
+$.a[1:	$ m:a ERR(17,arr)
+$.a[1:2	$ m:a ERR(1,arr)
+$.a[1:2:	$ m:a ERR(17,arr)
+$.a[:	$ m:a ERR(17,arr)
+$.a[::	$ m:a ERR(17,arr)
+$.b[0:2]	$ m:b s:0:2:1 END
+$.b[:]	$ m:b s:0:E:1 END
+$.b[1:x]	$ m:b ERR(17,arr)
+$.b[:x]	$ m:b ERR(17,arr)
+$.s[0:1]	$ m:s s:0:1:1 END
+$.e[:]	$ m:e s:0:E:1 END
+$[0:2]	$ s:0:2:1 END
+$[1:3][0]	$ s:1:3:1 i:0 END
+$[:][0]	$ s:0:E:1 i:0 END
+$[0:2].a	$ s:0:2:1 m:a! END
+$[:].c[0]	$ s:0:E:1 m:c i:0 END
+.a[0:2]	m:a s:0:2:1 END
+.a[:]	m:a s:0:E:1 END
+.b[:]	m:b s:0:E:1 END
+.a[1:x]	m:a ERR(17,arr)
+.b[1:x]	m:b ERR(17,arr)
+$.a[0,1]	$ m:a u:0,1 END
+$.a[0,2,4]	$ m:a u:0,2,4 END
+$.a[4,0]	$ m:a u:4,0 END
+$.a[0,0]	$ m:a u:0,0 END
+$.a[0,-1]	$ m:a u:0,-1 END
+$.a[-1,-2]	$ m:a u:-1,-2 END
+$.a[0,10]	$ m:a u:0,10 END
+$.a[10,0]	$ m:a u:10,0 END
+$.a[10,11]	$ m:a u:10,11 END
+$.a[0, 1]	$ m:a u:0,1 END
+$.a[0 ,1]	$ m:a u:0,1 END
+$.a[ 0 , 1 ]	$ m:a u:0,1 END
+$.a[0,1 ]	$ m:a u:0,1 END
+$.a[0,,1]	$ m:a ERR(1,arr)
+$.a[0,]	$ m:a ERR(1,arr)
+$.a[,0]	$ m:a ERR(1)
+$.a[0,1,]	$ m:a ERR(1,arr)
+$.a[0 1]	$ m:a ERR(1)
+$.a[0, 1 2]	$ m:a u:0,12 END
+$.a[0,x]	$ m:a ERR(17,arr)
+$.a[0,1	$ m:a ERR(1,arr)
+$.a[0,	$ m:a ERR(17,arr)
+$.e[0,1]	$ m:e u:0,1 END
+$.b[0,1]	$ m:b u:0,1 END
+$.b[0,x]	$ m:b ERR(17,arr)
+$.s[0,1]	$ m:s u:0,1 END
+$[0,1]	$ u:0,1 END
+$[0,1][0]	$ u:0,1 i:0 END
+$[0,1,2][0]	$ u:0,1,2 i:0 END
+$[2,1,0][0]	$ u:2,1,0 i:0 END
+$[0,2][5]	$ u:0,2 i:5 END
+$[1,0].a	$ u:1,0 m:a! END
+.a[0,1]	m:a u:0,1 END
+.a[1,0]	m:a u:1,0 END
+.e[0,1]	m:e u:0,1 END
+.b[0,1]	m:b u:0,1 END
+$['a']	$ m:a! END
+$["a"]	$ m:a! END
+$['a']['a']	$ m:a m:a! END
+$['b']['c']	$ m:b m:c! END
+$['a'][0]	$ m:a i:0 END
+$['a','b']	$ n:a,b END
+$['b','a']	$ n:b,a END
+$['a','a']	$ n:a,a END
+$['a','zz']	$ n:a,zz END
+$['zz','yy']	$ n:zz,yy END
+$["a","b"]	$ n:a,b END
+$['a',"b"]	$ n:a,b END
+$['a' , 'b']	$ n:a,b END
+$[ 'a','b' ]	$ n:a,b END
+$['a','b' ]	$ n:a,b END
+$['a','b'].c	$ n:a,b m:c! END
+$['a','b'][0]	$ n:a,b i:0 END
+$['a','b'].a	$ n:a,b m:a! END
+$['a',]	$ ERR(1)
+$[,'a']	$ ERR(1)
+$['a''b']	$ ERR(1)
+$['a' 'b']	$ ERR(1)
+$['a	$ ERR(1)
+$['a'	$ ERR(1)
+$["a	$ ERR(21)
+$["a"	$ ERR(1)
+$['a']x	$ m:a! m:x! END
+$['a'].	$ m:a! ERR(12)
+$[a]	$ ERR(17)
+$[ 'a' ]	$ m:a! END
+$[ "a" ]	$ m:a! END
+$['a' ]	$ m:a! END
+$[ 'a']	$ m:a! END
+$.b['c']	$ m:b m:c! END
+$.b['c','a']	$ m:b n:c,a END
+$.s['a']	$ m:s m:a! END
+$.s['a','b']	$ m:s n:a,b END
+$.a['a']	$ m:a m:a! END
+$.a['a','b']	$ m:a n:a,b END
+['a']	m:a! END
+.['a']	m:a! END
+$.['a']	$ m:a! END
+$.b.['c']	$ m:b m:c! END
+$..['a']	$+1 .. m:a! END
+$["é"]	$ m:é! END
+$["a\nb"]	$ m:a\x0ab! END
+$["😀"]	$ m:😀! END
+$["\ud83d"]	$ ERR(21)
+$["\x"]	$ ERR(21)
+$['\x']	$ m:\x! END
+$['a\\']	$ ERR(1)
+$['a\tb']	$ m:a\x09b! END
+$['\'']	$ m:'! END
+$[?(@.a)]	$ f{attr(a)/3} END
+$[?(@.c)]	$ f{attr(c)/3} END
+$[?(@.zz)]	$ f{attr(zz)/3} END
+$[?(@.a==1)]	$ f{cmp(a==1)/4} END
+$[?(@.a==2)]	$ f{cmp(a==2)/4} END
+$[?(@.a==2.0)]	$ f{cmp(a==2)/4} END
+$[?(@.a!=2)]	$ f{cmp(a!=2)/4} END
+$[?(@.a>1)]	$ f{cmp(a>1)/4} END
+$[?(@.a>=2)]	$ f{cmp(a>=2)/4} END
+$[?(@.a<2)]	$ f{cmp(a<2)/4} END
+$[?(@.a<=2)]	$ f{cmp(a<=2)/4} END
+$[?(@.a=="1")]	$ f{cmp(a=='1')/4} END
+$[?(@.a=='1')]	$ f{cmp(a=='1')/4} END
+$[?(@.a==null)]	$ f{cmp(a==null)/4} END
+$[?(@.a!=null)]	$ f{cmp(a!=null)/4} END
+$[?(@.a==true)]	$ f{cmp(a==true)/4} END
+$[?(@.b=="x")]	$ f{cmp(b=='x')/4} END
+$[?(@.b=='x')]	$ f{cmp(b=='x')/4} END
+$[?(@.b!="x")]	$ f{cmp(b!='x')/4} END
+$[?(@.b>"x")]	$ f{cmp(b>'x')/4} END
+$[?(@.b>="y")]	$ f{cmp(b>='y')/4} END
+$[?(@.b<"y")]	$ f{cmp(b<'y')/4} END
+$[?(@.b=="x")].a	$ f{cmp(b=='x')/4} m:a! END
+$[?(@.a>1)].b	$ f{cmp(a>1)/4} m:b! END
+$[?(@.a>1)].c[0]	$ f{cmp(a>1)/4} m:c i:0 END
+$[?(@.a>1)].c[*]	$ f{cmp(a>1)/4} m:c * END
+$[?(@.a>1)][0]	$ f{cmp(a>1)/4} i:0 END
+$[?(@.a>1)]..a	$ f{cmp(a>1)/4}+1 .. m:a! END
+$[?(@.a>1)].	$ f{cmp(a>1)/4}<END> ERR(12)
+$[?(@.a>1)]$	$ f{cmp(a>1)/4}<$ END> m:$! END
+$[?(@.a>1)].$	$ f{cmp(a>1)/4} m:$! END
+$[?(@.a>1)] .b	$ f{cmp(a>1)/4} m:b! END
+$[?(@.a>1) ].b	$ f{cmp(a>1)/4} m:b! END
+$[?(@.a>1) ] .b	$ f{cmp(a>1)/4} m:b! END
+$[?(@.a>1)].  b	$ f{cmp(a>1)/4}<ERR(12)> m:b! END
+$[?(@.a>1)]b	$ f{cmp(a>1)/4} m:b! END
+$[ ?(@.a>1)]	$ f{cmp(a>1)/4} END
+$[? (@.a>1)]	$ ERR(1)
+$[?( @.a>1)]	$ f{cmp(a>1)/4} END
+$[?(@ .a>1)]	$ f{cmp(a>1)/4} END
+$[?(@. a>1)]	$ f{err(12)/3}
+$[?(@.a >1)]	$ f{cmp(a>1)/4} END
+$[?(@.a> 1)]	$ f{cmp(a>1)/4} END
+$[?(@.a>1 )]	$ f{cmp(a>1)/4} END
+$[?(@.a > 1 )]	$ f{cmp(a>1)/4} END
+$[?(  @.a  >  1  )  ]	$ f{cmp(a>1)/4} END
+$[?(@.a>1)	$ f{cmp(a>1)/4 err(1)/4}
+$[?(@.a>1	$ f{cmp(a>1)/4 err(1)/4}
+$[?(@.a>	$ f{err(13)/4}
+$[?(@.a	$ f{attr(a)/3 err(1)/3}
+$[?(@.	$ f{err(12)/3}
+$[?(@	$ f{err(1)/3}
+$[?(	$ f{err(13)/4}
+$[?	$ ERR(1)
+$[?]	$ ERR(1)
+$[?()]	$ f{err(13)/4}
+$[?(@)]	$ f{err(1)/3}
+$[?(@.a>)]	$ f{err(13)/4}
+$[?(@.a>>1)]	$ f{err(13)/4}
+$[?(@.a=1)]	$ f{attr(a)/3 err(1)/3}
+$[?(@.a===1)]	$ f{err(13)/4}
+$[?(@.a<>1)]	$ f{err(13)/4}
+$[?(@.a!1)]	$ f{attr(a)/3 err(1)/3}
+$[?(@.a>1))]	$ f{cmp(a>1)/4 err(1)/4}
+$[?((@.a>1)]	$ f{cmp(a>1)/7 err(1)/7}
+$[?((@.a>1))]	$ f{cmp(a>1)/7} END
+$[?(((@.a>1)))]	$ f{cmp(a>1)/10} END
+$[?( ( @.a>1 ) )]	$ f{cmp(a>1)/7} END
+$[?(@.a>1&&@.b=="x")]	$ f{cmp(a>1)/4 cmp(b=='x')/4 and/4} END
+$[?(@.a>1 && @.b=="y")]	$ f{cmp(a>1)/4 cmp(b=='y')/4 and/4} END
+$[?(@.a>1||@.b=="x")]	$ f{cmp(a>1)/4 cmp(b=='x')/4 or/4} END
+$[?(@.a>1 || @.b=="x")]	$ f{cmp(a>1)/4 cmp(b=='x')/4 or/4} END
+$[?(@.b=="x" || @.a>1)]	$ f{cmp(b=='x')/4 cmp(a>1)/4 or/4} END
+$[?(@.a==3 || @.a==1 || @.a==2)]	$ f{cmp(a==3)/4 cmp(a==1)/4 or/4 cmp(a==2)/4 or/4} END
+$[?(@.a==2 || @.a==1)]	$ f{cmp(a==2)/4 cmp(a==1)/4 or/4} END
+$[?(@.a>1&&@.b)]	$ f{cmp(a>1)/4 attr(b)/4 and/4} END
+$[?(@.a && @.b && @.c)]	$ f{attr(a)/3 attr(b)/3 and/3 attr(c)/3 and/3} END
+$[?(@.a || @.c)]	$ f{attr(a)/3 attr(c)/3 or/3} END
+$[?(@.c || @.a)]	$ f{attr(c)/3 attr(a)/3 or/3} END
+$[?(@.a>1 && (@.b=="x" || @.b=="y"))]	$ f{cmp(a>1)/4 cmp(b=='x')/7 cmp(b=='y')/7 or/7 and/7} END
+$[?((@.a>1 && @.b=="x") || @.c)]	$ f{cmp(a>1)/7 cmp(b=='x')/7 and/7 attr(c)/7 or/7} END
+$[?(@.a>1 & @.b)]	$ f{cmp(a>1)/4 err(1)/4}
+$[?(@.a>1 | @.b)]	$ f{cmp(a>1)/4 err(1)/4}
+$[?(@.a>1 &&)]	$ f{cmp(a>1)/4 err(13)/4}
+$[?(&& @.a>1)]	$ f{err(13)/4}
+$[?(@.a>1 || )]	$ f{cmp(a>1)/4 err(13)/4}
+$[?(!@.a)]	$ f{err(13)/4}
+$[?(@.a>1 and @.b)]	$ f{cmp(a>1)/4 err(1)/4}
+$[?(1<@.a)]	$ f{cmp(a>1)/4} END
+$[?(1 < @.a)]	$ f{cmp(a>1)/4} END
+$[?(2<=@.a)]	$ f{cmp(a>=2)/4} END
+$[?(2>=@.a)]	$ f{cmp(a<=2)/4} END
+$[?(2>@.a)]	$ f{cmp(a<2)/4} END
+$[?(2==@.a)]	$ f{cmp(a==2)/4} END
+$[?(2!=@.a)]	$ f{cmp(a!=2)/4} END
+$[?("x"==@.b)]	$ f{cmp(b=='x')/4} END
+$[?('x'==@.b)]	$ f{cmp(b=='x')/4} END
+$[?(null==@.a)]	$ f{cmp(a==null)/4} END
+$[?(true==@.a)]	$ f{cmp(a==true)/4} END
+$[?(1<@)]	$ f{cmp(@>1)/4} END
+$[?(1 < @ )]	$ f{cmp(@>1)/4} END
+$[?(1<@ && @<5)]	$ f{cmp(@>1)/4 cmp(@<5)/4 and/4} END
+$[?(1<@.a && @.a<3)]	$ f{cmp(a>1)/4 cmp(a<3)/4 and/4} END
+$[?(1<@.c[0])]	$ f{cmp(c[0]>1)/4} END
+$[?(1<@.c[-1])]	$ f{cmp(c[-1]>1)/4} END
+$[?(1<@.c[x])]	$ f{err(17)/4}
+$[?(1<@.c[0)]	$ f{err(1)/4}
+$[?(1<)]	$ f{err(1)/4}
+$[?(1<@.)]	$ f{err(12)/4}
+$[?(1 @.a)]	$ f{err(1)/4}
+$[?(1<@a)]	$ f{err(1)/4}
+$[?(@>1)]	$ f{cmp(@>1)/4} END
+$[?(@>=5)]	$ f{cmp(@>=5)/4} END
+$[?(@==5)]	$ f{cmp(@==5)/4} END
+$[?(@=="s")]	$ f{cmp(@=='s')/4} END
+$[?(@==null)]	$ f{cmp(@==null)/4} END
+$[?(@==true)]	$ f{cmp(@==true)/4} END
+$[?(@!=5)]	$ f{cmp(@!=5)/4} END
+$[?(@ > 1)]	$ f{cmp(@>1)/4} END
+$[?(@==1)]	$ f{cmp(@==1)/4} END
+$[?(@.c[0]==1)]	$ f{cmp(c[0]==1)/4} END
+$[?(@.c[0]>1)]	$ f{cmp(c[0]>1)/4} END
+$[?(@.c[-1]>=3)]	$ f{cmp(c[-1]>=3)/4} END
+$[?(@.c[1]==5)]	$ f{cmp(c[1]==5)/4} END
+$[?(@.c[5]==5)]	$ f{cmp(c[5]==5)/4} END
+$[?(@.c[0]=="x")]	$ f{cmp(c[0]=='x')/4} END
+$[?(@.c[ 0]==1)]	$ f{cmp(c[0]==1)/4} END
+$[?(@.c[0 ]==1)]	$ f{err(1)/3}
+$[?(@.c[0] ==1)]	$ f{cmp(c[0]==1)/4} END
+$[?(@.c[0]== 1)]	$ f{cmp(c[0]==1)/4} END
+$[?(@.c[x]==1)]	$ f{err(17)/3}
+$[?(@.c[0]]	$ f{err(1)/3}
+$[?(@.c[0])]	$ f{err(1)/3}
+$[?(@.c[0]=)]	$ f{err(1)/3}
+$[?(@.c[?(@==1)])]	$ f{cmp(c[?]==1)/4} END
+$[?(@.c[?(@>2)])]	$ f{cmp(c[?]>2)/4} END
+$[?(@.c[?(@=="x")])]	$ f{cmp(c[?]=='x')/4} END
+$[?(@.c[?(1==@)])]	$ f{cmp(c[?]==1)/4} END
+$[?(@.c[?(2<@)])]	$ f{cmp(c[?]>2)/4} END
+$[?(@.c[ ?(@>2)])]	$ f{cmp(c[?]>2)/4} END
+$[?(@.c[? (@>2)])]	$ f{cmp(c[?]>2)/4} END
+$[?(@.c[?( @>2)])]	$ f{err(13)/4}
+$[?(@.c[?(@ >2)])]	$ f{cmp(c[?]>2)/4} END
+$[?(@.c[?(@>2 )])]	$ f{cmp(c[?]>2)/4} END
+$[?(@.c[?(@>2) ])]	$ f{cmp(c[?]>2)/4} END
+$[?(@.c[?(@>2)] )]	$ f{cmp(c[?]>2)/4} END
+$[?(@.c[?(@>2)]) ]	$ f{cmp(c[?]>2)/4} END
+$[?(@.c[?(@>2)]	$ f{cmp(c[?]>2)/4 err(1)/4}
+$[?(@.c[?(@>2)	$ f{cmp(c[?]>2)/4 err(1)/4}
+$[?(@.c[?(@>2	$ f{cmp(c[?]>2)/4 err(1)/4}
+$[?(@.c[?(@	$ f{err(1)/3}
+$[?(@.c[?(	$ f{err(13)/4}
+$[?(@.c[?	$ f{err(1)/3}
+$[?(@.c[?(@.a>2)])]	$ f{err(1)/3}
+$[?(@.c[?(@>2)] && @.a)]	$ f{cmp(c[?]>2)/4 attr(a)/4 and/4} END
+$[?(@['a'])]	$ f{attr(a)/3} END
+$[?(@["a"])]	$ f{attr(a)/3} END
+$[?(@['a']>1)]	$ f{cmp(a>1)/4} END
+$[?(@["a"]>1)]	$ f{cmp(a>1)/4} END
+$[?(@[ 'a' ]>1)]	$ f{cmp(a>1)/4} END
+$[?(@.['a']>1)]	$ f{cmp(a>1)/4} END
+$[?(@['a'] > 1 && @['b'] == "y")]	$ f{cmp(a>1)/4 cmp(b=='y')/4 and/4} END
+$[?(@['a','b'])]	$ f{err(1)/3}
+$[?(@[a])]	$ f{err(1)/3}
+$[?(@[0])]	$ f{err(1)/3}
+$[?(@[0]>1)]	$ f{err(1)/3}
+$[?(@['c'][0]==1)]	$ f{cmp(c[0]==1)/4} END
+$[?(@.a.b)]	$ f{attr(a)/3 err(1)/3}
+$[?(@.c.d)]	$ f{attr(c)/3 err(1)/3}
+$[?(@.c.d==1)]	$ f{attr(c)/3 err(1)/3}
+$[?(@..a)]	$ f{err(1)/3}
+$[?(@.*)]	$ f{attr(*)/3} END
+$[?(@.a>1.5)]	$ f{cmp(a>1.5)/4} END
+$[?(@.a>1e0)]	$ f{cmp(a>1)/4} END
+$[?(@.a>1E0)]	$ f{cmp(a>1)/4} END
+$[?(@.a>-1)]	$ f{cmp(a>-1)/4} END
+$[?(@.a>+1)]	$ f{err(21)/4}
+$[?(@.a>.5)]	$ f{err(21)/4}
+$[?(@.a>1.)]	$ f{err(21)/4}
+$[?(@.a>01)]	$ f{err(21)/4}
+$[?(@.a>1e)]	$ f{err(21)/4}
+$[?(@.a>e1)]	$ f{err(21)/4}
+$[?(@.a>1e400)]	$ f{err(21)/4}
+$[?(@.a>-)]	$ f{err(21)/4}
+$[?(@.a>--1)]	$ f{err(21)/4}
+$[?(@.a>1-1)]	$ f{err(21)/4}
+$[?(@.a>0x1)]	$ f{cmp(a>0)/4 err(1)/4}
+$[?(@.a>abc)]	$ f{err(13)/4}
+$[?(@.a==nul)]	$ f{err(14)/4}
+$[?(@.a==nullx)]	$ f{err(14)/4}
+$[?(@.a==Null)]	$ f{err(13)/4}
+$[?(@.a==tru)]	$ f{err(14)/4}
+$[?(@.a==truex)]	$ f{err(14)/4}
+$[?(@.a==True)]	$ f{err(13)/4}
+$[?(@.a==false)]	$ f{cmp(a==false)/4} END
+$[?(@.a==fals)]	$ f{err(14)/4}
+$[?(@.a==n)]	$ f{err(14)/4}
+$[?(@.a==t)]	$ f{err(14)/4}
+$[?(@.a==f)]	$ f{err(14)/4}
+$[?(@.a==x)]	$ f{err(13)/4}
+$[?(@.a=="1)]	$ f{err(21)/4}
+$[?(@.a=='1)]	$ f{cmp(a=='1)]')/4 err(1)/4}
+$[?(@.a=="\x")]	$ f{err(21)/4}
+$[?(@.a=='\x')]	$ f{err(21)/4}
+$[?(@.b=="x" )]	$ f{cmp(b=='x')/4} END
+$[?(@.b== "x")]	$ f{cmp(b=='x')/4} END
+$[?(@.b=='x' )]	$ f{cmp(b=='x')/4} END
+$[?(@.a==$.zz)]	$ f{path($ m:zz! END)/4 cmp(a==REG)/4} END
+$[?(@.a==$[0].a)]	$ f{path($ i:0 m:a! END)/4 cmp(a==REG)/4} END
+$[?(@.a>$[0].a)]	$ f{path($ i:0 m:a! END)/4 cmp(a>REG)/4} END
+$[?(@.a>$[0]['a'])]	$ f{path($ i:0 m:a! END)/4 cmp(a>REG)/4} END
+$[?(@.a>$[0]["a"])]	$ f{path($ i:0 m:a! END)/4 cmp(a>REG)/4} END
+$[?(@.a>=$[1].a)]	$ f{path($ i:1 m:a! END)/4 cmp(a>=REG)/4} END
+$[?(@.a<$[2].a)]	$ f{path($ i:2 m:a! END)/4 cmp(a<REG)/4} END
+$[?(@.a==$[0])]	$ f{path($ i:0 END)/4 cmp(a==REG)/4} END
+$[?(@.a==$[0].c)]	$ f{path($ i:0 m:c! END)/4 cmp(a==REG)/4} END
+$[?(@.a==$[*].a)]	$ f{err(1)/4}
+$[?(@.a==$..d)]	$ f{path($+1 .. m:d! END)/4 cmp(a==REG)/4} END
+$[?(@.a==$[4])]	$ f{path($ i:4 END)/4 cmp(a==REG)/4} END
+$[?(@.a>$[99])]	$ f{path($ i:99 END)/4 cmp(a>REG)/4} END
+$[?(@.a>$[0].c[0])]	$ f{path($ i:0 m:c i:0 END)/4 cmp(a>REG)/4} END
+$[?(@.a>$[0].c[-1])]	$ f{path($ i:0 m:c i:-1 END)/4 cmp(a>REG)/4} END
+$[?(@.a>$[0].c[x])]	$ f{err(1)/4}
+$[?(@.a>$[0].c[1:2])]	$ f{err(1)/4}
+$[?(@.a>$[0].c[*])]	$ f{err(1)/4}
+$[?(@.a>$[?(@.a)])]	$ f{err(1)/4}
+$[?(@.a>$)]	$ f{path($ END)/4 cmp(a>REG)/4} END
+$[?(@.a>$.)]	$ f{path($ ERR(12))/4 cmp(a>REG)/4} END
+$[?(@.a>$[)]	$ f{err(1)/4}
+$[?(@.a>$[0)]	$ f{err(1)/4}
+$[?(@.a>$[0] )]	$ f{path($ i:0 END)/4 cmp(a>REG)/4} END
+$[?(@.a>$[0].a )]	$ f{path($ i:0 m:a! END)/4 cmp(a>REG)/4} END
+$[?(@.a> $[0].a)]	$ f{path($ i:0 m:a! END)/4 cmp(a>REG)/4} END
+$[?($[0].a<@.a)]	$ f{path($ i:0 m:a! END)/4 cmp(a>REG)/4} END
+$[?($[0].a < @.a)]	$ f{path($ i:0 m:a! END)/4 cmp(a>REG)/4} END
+$[?($[1].a==@.a)]	$ f{path($ i:1 m:a! END)/4 cmp(a==REG)/4} END
+$[?($[0].a<@)]	$ f{path($ i:0 m:a! END)/4 cmp(@>REG)/4} END
+$[?($.zz<@.a)]	$ f{path($ m:zz! END)/4 cmp(a>REG)/4} END
+$[?($[0].a @.a)]	$ f{path($ i:0 m:a! END)/4 err(1)/4}
+$[?($[0].a<)]	$ f{path($ i:0 m:a! END)/4 err(1)/4}
+$[?(@.b==$[0].b)]	$ f{path($ i:0 m:b! END)/4 cmp(b==REG)/4} END
+$[?(@.a>1)][?(@.b)]	$ f{cmp(a>1)/4} f{attr(b)/3} END
+$[*][?(@.a>1)]	$ f{cmp(a>1)/4} END
+$[*][?(@>1)]	$ f{cmp(@>1)/4} END
+$[*][ ?(@.a>1)]	$ * f{cmp(a>1)/4} END
+$[*] [?(@.a>1)]	$ f{cmp(a>1)/4} END
+$[ * ][?(@.a>1)]	$ f{cmp(a>1)/4} END
+$[*][?(@.a>1) ]	$ f{cmp(a>1)/4} END
+$[*][?(@.a>1 )]	$ f{cmp(a>1)/4} END
+$[*][?( @.a>1)]	$ f{cmp(a>1)/4} END
+$[*][? (@.a>1)]	$ f{cmp(a>1)/4} END
+$[*][?(@.a>1)].b	$ f{cmp(a>1)/4} m:b! END
+$[*][?(@.a>1)] .b	$ f{cmp(a>1)/4} m:b! END
+$[*][?(@.a>1)	$ f{cmp(a>1)/4 err(1)/4}
+$.*[?(@.a>1)]	$ fw{cmp(a>1)/4} END
+$.*.[?(@.a>1)]	$ fw{cmp(a>1)/4} END
+$.* [?(@.a>1)]	$ * ERR(12)
+$.*[ ?(@.a>1)]	$ * f{cmp(a>1)/4} END
+$.*[?( @.a>1)]	$ fw{cmp(a>1)/4} END
+$.*[? (@.a>1)]	$ fw{cmp(a>1)/4} END
+$.*[?(@.a>1 )]	$ fw{cmp(a>1)/4} END
+$.*[?(@.a>1) ]	$ fw{cmp(a>1)/4} END
+$.*[?(@.a>1)].b	$ fw{cmp(a>1)/4} m:b! END
+$.*[?(@.a>1)] .b	$ fw{cmp(a>1)/4} ERR(12)
+$.*[?(@>1)]	$ fw{cmp(@>1)/4} END
+$.*[?(@.a>x)]	$ fw{err(13)/4}
+$.*[?(@.a>1)	$ fw{cmp(a>1)/4 err(1)/4}
+$.a[?(@>2)]	$ m:a f{cmp(@>2)/4} END
+$.a[?(@>2 && @<5)]	$ m:a f{cmp(@>2)/4 cmp(@<5)/4 and/4} END
+$.a[?(@==3 || @==1)]	$ m:a f{cmp(@==3)/4 cmp(@==1)/4 or/4} END
+$.a[?(@>2)][0]	$ m:a f{cmp(@>2)/4} i:0 END
+$.a[?(@>2)].x	$ m:a f{cmp(@>2)/4} m:x! END
+$.a[?(@.x)]	$ m:a f{attr(x)/3} END
+$.a.*[?(@>2)]	$ m:a fw{cmp(@>2)/4} END
+$.a[*][?(@>2)]	$ m:a f{cmp(@>2)/4} END
+$.b[?(@.c)]	$ m:b f{attr(c)/3} END
+$.b[?(@.c==5)]	$ m:b f{cmp(c==5)/4} END
+$.b[?(@.c==5)].c	$ m:b f{cmp(c==5)/4} m:c! END
+$.b[?(@.c==5)].a.a	$ m:b f{cmp(c==5)/4} m:a m:a! END
+$.b[?(@.c==6)].c	$ m:b f{cmp(c==6)/4} m:c! END
+$.b[?(@.zz)].c	$ m:b f{attr(zz)/3} m:c! END
+$.b[?(@==5)]	$ m:b f{cmp(@==5)/4} END
+$.b[?(@.a)]	$ m:b f{attr(a)/3} END
+$.b[?(@.a)].a[?(@.a)]	$ m:b f{attr(a)/3} m:a f{attr(a)/3} END
+$.b[?(@.a)].a[?(@.a)].a	$ m:b f{attr(a)/3} m:a f{attr(a)/3} m:a! END
+$.b[?(@.c)]$x	$ m:b f{attr(c)/3}<$ m:x! END> m:$x! END
+$.b[?(@.c)].$x	$ m:b f{attr(c)/3} m:$x! END
+$.b[?(@.c)] $x	$ m:b f{attr(c)/3}<$ m:x! END> m:$x! END
+$.b[?(@.c)].  c	$ m:b f{attr(c)/3}<ERR(12)> m:c! END
+$.b[?(@.c) ].c	$ m:b f{attr(c)/3} m:c! END
+$.s[?(@.x)]	$ m:s f{attr(x)/3} END
+$.s[?(@=="str")]	$ m:s f{cmp(@=='str')/4} END
+$.s[?(@=="str")].x	$ m:s f{cmp(@=='str')/4} m:x! END
+$.s[?(@=="str")][0]	$ m:s f{cmp(@=='str')/4} i:0 END
+$.s[?(@=="str")]$	$ m:s f{cmp(@=='str')/4}<$ END> m:$! END
+$.s[?(@=="str")][?(@=="str")]	$ m:s f{cmp(@=='str')/4} f{cmp(@=='str')/4} END
+$.s[?(@!="str")]	$ m:s f{cmp(@!='str')/4} END
+$.x[?(@>1)]	$ m:x f{cmp(@>1)/4} END
+$.x[?(@>1.5)]	$ m:x f{cmp(@>1.5)/4} END
+$.x[?(@>=1.5)]	$ m:x f{cmp(@>=1.5)/4} END
+$.n[?(@==null)]	$ m:n f{cmp(@==null)/4} END
+$.n[?(@!=null)]	$ m:n f{cmp(@!=null)/4} END
+$.t[?(@==true)]	$ m:t f{cmp(@==true)/4} END
+$.t[?(@!=false)]	$ m:t f{cmp(@!=false)/4} END
+$.t[?(@>false)]	$ m:t f{cmp(@>false)/4} END
+$.f[?(@<true)]	$ m:f f{cmp(@<true)/4} END
+$.t[?(@==1)]	$ m:t f{cmp(@==1)/4} END
+$.e[?(@.a)]	$ m:e f{attr(a)/3} END
+$.o[?(@.a)]	$ m:o f{attr(a)/3} END
+$.o[?(@==1)]	$ m:o f{cmp(@==1)/4} END
+$[?(@==7)]	$ f{cmp(@==7)/4} END
+$[?(@.c==5)]	$ f{cmp(c==5)/4} END
+$[?(@.a)].b	$ f{attr(a)/3} m:b! END
+$[?(@.s=="str")].s	$ f{cmp(s=='str')/4} m:s! END
+$[?(@.s=="str")].newkey	$ f{cmp(s=='str')/4} m:newkey! END
+$[?(@.s=="str")]	$ f{cmp(s=='str')/4} END
+.a[?(@>2)]	m:a f{cmp(@>2)/4} END
+.[?(@.a>1)]	f{cmp(a>1)/4} END
+[?(@.a>1)]	f{cmp(a>1)/4} END
+.b[?(@.c==5)]	m:b f{cmp(c==5)/4} END
+.b[?(@.c==5)].c	m:b f{cmp(c==5)/4} m:c! END
+.s[?(@=="str")]	m:s f{cmp(@=='str')/4} END
+.s[?(@=="str")]$	m:s f{cmp(@=='str')/4}<$ END> m:$! END
+.s[?(@.x)]	m:s f{attr(x)/3} END
+..[?(@.a>1)]	+1 .. f{cmp(a>1)/4} END
+$.v[?(@==1)]	$ m:v f{cmp(@==1)/4} END
+$.v[?(@==1.0)]	$ m:v f{cmp(@==1)/4} END
+$.v[?(@==1.5)]	$ m:v f{cmp(@==1.5)/4} END
+$.v[?(@!=1)]	$ m:v f{cmp(@!=1)/4} END
+$.v[?(@>1)]	$ m:v f{cmp(@>1)/4} END
+$.v[?(@>=1)]	$ m:v f{cmp(@>=1)/4} END
+$.v[?(@<1)]	$ m:v f{cmp(@<1)/4} END
+$.v[?(@<=1)]	$ m:v f{cmp(@<=1)/4} END
+$.v[?(@==0)]	$ m:v f{cmp(@==0)/4} END
+$.v[?(@==-0)]	$ m:v f{cmp(@==0)/4} END
+$.v[?(@==0.0)]	$ m:v f{cmp(@==0)/4} END
+$.v[?(@==-0.0)]	$ m:v f{cmp(@==-0)/4} END
+$.v[?(@<0)]	$ m:v f{cmp(@<0)/4} END
+$.v[?(@==100)]	$ m:v f{cmp(@==100)/4} END
+$.v[?(@==1e2)]	$ m:v f{cmp(@==100)/4} END
+$.v[?(@==100.0)]	$ m:v f{cmp(@==100)/4} END
+$.v[?(@==9223372036854775807)]	$ m:v f{cmp(@==9223372036854775807)/4} END
+$.v[?(@==9223372036854775808)]	$ m:v f{cmp(@==9.2233720368547758e+18)/4} END
+$.v[?(@>9223372036854775807)]	$ m:v f{cmp(@>9223372036854775807)/4} END
+$.v[?(@>=9223372036854775808)]	$ m:v f{cmp(@>=9.2233720368547758e+18)/4} END
+$.v[?(@<9223372036854775808)]	$ m:v f{cmp(@<9.2233720368547758e+18)/4} END
+$.v[?(@>9223372036854775808)]	$ m:v f{cmp(@>9.2233720368547758e+18)/4} END
+$.v[?(@==18446744073709551615)]	$ m:v f{cmp(@==1.8446744073709552e+19)/4} END
+$.v[?(@<18446744073709551615)]	$ m:v f{cmp(@<1.8446744073709552e+19)/4} END
+$.v[?(@==18446744073709551616)]	$ m:v f{cmp(@==1.8446744073709552e+19)/4} END
+$.v[?(@<18446744073709551616)]	$ m:v f{cmp(@<1.8446744073709552e+19)/4} END
+$.v[?(@==-9223372036854775808)]	$ m:v f{cmp(@==-9223372036854775808)/4} END
+$.v[?(@>-9223372036854775808)]	$ m:v f{cmp(@>-9223372036854775808)/4} END
+$.v[?(@<-9223372036854775808)]	$ m:v f{cmp(@<-9223372036854775808)/4} END
+$.v[?(@<-9223372036854775809)]	$ m:v f{cmp(@<-9.2233720368547758e+18)/4} END
+$.v[?(@>-1)]	$ m:v f{cmp(@>-1)/4} END
+$.v[?(@>-2)]	$ m:v f{cmp(@>-2)/4} END
+$.v[?(@<-0.5)]	$ m:v f{cmp(@<-0.5)/4} END
+$.v[?(@==0.1)]	$ m:v f{cmp(@==0.10000000000000001)/4} END
+$.v[?(@>0.1)]	$ m:v f{cmp(@>0.10000000000000001)/4} END
+$.v[?(@==2.5)]	$ m:v f{cmp(@==2.5)/4} END
+$.v[?(@==2.50)]	$ m:v f{cmp(@==2.5)/4} END
+$.v[?(@>1e30)]	$ m:v f{cmp(@>1e+30)/4} END
+$.v[?(@>1e29)]	$ m:v f{cmp(@>9.9999999999999991e+28)/4} END
+$.v[?(@==123456789012345678901234567890)]	$ m:v f{cmp(@==1.2345678901234568e+29)/4} END
+$.v[?(@=="1")]	$ m:v f{cmp(@=='1')/4} END
+$.v[?(@==true)]	$ m:v f{cmp(@==true)/4} END
+$.v[?(@==false)]	$ m:v f{cmp(@==false)/4} END
+$.v[?(@!=true)]	$ m:v f{cmp(@!=true)/4} END
+$.v[?(@>false)]	$ m:v f{cmp(@>false)/4} END
+$.v[?(@>=false)]	$ m:v f{cmp(@>=false)/4} END
+$.v[?(@<true)]	$ m:v f{cmp(@<true)/4} END
+$.v[?(@<=true)]	$ m:v f{cmp(@<=true)/4} END
+$.v[?(@==null)]	$ m:v f{cmp(@==null)/4} END
+$.v[?(@!=null)]	$ m:v f{cmp(@!=null)/4} END
+$.v[?(@>null)]	$ m:v f{cmp(@>null)/4} END
+$.v[?(@>=null)]	$ m:v f{cmp(@>=null)/4} END
+$.v[?(@<=null)]	$ m:v f{cmp(@<=null)/4} END
+$.v[?(@=="")]	$ m:v f{cmp(@=='')/4} END
+$.v[?(@=='')]	$ m:v f{cmp(@=='')/4} END
+$.v[?(@=="a")]	$ m:v f{cmp(@=='a')/4} END
+$.v[?(@>"a")]	$ m:v f{cmp(@>'a')/4} END
+$.v[?(@>="a")]	$ m:v f{cmp(@>='a')/4} END
+$.v[?(@<"b")]	$ m:v f{cmp(@<'b')/4} END
+$.v[?(@<="ab")]	$ m:v f{cmp(@<='ab')/4} END
+$.v[?(@!="a")]	$ m:v f{cmp(@!='a')/4} END
+$.v[?(@>"")]	$ m:v f{cmp(@>'')/4} END
+$.v[?(@>"B")]	$ m:v f{cmp(@>'B')/4} END
+$.v[?(@>"z")]	$ m:v f{cmp(@>'z')/4} END
+$.v[?(@=="é")]	$ m:v f{cmp(@=='é')/4} END
+$.v[?(@=="a\"b")]	$ m:v f{cmp(@=='a"b')/4} END
+$.v[?(@=='a"b')]	$ m:v f{cmp(@=='a"b')/4} END
+$.v[?(@=="a'b")]	$ m:v f{cmp(@=='a'b')/4} END
+$.v[?(@=='a\'b')]	$ m:v f{cmp(@=='a'b')/4} END
+$.v[?(@=="a\\b")]	$ m:v f{cmp(@=='a\b')/4} END
+$.v[?(@=='a\\b')]	$ m:v f{cmp(@=='a\b')/4} END
+$.v[?(@=="\n")]	$ m:v f{cmp(@=='\x0a')/4} END
+$.v[?(@=='\n')]	$ m:v f{cmp(@=='\x0a')/4} END
+$.v[?(@=="true")]	$ m:v f{cmp(@=='true')/4} END
+$.v[?(@==$.v[1])]	$ m:v f{path($ m:v i:1 END)/4 cmp(@==REG)/4} END
+$.v[?(@>$.v[1])]	$ m:v f{path($ m:v i:1 END)/4 cmp(@>REG)/4} END
+$.v[?(@==$.v[10])]	$ m:v f{path($ m:v i:10 END)/4 cmp(@==REG)/4} END
+$.v[?(@==$.v[14])]	$ m:v f{path($ m:v i:14 END)/4 cmp(@==REG)/4} END
+$.v[?(@==$.v[15])]	$ m:v f{path($ m:v i:15 END)/4 cmp(@==REG)/4} END
+$.v[?(@==$.v[17])]	$ m:v f{path($ m:v i:17 END)/4 cmp(@==REG)/4} END
+$.v[?(@==$.v[18])]	$ m:v f{path($ m:v i:18 END)/4 cmp(@==REG)/4} END
+$.v[?(@==$.v[19])]	$ m:v f{path($ m:v i:19 END)/4 cmp(@==REG)/4} END
+$.v[?(@==$.v)]	$ m:v f{path($ m:v! END)/4 cmp(@==REG)/4} END
+$.v[?(@==$.v[0] || @==$.v[1])]	$ m:v f{path($ m:v i:0 END)/4 cmp(@==REG)/4 path($ m:v i:1 END)/4 cmp(@==REG)/4 or/4} END
+$.v[?($.v[1]<@)]	$ m:v f{path($ m:v i:1 END)/4 cmp(@>REG)/4} END
+$.w[?(@.n=="a")]	$ m:w f{cmp(n=='a')/4} END
+$.w[?(@.n=='a')]	$ m:w f{cmp(n=='a')/4} END
+$.w[?(@.n=="")]	$ m:w f{cmp(n=='')/4} END
+$.w[?(@.n=="a'b")]	$ m:w f{cmp(n=='a'b')/4} END
+$.w[?(@.n=='a\'b')]	$ m:w f{cmp(n=='a'b')/4} END
+$.w[?(@.n=="q\"r")]	$ m:w f{cmp(n=='q"r')/4} END
+$.w[?(@.n=='q"r')]	$ m:w f{cmp(n=='q"r')/4} END
+$.w[?(@.n==true)]	$ m:w f{cmp(n==true)/4} END
+$.w[?(@.n==false)]	$ m:w f{cmp(n==false)/4} END
+$.w[?(@.n!=true)]	$ m:w f{cmp(n!=true)/4} END
+$.w[?(@.n==null)]	$ m:w f{cmp(n==null)/4} END
+$.w[?(@.n>"a")]	$ m:w f{cmp(n>'a')/4} END
+$.w[?(@.n)]	$ m:w f{attr(n)/3} END
+$.store.books[?(@.price<10)].title	$ m:store m:books f{cmp(price<10)/4} m:title! END
+$.store.books[?(@.price<$.expensive)].title	$ m:store m:books f{path($ m:expensive! END)/4 cmp(price<REG)/4} m:title! END
+$.store.books[?(@.price<$.budget)].title	$ m:store m:books f{path($ m:budget! END)/4 cmp(price<REG)/4} m:title! END
+$.store.books[?(@.price<$['budget'])].title	$ m:store m:books f{path($ m:budget! END)/4 cmp(price<REG)/4} m:title! END
+$.store.books[?(@.price<$.store.books[1].price)].title	$ m:store m:books f{path($ m:store m:books i:1 m:price! END)/4 cmp(price<REG)/4} m:title! END
+$.store.books[?(@.price<$.store.books[-1].price)].title	$ m:store m:books f{path($ m:store m:books i:-1 m:price! END)/4 cmp(price<REG)/4} m:title! END
+$.store.books[?(@.price<$.store.bicycle.price)].title	$ m:store m:books f{path($ m:store m:bicycle m:price! END)/4 cmp(price<REG)/4} m:title! END
+$.store.books[?(@.isbn)].title	$ m:store m:books f{attr(isbn)/3} m:title! END
+$.store.books[?(@.sold==true)].title	$ m:store m:books f{cmp(sold==true)/4} m:title! END
+$.store.books[?(@['in-stock']==true)].title	$ m:store m:books f{cmp(in-stock==true)/4} m:title! END
+$.store.books[?(@.in-stock==true)].title	$ m:store m:books f{cmp(in-stock==true)/4} m:title! END
+$.store.books[?(@.category=='fiction' && @.price<10)].title	$ m:store m:books f{cmp(category=='fiction')/4 cmp(price<10)/4 and/4} m:title! END
+$.store.books[?(@.category=='fiction' || @.price<10)].title	$ m:store m:books f{cmp(category=='fiction')/4 cmp(price<10)/4 or/4} m:title! END
+$.store.books[?(@.price<10 || @.category=='fiction')].title	$ m:store m:books f{cmp(price<10)/4 cmp(category=='fiction')/4 or/4} m:title! END
+$.store.books[?(@.movies)].movies[0].realisator.first_name	$ m:store m:books f{attr(movies)/3} m:movies i:0 m:realisator m:first_name! END
+$.store.books[?(@.movies[0].title)]	$ m:store m:books f{err(1)/3}
+$.store.books[*].title	$ m:store m:books * m:title! END
+$.store.books[*]['title','price']	$ m:store m:books * n:title,price END
+$.store.books[0,2].title	$ m:store m:books u:0,2 m:title! END
+$.store.books[1:3].title	$ m:store m:books s:1:3:1 m:title! END
+$.store.books[-1].title	$ m:store m:books i:-1 m:title! END
+$.store.books[-1:].title	$ m:store m:books s:-1:E:1 m:title! END
+$.store.books[:2].price	$ m:store m:books s:0:2:1 m:price! END
+$.store..price	$ m:store+1 .. m:price! END
+$.store.*	$ m:store * END
+$.store.books[*].movies[*].realisator.*	$ m:store m:books * m:movies * m:realisator * END
+$..books[?(@.price>10)].title	$+1 .. m:books f{cmp(price>10)/4} m:title! END
+$..books[2].title	$+1 .. m:books i:2 m:title! END
+$..title	$+1 .. m:title! END
+$..realisator	$+1 .. m:realisator! END
+$..books[*].isbn	$+1 .. m:books * m:isbn! END
+$..['title','price']	$+1 .. n:title,price END
+$..*.title	$+1 .. * m:title! END
+$.phoneNumbers[*].type	$ m:phoneNumbers * m:type! END
+$.phoneNumbers[?(@.type=="home")].number	$ m:phoneNumbers f{cmp(type=='home')/4} m:number! END
+$.phoneNumbers[?(@.type=='office')].number	$ m:phoneNumbers f{cmp(type=='office')/4} m:number! END
+$.address.city	$ m:address m:city! END
+$.address['city','state']	$ m:address n:city,state END
+$.children[0]	$ m:children i:0 END
+$.children[*]	$ m:children * END
+$.spouse.x	$ m:spouse m:x! END
+$.groups.x	$ m:groups m:x! END
+$.groups.*	$ m:groups * END
+.store.books[0].title	m:store m:books i:0 m:title! END
+.store.books[*].title	m:store m:books * m:title! END
+.store.books[-1].price	m:store m:books i:-1 m:price! END
+.store.bicycle.color	m:store m:bicycle m:color! END
+.phoneNumbers[0].number	m:phoneNumbers i:0 m:number! END
+.address.city	m:address m:city! END
+.firstName	m:firstName! END
+.children	m:children! END
+.spouse	m:spouse! END
+.store..price	m:store+1 .. m:price! END
+..price	+1 .. m:price! END
+.store.books[?(@.price<10)].title	m:store m:books f{cmp(price<10)/4} m:title! END
+$[*].x.a	$ * m:x m:a! END
+$[*].x..a	$ * m:x+1 .. m:a! END
+$[*].x..a..a	$ * m:x+1 .. m:a+1 .. m:a! END
+$[*]..a	$ *+1 .. m:a! END
+$[*]..i	$ *+1 .. m:i! END
+$..i	$+1 .. m:i! END
+$..l[0]	$+1 .. m:l i:0 END
+$..l[1][0]	$+1 .. m:l i:1 i:0 END
+$..l..[0]	$+1 .. m:l+1 .. i:0 END
+$[*].l[1][0]	$ * m:l i:1 i:0 END
+$[0:25].x..a	$ s:0:25:1 m:x+1 .. m:a! END
+$[0:20].x..a	$ s:0:20:1 m:x+1 .. m:a! END
+$[0:21].x..a	$ s:0:21:1 m:x+1 .. m:a! END
+$[0:19].x..a	$ s:0:19:1 m:x+1 .. m:a! END
+$[*].i	$ * m:i! END
+$[?(@.i>27)].i	$ f{cmp(i>27)/4} m:i! END
+$[?(@.i>27)].x..a	$ f{cmp(i>27)/4} m:x+1 .. m:a! END
+$[29].x.a	$ i:29 m:x m:a! END
+$[30].x.a	$ i:30 m:x m:a! END
+$[-1].i	$ i:-1 m:i! END
+$[-30].i	$ i:-30 m:i! END
+$[-31].i	$ i:-31 m:i! END
+$.d	$ m:d! END
+$.m	$ m:m! END
+$.d[0][0][0]	$ m:d i:0 i:0 i:0 END
+$.m.k.k.k	$ m:m m:k m:k m:k! END
+$.m..k	$ m:m+1 .. m:k! END
+$..k	$+1 .. m:k! END

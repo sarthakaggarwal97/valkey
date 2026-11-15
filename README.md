@@ -68,6 +68,13 @@ To build Valkey without the Lua engine:
 
     % make BUILD_LUA=no
 
+To build Valkey without the built-in JSON module:
+
+    % make BUILD_JSON=no
+
+The JSON module needs a 64-bit little-endian target. On other targets, such as
+the 32 bit build below, it is left out automatically.
+
 To append a suffix to Valkey program names, use:
 
     % make PROG_SUFFIX="-alt"

@@ -51,6 +51,18 @@ if (NOT BUILD_LUA STREQUAL "no")
 endif ()
 unset(BUILD_LUA CACHE)
 
+# The JSON module needs a 64-bit little-endian target.
+if (BUILD_JSON AND NOT (CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_C_BYTE_ORDER STREQUAL "LITTLE_ENDIAN"))
+    message(STATUS "The built-in JSON module is not built: it needs a 64-bit little-endian target")
+    set(BUILD_JSON OFF)
+endif ()
+if (BUILD_JSON)
+    message(STATUS "Build the built-in JSON module")
+    add_subdirectory(modules/json)
+    target_link_libraries(valkey-server PRIVATE $<LINK_LIBRARY:WHOLE_ARCHIVE,valkeyjson>)
+    target_compile_definitions(valkey-server PRIVATE JSON_ENABLED)
+endif ()
+
 if (VALKEY_RELEASE_BUILD)
     # Enable LTO for Release build
     set_property(TARGET valkey-server PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)

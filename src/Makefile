@@ -333,6 +333,29 @@ else
 	endif
 endif
 
+# Built-in JSON module. BUILD_JSON=no leaves it out. It needs a 64-bit
+# little-endian target, so it is also left out of other builds (32bit, s390x).
+JSON_TARGET_OK := $(shell echo '__SIZEOF_POINTER__ __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__' | $(CC) $(CFLAGS) -x c -E -P - 2>/dev/null | awk 'NF == 3 {print ($$1 == 8 && $$2 == $$3) ? "yes" : "no"}')
+ifneq ($(JSON_TARGET_OK),yes)
+	override BUILD_JSON=no
+endif
+ifeq ($(BUILD_JSON),no)
+	JSON_MODULE_NAME=
+	JSON_MODULE=
+else
+	JSON_MODULE_NAME=modules/json/libvalkeyjson.a
+	JSON_MODULE=$(JSON_MODULE_NAME)
+	json_dir = $(shell pwd)
+	FINAL_CFLAGS+=-DJSON_ENABLED
+	ifeq ($(uname_S),Darwin)
+		JSON_LDFLAGS=-Wl,-export_dynamic -Wl,-force_load,$(json_dir)/modules/json/libvalkeyjson.a
+	else ifeq ($(uname_S),FreeBSD)
+		JSON_LDFLAGS=-Wl,--export-dynamic -Wl,--whole-archive $(json_dir)/modules/json/libvalkeyjson.a -Wl,--no-whole-archive
+	else
+		JSON_LDFLAGS=-Wl,--whole-archive $(json_dir)/modules/json/libvalkeyjson.a -Wl,--no-whole-archive
+	endif
+endif
+
 # Determine systemd support and/or build preference (defaulting to auto-detection)
 BUILD_WITH_SYSTEMD=no
 LIBSYSTEMD_LIBS=-lsystemd
@@ -741,6 +764,7 @@ persist-settings: distclean
 	echo ZSTD_PREFIX=$(ZSTD_PREFIX) >> .make-settings
 	echo USE_SYSTEMD=$(USE_SYSTEMD) >> .make-settings
 	echo BUILD_LUA=$(BUILD_LUA) >> .make-settings
+	echo BUILD_JSON=$(BUILD_JSON) >> .make-settings
 	echo USE_LIBBACKTRACE=$(USE_LIBBACKTRACE) >> .make-settings
 	echo LIBBACKTRACE_PREFIX=$(LIBBACKTRACE_PREFIX) >> .make-settings
 	echo CFLAGS=$(CFLAGS) >> .make-settings
@@ -769,8 +793,8 @@ ifneq ($(strip $(PREV_FINAL_LDFLAGS)), $(strip $(FINAL_LDFLAGS)))
 endif
 
 # valkey-server
-$(SERVER_NAME): $(ENGINE_SERVER_OBJ) $(LUA_MODULE)
-	$(SERVER_LD) -o $@ $(ENGINE_SERVER_OBJ) ../deps/libvalkey/lib/libvalkey.a ../deps/hdr_histogram/libhdrhistogram.a ../deps/fpconv/libfpconv.a ../deps/lz4/liblz4.a $(FINAL_LIBS) $(LUA_LDFLAGS)
+$(SERVER_NAME): $(ENGINE_SERVER_OBJ) $(LUA_MODULE) $(JSON_MODULE)
+	$(SERVER_LD) -o $@ $(ENGINE_SERVER_OBJ) ../deps/libvalkey/lib/libvalkey.a ../deps/hdr_histogram/libhdrhistogram.a ../deps/fpconv/libfpconv.a ../deps/lz4/liblz4.a $(FINAL_LIBS) $(LUA_LDFLAGS) $(JSON_LDFLAGS)
 
 # Valkey static library, used to compile against for unit testing
 $(ENGINE_LIB_NAME): $(ENGINE_SERVER_OBJ)
@@ -801,6 +825,12 @@ $(RDMA_MODULE_NAME): $(SERVER_NAME)
 # FORCE runs the sub-make on every build so it can rebuild changed Lua sources.
 $(LUA_MODULE_NAME): .make-prerequisites FORCE
 	$(MAKE) -C modules/lua OPTIMIZATION="$(OPTIMIZATION)" BUILD_LUA="$(BUILD_LUA)"
+
+# libvalkeyjson.a
+ifneq ($(JSON_MODULE_NAME),)
+$(JSON_MODULE_NAME): .make-prerequisites FORCE
+	$(MAKE) -C modules/json OPTIMIZATION="$(OPTIMIZATION)"
+endif
 
 .PHONY: FORCE
 FORCE:
@@ -843,6 +873,7 @@ clean:
 	rm -rf $(SERVER_NAME) $(ENGINE_SENTINEL_NAME) $(ENGINE_CLI_NAME) $(ENGINE_BENCHMARK_NAME) $(ENGINE_CHECK_RDB_NAME) $(ENGINE_CHECK_AOF_NAME) $(ENGINE_UNIT_GTESTS) $(ENGINE_LIB_NAME) trace/*.o trace/*.d *.o *.gcda *.gcno *.gcov valkey.info lcov-html Makefile.dep *.so
 	rm -f $(DEP)
 	-(cd modules/lua && $(MAKE) clean)
+	-(cd modules/json && $(MAKE) clean)
 
 .PHONY: clean
 

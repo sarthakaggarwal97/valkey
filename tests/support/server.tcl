@@ -281,6 +281,11 @@ proc tags_acceptable {tags err_return} {
         return 0
     }
 
+    if {!$::external && [lsearch -exact $tags "json"] >= 0 && ![server_has_json]} {
+        set err "The server is built without the JSON module"
+        return 0
+    }
+
     if {$::tcl_version < 8.6 && [lsearch -exact $tags "ipv6"] >= 0} {
         set err "TCL version is too low and does not support this"
         return 0
