@@ -24,6 +24,9 @@ on:
       tests:
         description: "cluster, asan, ubsan, valgrind, iothreads, tls, alpine: runtest arguments that replace the default selection, e.g. --single unit/foo"
         default: ""
+      instrument_lua:
+        description: "asan, ubsan: 'yes' also rebuilds the static Lua module with the sanitizer flags"
+        default: "no"
 
 permissions:
   contents: read
@@ -388,15 +391,27 @@ jobs:
         run: make OPT=-O3 SANITIZER=address SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes $JSON_BUILD_ARG
       - name: Instrument the JSON module
         # SANITIZER adds its flags to CFLAGS, which the module's sub-make does
-        # not receive, so rebuild the module with them and relink.
-        if: env.JSON_BUILD_ARG == ''
+        # not receive, so rebuild the module with them and relink. The static
+        # Lua module has the same gap; instrument_lua=yes rebuilds it too.
+        if: env.JSON_BUILD_ARG == '' || github.event.inputs.instrument_lua == 'yes'
+        env:
+          INSTRUMENT_LUA: ${{ github.event.inputs.instrument_lua }}
         run: |
-          echo "before: $(nm src/modules/json/*.o | grep -c ' U __asan_' || true) ASan references in the module"
-          make -C src/modules/json clean
-          make -C src/modules/json OPTIMIZATION=-O3 CFLAGS="-g -fsanitize=address -fno-sanitize-recover=all -fno-omit-frame-pointer"
-          make OPT=-O3 SANITIZER=address SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes
-          n=$(nm src/modules/json/*.o | grep -c ' U __asan_')
-          echo "after: $n ASan references in the module"; test "$n" -gt 0
+          F="-g -fsanitize=address -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          for m in json lua; do
+            [ $m = json ] && [ -n "$JSON_BUILD_ARG" ] && continue
+            [ $m = lua ] && [ "$INSTRUMENT_LUA" != yes ] && continue
+            echo "before: $(nm src/modules/$m/*.o | grep -c ' U __asan_' || true) ASan references in $m"
+            make -C src/modules/$m clean
+            make -C src/modules/$m OPTIMIZATION=-O3 CFLAGS="$F"
+          done
+          make OPT=-O3 SANITIZER=address SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes $JSON_BUILD_ARG
+          for m in json lua; do
+            [ $m = json ] && [ -n "$JSON_BUILD_ARG" ] && continue
+            [ $m = lua ] && [ "$INSTRUMENT_LUA" != yes ] && continue
+            n=$(nm src/modules/$m/*.o | grep -c ' U __asan_')
+            echo "after: $n ASan references in $m"; test "$n" -gt 0
+          done
       - name: testprep
         run: sudo apt-get install -y tcl8.6 tclx
       - name: test
@@ -433,14 +448,31 @@ jobs:
       - name: make
         run: make OPT=-O3 SANITIZER=undefined SERVER_CFLAGS='-Werror' LUA_DEBUG=yes USE_LIBBACKTRACE=yes $JSON_BUILD_ARG
       - name: Instrument the JSON module
-        if: env.JSON_BUILD_ARG == ''
+        if: env.JSON_BUILD_ARG == '' || github.event.inputs.instrument_lua == 'yes'
+        env:
+          INSTRUMENT_LUA: ${{ github.event.inputs.instrument_lua }}
+          # clang's -fsanitize=function rejects the server's call of every
+          # static module's OnLoad through a pointer of another type
+          # (module.c, moduleInitPostOnLoadResolved), for Lua too, so it is
+          # left out of the JSON module to let the suite run.
+          JSON_EXTRA: ${{ matrix.compiler == 'clang' && '-fno-sanitize=function' || '' }}
         run: |
-          echo "before: $(nm src/modules/json/*.o | grep -c ' U __ubsan_' || true) UBSan references in the module"
-          make -C src/modules/json clean
-          make -C src/modules/json OPTIMIZATION=-O3 CFLAGS="-g -fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
-          make OPT=-O3 SANITIZER=undefined SERVER_CFLAGS='-Werror' LUA_DEBUG=yes USE_LIBBACKTRACE=yes
-          n=$(nm src/modules/json/*.o | grep -c ' U __ubsan_')
-          echo "after: $n UBSan references in the module"; test "$n" -gt 0
+          F="-g -fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          for m in json lua; do
+            [ $m = json ] && [ -n "$JSON_BUILD_ARG" ] && continue
+            [ $m = lua ] && [ "$INSTRUMENT_LUA" != yes ] && continue
+            extra=""; [ $m = json ] && extra="$JSON_EXTRA"
+            echo "before: $(nm src/modules/$m/*.o | grep -c ' U __ubsan_' || true) UBSan references in $m"
+            make -C src/modules/$m clean
+            make -C src/modules/$m OPTIMIZATION=-O3 CFLAGS="$F $extra"
+          done
+          make OPT=-O3 SANITIZER=undefined SERVER_CFLAGS='-Werror' LUA_DEBUG=yes USE_LIBBACKTRACE=yes $JSON_BUILD_ARG
+          for m in json lua; do
+            [ $m = json ] && [ -n "$JSON_BUILD_ARG" ] && continue
+            [ $m = lua ] && [ "$INSTRUMENT_LUA" != yes ] && continue
+            n=$(nm src/modules/$m/*.o | grep -c ' U __ubsan_')
+            echo "after: $n UBSan references in $m"; test "$n" -gt 0
+          done
       - name: testprep
         run: sudo apt-get install -y tcl8.6 tclx
       - name: test
