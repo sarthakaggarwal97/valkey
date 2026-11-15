@@ -827,18 +827,19 @@ start_server {tags {"dual-channel-replication external:skip"}} {
             resume_process $replica_pid
             set res [wait_for_log_messages -1 {"*Unable to partial resync with replica * for lack of backlog*"} $loglines 200 100]
             set loglines [lindex $res 1]
-        }
-        # Waiting for the primary to enter the paused state, that is, make sure that bgsave is triggered.
-        wait_process_paused [srv -1 pid]
-        wait_for_log_messages 0 {"*Done loading RDB*"} $replica_loglines 5000 10
-        $replica replicaof no one
-        # Resume the primary and make sure the sync is dropped.
-        resume_process [srv -1 pid]
-        $primary debug pause-after-fork 0
-        wait_for_condition 500 1000 {
-            [s -1 rdb_bgsave_in_progress] eq 0
-        } else {
-            fail "Primary should abort sync"
+
+            # Waiting for the primary to enter the paused state, that is, make sure that bgsave is triggered.
+            wait_process_paused [srv -1 pid]
+            wait_for_log_messages 0 {"*Done loading RDB*"} $replica_loglines 5000 10
+            $replica replicaof no one
+            # Resume the primary and make sure the sync is dropped.
+            resume_process [srv -1 pid]
+            $primary debug pause-after-fork 0
+            wait_for_condition 500 1000 {
+                [s -1 rdb_bgsave_in_progress] eq 0
+            } else {
+                fail "Primary should abort sync"
+            }
         }
         stop_write_load $load_handle0
         stop_write_load $load_handle1
@@ -1365,6 +1366,61 @@ start_server {tags {"dual-channel-replication external:skip"}} {
             }
             wait_for_log_messages 0 {"*Failed trying to load the PRIMARY synchronization DB from socket*"} $loglines $max_tries 10
             verify_replica_online $primary 0 $max_tries
+        }
+    }
+}
+
+start_server {tags {"dual-channel-replication external:skip"}} {
+    set primary [srv 0 client]
+    set primary_host [srv 0 host]
+    set primary_port [srv 0 port]
+
+    $primary config set repl-diskless-sync yes
+    $primary config set repl-diskless-sync-delay 0
+    $primary config set dual-channel-replication-enabled yes
+
+    $primary debug populate 10000 primary 1
+
+    start_server {} {
+        set replica [srv 0 client]
+        set replica_pid [srv 0 pid]
+
+        $replica config set dual-channel-replication-enabled yes
+        $replica config set repl-diskless-load disabled
+        # Loading the RDB from disk will cost 5s (10000 * 0.0005s), and the replica
+        # serves its connections every 1024 bytes of it.
+        $replica config set key-load-delay 500
+        $replica config set loading-process-events-interval-bytes 1024
+
+        test "Replica retry sync after main-connection killed during rdb load from disk" {
+            $replica replicaof $primary_host $primary_port
+            # Wait for the replica to load the RDB file while its main channel
+            # is buffering the replication stream.
+            wait_for_condition 1000 20 {
+                [s 0 loading] eq 1 &&
+                [string match "*slave*,state=bg_transfer*,type=main-channel*" [$primary info replication]]
+            } else {
+                fail "replica didn't start loading the RDB from disk in time"
+            }
+
+            set replica_main_conn_id [get_client_id_by_last_cmd $primary "psync"]
+            assert {$replica_main_conn_id != ""}
+            $primary client kill id $replica_main_conn_id
+
+            # The replica should give up this load and sync again. The primary
+            # puts it online only once it is done loading the new RDB.
+            wait_for_condition 1000 100 {
+                ![process_is_alive $replica_pid] ||
+                [string match "*state=online*" [$primary info replication]]
+            } else {
+                fail "Replica did not sync again after its main channel was closed during the RDB load from disk"
+            }
+            if {![process_is_alive $replica_pid]} {
+                fail "Replica exited when its main channel was closed during the RDB load from disk, instead of retrying the sync"
+            }
+            wait_for_sync $replica
+            wait_for_ofs_sync $primary $replica
+            assert_equal [$primary debug digest] [$replica debug digest]
         }
     }
 }
