@@ -1,8 +1,10 @@
 name: JSON built-in
 
 # Benchmarks and tests the built-in JSON module against the external
-# valkey-json module on GitHub-hosted runners. Runs when this branch is pushed,
-# and on demand.
+# valkey-json module on GitHub-hosted runners. Runs on demand: a push to this
+# branch starts a run in which every job is skipped. Choose the jobs with the
+# "jobs" input, for example:
+#   gh workflow run json-builtin.yml --ref json-builtin-ci -f jobs=asan,ubsan
 
 on:
   push:
@@ -11,11 +13,17 @@ on:
   workflow_dispatch:
     inputs:
       jobs:
-        description: "Jobs to run, comma separated: bench, test, 32bit, s390x"
+        description: "Jobs to run, comma separated, no spaces: bench, test, 32bit, s390x, enginedebug, profile, cluster, asan, ubsan, valgrind, iothreads, tls, alpine, coverage"
         default: "bench,test"
       rounds:
         description: "Benchmark rounds per side"
         default: "3"
+      build_json:
+        description: "cluster, asan, ubsan, valgrind, iothreads, tls, alpine: 'no' builds the server with BUILD_JSON=no, as a control"
+        default: "yes"
+      tests:
+        description: "cluster, asan, ubsan, valgrind, iothreads, tls, alpine: runtest arguments that replace the default selection, e.g. --single unit/foo"
+        default: ""
 
 permissions:
   contents: read
@@ -28,10 +36,13 @@ env:
   VALKEY_JSON_REPO: valkey-io/valkey-json
   VALKEY_JSON_SHA: 60cfc5ca52d5bae4286833bd8819627065b7d335
   RAPIDJSON_SHA: ebd87cb468fb4cb060b37e579718c4a4125416c1
+  # The jobs below the 's390x' one take these two from the dispatch inputs.
+  JSON_BUILD_ARG: ${{ github.event.inputs.build_json == 'no' && 'BUILD_JSON=no' || '' }}
+  JSON_CI_TESTS: ${{ github.event.inputs.tests }}
 
 jobs:
   bench-x86:
-    if: contains(github.event.inputs.jobs || 'bench,test', 'bench')
+    if: contains(github.event.inputs.jobs || '', 'bench')
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -111,7 +122,7 @@ jobs:
           path: results
 
   test-x86:
-    if: contains(github.event.inputs.jobs || 'bench,test', 'test')
+    if: contains(github.event.inputs.jobs || '', 'test')
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -174,7 +185,7 @@ jobs:
           path: valkey/tests/tmp
 
   engine-debug-x86:
-    if: contains(github.event.inputs.jobs || 'bench,test', 'enginedebug')
+    if: contains(github.event.inputs.jobs || '', 'enginedebug')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -199,7 +210,7 @@ jobs:
           done
 
   profile-x86:
-    if: contains(github.event.inputs.jobs || 'bench,test', 'profile')
+    if: contains(github.event.inputs.jobs || '', 'profile')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -250,7 +261,7 @@ jobs:
           done
 
   test-32bit:
-    if: contains(github.event.inputs.jobs || 'bench,test', '32bit')
+    if: contains(github.event.inputs.jobs || '', '32bit')
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -281,7 +292,7 @@ jobs:
             --single integration/corrupt-dump-fuzzer
 
   test-s390x:
-    if: contains(github.event.inputs.jobs || 'bench,test', 's390x')
+    if: contains(github.event.inputs.jobs || '', 's390x')
     runs-on: ubuntu-latest
     timeout-minutes: 1440
     steps:
@@ -304,3 +315,388 @@ jobs:
               args="$args --single ${n%.tcl}"
             done
             ./runtest --verbose --dump-logs --clients 4 --timeout 3600 --skiptest '/Active defrag JSON' $args
+
+  # The jobs below follow upstream's daily.yml, ci.yml, external.yml and
+  # codecov.yml: the same build flags, packages and runtest arguments, and the
+  # JSON Tcl files where upstream runs a subset. They select their tests with
+  # .github/json-bench/json-tcl-args.sh unless the "tests" input is set.
+
+  cluster:
+    if: contains(format(',{0},', github.event.inputs.jobs), ',cluster,')
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install libbacktrace
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ianlancetaylor/libbacktrace
+          ref: b9e40069c0b47a722286b94eb5231f7f05c08713
+          path: libbacktrace
+      - run: cd libbacktrace && ./configure && make && sudo make install
+      - name: make
+        run: |
+          make SERVER_CFLAGS=-Werror USE_LIBBACKTRACE=yes $JSON_BUILD_ARG
+          echo "jsonSet: $(nm src/valkey-server | grep -c ' T jsonSet$' || true)"
+      - name: testprep
+        run: sudo apt-get install -y tcl8.6 tclx
+      - name: JSON tests against a single-node cluster, as upstream's test-external-cluster
+        if: "!contains(env.JSON_CI_TESTS, 'unit/cluster')"
+        run: |
+          ./src/valkey-server --cluster-enabled yes --cluster-databases 16 --daemonize yes \
+            --save "" --logfile external-server.log \
+            --enable-protected-configs yes --enable-debug-command yes --enable-module-command yes
+          ./src/valkey-cli cluster addslots $(for slot in {0..16383}; do echo $slot; done); sleep 5
+          if [ -n "$JSON_CI_TESTS" ]; then eval "set -- $JSON_CI_TESTS"; else set -- $(.github/json-bench/json-tcl-args.sh); fi
+          ./runtest --host 127.0.0.1 --port 6379 --verbose --cluster-mode \
+            --failures-output test-failures/external-cluster.json "$@"
+      - name: Cluster tests, tests/unit/cluster
+        if: (success() || failure()) && (env.JSON_CI_TESTS == '' || contains(env.JSON_CI_TESTS, 'unit/cluster'))
+        run: |
+          eval "set -- $JSON_CI_TESTS"
+          ./runtest-cluster --verbose --dump-logs --failures-output test-failures/cluster.json "$@"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: failure()
+        with:
+          name: json-cluster-logs
+          path: |
+            external-server.log
+            test-failures
+            tests/tmp
+
+  asan:
+    if: contains(format(',{0},', github.event.inputs.jobs), ',asan,')
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    env:
+      CC: ${{ matrix.compiler }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install libbacktrace
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ianlancetaylor/libbacktrace
+          ref: b9e40069c0b47a722286b94eb5231f7f05c08713
+          path: libbacktrace
+      - run: cd libbacktrace && ./configure && make && sudo make install
+      - name: make
+        run: make OPT=-O3 SANITIZER=address SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes $JSON_BUILD_ARG
+      - name: Instrument the JSON module
+        # SANITIZER adds its flags to CFLAGS, which the module's sub-make does
+        # not receive, so rebuild the module with them and relink.
+        if: env.JSON_BUILD_ARG == ''
+        run: |
+          echo "before: $(nm src/modules/json/*.o | grep -c ' U __asan_' || true) ASan references in the module"
+          make -C src/modules/json clean
+          make -C src/modules/json OPTIMIZATION=-O3 CFLAGS="-g -fsanitize=address -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          make OPT=-O3 SANITIZER=address SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes
+          n=$(nm src/modules/json/*.o | grep -c ' U __asan_')
+          echo "after: $n ASan references in the module"; test "$n" -gt 0
+      - name: testprep
+        run: sudo apt-get install -y tcl8.6 tclx
+      - name: test
+        run: |
+          eval "set -- $JSON_CI_TESTS"
+          ./runtest --accurate --failures-output test-failures/valkey.json --verbose --dump-logs "$@"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: failure()
+        with:
+          name: json-asan-${{ matrix.compiler }}-logs
+          path: |
+            test-failures
+            tests/tmp
+
+  ubsan:
+    if: contains(format(',{0},', github.event.inputs.jobs), ',ubsan,')
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    env:
+      CC: ${{ matrix.compiler }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install libbacktrace
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ianlancetaylor/libbacktrace
+          ref: b9e40069c0b47a722286b94eb5231f7f05c08713
+          path: libbacktrace
+      - run: cd libbacktrace && ./configure && make && sudo make install
+      - name: make
+        run: make OPT=-O3 SANITIZER=undefined SERVER_CFLAGS='-Werror' LUA_DEBUG=yes USE_LIBBACKTRACE=yes $JSON_BUILD_ARG
+      - name: Instrument the JSON module
+        if: env.JSON_BUILD_ARG == ''
+        run: |
+          echo "before: $(nm src/modules/json/*.o | grep -c ' U __ubsan_' || true) UBSan references in the module"
+          make -C src/modules/json clean
+          make -C src/modules/json OPTIMIZATION=-O3 CFLAGS="-g -fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          make OPT=-O3 SANITIZER=undefined SERVER_CFLAGS='-Werror' LUA_DEBUG=yes USE_LIBBACKTRACE=yes
+          n=$(nm src/modules/json/*.o | grep -c ' U __ubsan_')
+          echo "after: $n UBSan references in the module"; test "$n" -gt 0
+      - name: testprep
+        run: sudo apt-get install -y tcl8.6 tclx
+      - name: test
+        run: |
+          eval "set -- $JSON_CI_TESTS"
+          ./runtest --accurate --failures-output test-failures/valkey.json --verbose --dump-logs "$@"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: failure()
+        with:
+          name: json-ubsan-${{ matrix.compiler }}-logs
+          path: |
+            test-failures
+            tests/tmp
+
+  valgrind:
+    # Upstream's test-valgrind-test, restricted to the JSON files and
+    # tests/unit/type, in shards so that each fits in a job.
+    name: valgrind (${{ matrix.shard }})
+    if: contains(format(',{0},', github.event.inputs.jobs), ',valgrind,')
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(github.event.inputs.tests != '' && '["targeted"]' || '["json-1", "json-2", "json-3", "type-1", "type-2"]') }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install libbacktrace
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ianlancetaylor/libbacktrace
+          ref: b9e40069c0b47a722286b94eb5231f7f05c08713
+          path: libbacktrace
+      - run: cd libbacktrace && ./configure && make && sudo make install
+      - name: Install Zstandard
+        run: sudo apt-get update && sudo apt-get install -y libzstd-dev
+      - name: make
+        run: make valgrind SERVER_CFLAGS='-Werror' BUILD_ZSTD=yes USE_LIBBACKTRACE=yes $JSON_BUILD_ARG
+      - name: testprep
+        run: sudo apt-get install -y tcl8.6 tclx valgrind
+      - name: test
+        run: |
+          u=unit/type
+          case "${{ matrix.shard }}" in
+            json-1) set -- $u/json $u/json-array $u/json-cmds $u/json-merge $u/json-startup $u/json-defrag ;;
+            json-2) set -- $u/json-encoding $u/json-keyspace $u/json-misc ;;
+            json-3) set -- $u/json-num $u/json-path $u/json-robust integration/json-persistence integration/json-replication ;;
+            type-1) set -- $u/hash $u/incr $u/list $u/list-2 $u/list-3 $u/path_hash ;;
+            type-2) set -- $u/set $u/stream $u/stream-cgroups $u/string $u/zset ;;
+            targeted) set -- ;;
+          esac
+          args=""
+          for t in "$@"; do args="$args --single $t"; done
+          eval "set -- $args $JSON_CI_TESTS"
+          ./runtest --valgrind --no-latency --failures-output test-failures/valkey.json --verbose --clients 1 \
+            --timeout 2400 --dump-logs "$@"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: failure()
+        with:
+          name: json-valgrind-${{ matrix.shard }}-logs
+          path: |
+            test-failures
+            tests/tmp
+
+  iothreads:
+    if: contains(format(',{0},', github.event.inputs.jobs), ',iothreads,')
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install libbacktrace
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ianlancetaylor/libbacktrace
+          ref: b9e40069c0b47a722286b94eb5231f7f05c08713
+          path: libbacktrace
+      - run: cd libbacktrace && ./configure && make && sudo make install
+      - name: make
+        run: make SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes $JSON_BUILD_ARG
+      - name: testprep
+        run: sudo apt-get install -y tcl8.6 tclx
+      - name: test, as upstream's test-ubuntu-io-threads
+        if: env.JSON_CI_TESTS == ''
+        run: ./runtest --io-threads --accurate --failures-output test-failures/valkey.json --verbose --tags network --dump-logs
+      - name: JSON tests with IO threads
+        if: success() || failure()
+        run: |
+          if [ -n "$JSON_CI_TESTS" ]; then eval "set -- $JSON_CI_TESTS"; else set -- $(.github/json-bench/json-tcl-args.sh); fi
+          ./runtest --io-threads --accurate --failures-output test-failures/json.json --verbose --dump-logs "$@"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: failure()
+        with:
+          name: json-iothreads-logs
+          path: |
+            test-failures
+            tests/tmp
+
+  tls:
+    # Upstream's test-ubuntu-tls: the whole suite, which includes the JSON files.
+    if: contains(format(',{0},', github.event.inputs.jobs), ',tls,')
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install libbacktrace
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ianlancetaylor/libbacktrace
+          ref: b9e40069c0b47a722286b94eb5231f7f05c08713
+          path: libbacktrace
+      - run: cd libbacktrace && ./configure && make && sudo make install
+      - name: Install Zstandard
+        run: sudo apt-get update && sudo apt-get install -y libzstd-dev
+      - name: make
+        run: make BUILD_TLS=yes BUILD_ZSTD=yes SERVER_CFLAGS='-Werror' USE_LIBBACKTRACE=yes $JSON_BUILD_ARG
+      - name: testprep
+        run: |
+          sudo apt-get install -y tcl8.6 tclx tcl-tls
+          ./utils/gen-test-certs.sh
+      - name: test
+        run: |
+          eval "set -- $JSON_CI_TESTS"
+          ./runtest --accurate --failures-output test-failures/valkey.json --verbose --dump-logs --tls "$@"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: failure()
+        with:
+          name: json-tls-logs
+          path: |
+            test-failures
+            tests/tmp
+
+  alpine:
+    if: contains(format(',{0},', github.event.inputs.jobs), ',alpine,')
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install libbacktrace
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ianlancetaylor/libbacktrace
+          ref: b9e40069c0b47a722286b94eb5231f7f05c08713
+          path: libbacktrace
+      - name: Build libbacktrace
+        run: |
+          apk add build-base git zstd-dev zstd-static
+          cd libbacktrace && ./configure && make && make install
+      - name: make
+        run: |
+          make SERVER_CFLAGS='-Werror' BUILD_ZSTD=yes USE_LIBBACKTRACE=yes $JSON_BUILD_ARG
+          echo "jsonSet: $(nm src/valkey-server | grep -c ' T jsonSet$' || true)"
+      - name: testprep
+        run: apk add tcl procps tclx
+      - name: JSON tests
+        run: |
+          if [ -n "$JSON_CI_TESTS" ]; then eval "set -- $JSON_CI_TESTS"; else set -- $(.github/json-bench/json-tcl-args.sh); fi
+          ./runtest --accurate --failures-output test-failures/valkey.json --verbose --dump-logs "$@"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: failure()
+        with:
+          name: json-alpine-logs
+          path: |
+            test-failures
+            tests/tmp
+
+  coverage:
+    # Upstream's Codecov job builds with 'make gcov' on ubuntu-22.04. That
+    # passes the coverage flags in SERVER_CFLAGS, which the module's sub-make
+    # does not receive, so the module is rebuilt with them.
+    if: contains(format(',{0},', github.event.inputs.jobs), ',coverage,')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: valkey
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.VALKEY_JSON_REPO }}
+          ref: ${{ env.VALKEY_JSON_SHA }}
+          path: valkey-json
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: Tencent/rapidjson
+          ref: ${{ env.RAPIDJSON_SHA }}
+          path: rapidjson
+      - name: Install libbacktrace
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ianlancetaylor/libbacktrace
+          ref: b9e40069c0b47a722286b94eb5231f7f05c08713
+          path: libbacktrace
+      - run: cd libbacktrace && ./configure && make && sudo make install
+      - name: Install lcov
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lcov tcl8.6 tclx
+          lcov --version; gcc --version | head -1
+      - name: Build
+        run: |
+          cp -a valkey valkey-ref
+          make -C valkey gcov USE_LIBBACKTRACE=yes
+          echo "before: $(nm valkey/src/modules/json/*.o | grep -c ' U __gcov_' || true) gcov references in the module"
+          make -C valkey/src/modules/json clean
+          make -C valkey/src/modules/json OPTIMIZATION=-O3 CFLAGS="-g -fprofile-arcs -ftest-coverage"
+          make -C valkey gcov USE_LIBBACKTRACE=yes
+          n=$(nm valkey/src/modules/json/*.o | grep -c ' U __gcov_')
+          echo "after: $n gcov references in the module"; test "$n" -gt 0
+          make -C valkey-ref -j"$(nproc)" BUILD_JSON=no
+          mkdir -p valkey-json/src/include
+          cp valkey/src/valkeymodule.h valkey-json/src/include/
+          cd valkey-json
+          g++ -O2 -fPIC -std=gnu++17 -march=nehalem -Wno-mismatched-tags -Wno-format \
+            '-DVALKEYMODULE_ATTR_COMMON=__attribute__((weak))' -Isrc -Isrc/include -I../rapidjson/include \
+            src/json/*.cc -shared -o ../libjson.so
+      - name: JSON Tcl tests
+        env:
+          VALKEY_JSON_EXTERNAL_MODULE: ${{ github.workspace }}/libjson.so
+        run: |
+          cd valkey
+          ./runtest --verbose --dump-logs --clients 8 $(.github/json-bench/json-tcl-args.sh)
+      - name: Commands against the external module
+        if: success() || failure()
+        env:
+          JSON_REF_SERVER: ${{ github.workspace }}/valkey-ref/src/valkey-server
+          JSON_REF_MODULE: ${{ github.workspace }}/libjson.so
+        run: |
+          cd valkey/src/modules/json/tests/cmd
+          python3 test_cmd.py
+          python3 test_api.py
+          python3 test_search.py
+          python3 test_repl.py
+      - name: Capture the server's coverage
+        if: success() || failure()
+        run: lcov --capture --directory valkey/src/modules/json --output-file server.info
+      - name: Engine, number and path suites
+        if: success() || failure()
+        run: |
+          cd valkey/src/modules/json/tests
+          make -C num CC=gcc CFLAGS=--coverage check-quick
+          make -C engine CC=gcc CFLAGS=--coverage check-quick
+          make -C path CC=gcc CFLAGS=--coverage test
+      - name: Report
+        if: success() || failure()
+        run: |
+          lcov --capture --directory valkey/src/modules/json --output-file all.info
+          lcov --extract all.info '*/src/modules/json/json_*.c' --output-file json.info
+          lcov --list json.info
+          genhtml --legend --function-coverage -o lcov-html json.info > /dev/null
+          python3 valkey/.github/json-bench/cov-report.py server=server.info all=all.info | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: success() || failure()
+        with:
+          name: json-coverage
+          path: |
+            lcov-html
+            server.info
+            all.info
+            json.info
