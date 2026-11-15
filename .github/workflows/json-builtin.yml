@@ -1,0 +1,220 @@
+name: JSON built-in
+
+# Benchmarks and tests the built-in JSON module against the external
+# valkey-json module on GitHub-hosted runners. Runs when this branch is pushed,
+# and on demand.
+
+on:
+  push:
+    branches:
+      - json-builtin-bench
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Jobs to run, comma separated: bench, test, 32bit, s390x"
+        default: "bench,test"
+      rounds:
+        description: "Benchmark rounds per side"
+        default: "3"
+
+permissions:
+  contents: read
+
+env:
+  # The external module the built-in is compared with: the same commit as the
+  # Graviton baseline.
+  VALKEY_JSON_REPO: valkey-io/valkey-json
+  VALKEY_JSON_SHA: 60cfc5ca52d5bae4286833bd8819627065b7d335
+  RAPIDJSON_SHA: ebd87cb468fb4cb060b37e579718c4a4125416c1
+
+jobs:
+  bench-x86:
+    if: contains(github.event.inputs.jobs || 'bench,test', 'bench')
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: valkey
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.VALKEY_JSON_REPO }}
+          ref: ${{ env.VALKEY_JSON_SHA }}
+          path: valkey-json
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: Tencent/rapidjson
+          ref: ${{ env.RAPIDJSON_SHA }}
+          path: rapidjson
+      - name: Machine
+        run: |
+          uname -a
+          lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Core|Socket|NUMA|MHz|L3'
+          free -g
+          nproc
+      - name: Build the built-in server and a reference server without it
+        run: |
+          cp -a valkey valkey-ref
+          make -C valkey -j"$(nproc)" SERVER_CFLAGS=-Werror
+          make -C valkey-ref -j"$(nproc)" BUILD_JSON=no
+          nm valkey/src/valkey-server | grep -c ' T jsonSet$'
+          if nm valkey-ref/src/valkey-server | grep -q ' T jsonSet$'; then echo "reference has JSON built in"; exit 1; fi
+      - name: Build the external module
+        run: |
+          cd valkey-json
+          g++ -O3 -DNDEBUG -g -fno-omit-frame-pointer -fPIC -std=gnu++17 -march=nehalem \
+            -Wno-mismatched-tags -Wno-format '-DVALKEYMODULE_ATTR_COMMON=__attribute__((weak))' \
+            -Isrc -Isrc/include -I../rapidjson/include src/json/*.cc -shared -o ../libjson.so
+      - name: Benchmark, interleaved rounds
+        env:
+          BENCH_TMP: /dev/shm
+        run: |
+          mkdir -p results
+          rounds="${{ github.event.inputs.rounds || '3' }}"
+          B=valkey/.github/json-bench
+          for n in $(seq 1 "$rounds"); do
+            python3 $B/bench.py --server valkey/src/valkey-server --name builtin \
+              --out results/cand-$n.json --server-cpu 0,1 --client-cpu 2 | tail -3
+            python3 $B/bench.py --server valkey-ref/src/valkey-server --module "$PWD/libjson.so" --name module \
+              --out results/module-$n.json --server-cpu 0,1 --client-cpu 2 | tail -3
+          done
+          ls results
+      - name: Real documents and many clients
+        env:
+          BENCH_TMP: /dev/shm
+        run: |
+          B=valkey/.github/json-bench
+          python3 $B/realbench.py --server valkey/src/valkey-server --name builtin --out results/real-cand.json \
+            --data valkey-json/tst/integration/data --bench valkey/src/valkey-benchmark --server-cpu 0,1 --client-cpus 2,3
+          python3 $B/realbench.py --server valkey-ref/src/valkey-server --module "$PWD/libjson.so" --name module \
+            --out results/real-module.json --data valkey-json/tst/integration/data --bench valkey/src/valkey-benchmark \
+            --server-cpu 0,1 --client-cpus 2,3
+      - name: Report
+        run: |
+          rounds="${{ github.event.inputs.rounds || '3' }}"
+          base=$(seq -s, -f results/module-%g.json 1 "$rounds")
+          cand=$(seq -s, -f results/cand-%g.json 1 "$rounds")
+          {
+            echo "# Built-in JSON against valkey-json on $(lscpu | sed -n 's/^Model name: *//p' | head -1)"
+            echo
+            python3 valkey/.github/json-bench/report.py "$base" "$cand"
+          } | tee results/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: json-bench-x86
+          path: results
+
+  test-x86:
+    if: contains(github.event.inputs.jobs || 'bench,test', 'test')
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: valkey
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.VALKEY_JSON_REPO }}
+          ref: ${{ env.VALKEY_JSON_SHA }}
+          path: valkey-json
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: Tencent/rapidjson
+          ref: ${{ env.RAPIDJSON_SHA }}
+          path: rapidjson
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tcl8.6 tclx
+      - name: Build
+        run: |
+          cp -a valkey valkey-ref
+          make -C valkey -j"$(nproc)" SERVER_CFLAGS=-Werror
+          make -C valkey-ref -j"$(nproc)" BUILD_JSON=no
+          cd valkey-json
+          g++ -O2 -fPIC -std=gnu++17 -march=nehalem -Wno-mismatched-tags -Wno-format \
+            '-DVALKEYMODULE_ATTR_COMMON=__attribute__((weak))' -Isrc -Isrc/include -I../rapidjson/include \
+            src/json/*.cc -shared -o ../libjson.so
+      - name: Engine, number and path suites
+        run: |
+          cd valkey/src/modules/json/tests
+          make -C num CC=gcc check-quick
+          make -C engine CC=gcc check-quick
+          make -C path CC=gcc test
+      - name: Commands against the external module
+        env:
+          JSON_REF_SERVER: ${{ github.workspace }}/valkey-ref/src/valkey-server
+          JSON_REF_MODULE: ${{ github.workspace }}/libjson.so
+        run: |
+          cd valkey/src/modules/json/tests/cmd
+          python3 test_cmd.py
+          python3 test_api.py
+          python3 test_search.py
+          python3 test_repl.py
+      - name: Valkey test suite
+        env:
+          VALKEY_JSON_EXTERNAL_MODULE: ${{ github.workspace }}/libjson.so
+        run: |
+          cd valkey
+          ./runtest --verbose --dump-logs --clients 8
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: failure()
+        with:
+          name: json-test-x86-logs
+          path: valkey/tests/tmp
+
+  test-32bit:
+    if: contains(github.event.inputs.jobs || 'bench,test', '32bit')
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib g++-multilib libc6-dev-i386 tcl8.6 tclx
+      - name: Build
+        run: |
+          make -j"$(nproc)" CFLAGS=-m32 LDFLAGS=-m32 SERVER_CFLAGS=-Werror
+          file src/valkey-server
+          nm src/valkey-server | grep -c ' T jsonSet$'
+      - name: Engine and number suites
+        run: |
+          cd src/modules/json/tests
+          make -C num CC='gcc -m32' check-quick
+          make -C engine CC='gcc -m32' check-quick
+      - name: JSON tests and the files the change touches
+        run: |
+          args=""
+          for f in tests/unit/type/json*.tcl tests/integration/json-*.tcl; do
+            n=${f#tests/}
+            args="$args --single ${n%.tcl}"
+          done
+          ./runtest --verbose --dump-logs --clients 8 $args --single unit/introspection --single unit/introspection-2 \
+            --single integration/corrupt-dump-fuzzer
+
+  test-s390x:
+    if: contains(github.event.inputs.jobs || 'bench,test', 's390x')
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Build and test on s390x (big endian)
+        uses: uraimo/run-on-arch-action@d94c13912ea685de38fccc1109385b83fd79427d # v3.0.1
+        with:
+          arch: s390x
+          distro: ubuntu_latest
+          githubToken: ${{ github.token }}
+          run: |
+            apt-get update
+            apt-get install -y build-essential pkg-config python3 tcl procps
+            make -j"$(nproc)" SERVER_CFLAGS=-Werror
+            nm src/valkey-server | grep -c ' T jsonSet$'
+            (cd src/modules/json/tests && make -C num CC=gcc check-quick && make -C engine CC=gcc check-quick)
+            args=""
+            for f in tests/unit/type/json*.tcl tests/integration/json-*.tcl; do
+              n=${f#tests/}
+              args="$args --single ${n%.tcl}"
+            done
+            ./runtest --verbose --dump-logs --clients 4 --timeout 3600 $args
