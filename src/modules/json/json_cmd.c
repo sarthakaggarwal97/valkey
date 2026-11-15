@@ -137,9 +137,8 @@ static jsonDoc jsonKeyDoc(ValkeyModuleKey *key) {
  * released whatever the old word referred to, so the old value is not freed
  * here. The key keeps its TTL. */
 static void jsonKeyStore(ValkeyModuleKey *key, jsonDoc before, jsonDoc after) {
-    void *old;
     if (after == before) return;
-    ValkeyModule_ModuleTypeReplaceValue(key, jsonModuleType, jsonDocToValue(after), &old);
+    jsonKeyStoreDoc(key, after);
 }
 
 /* Opens a key for a write command. Returns NULL after replying when the key
@@ -2301,7 +2300,7 @@ static jsonVal *jsonParseDocument(ValkeyModuleCtx *ctx, const char *json, size_t
 static void jsonKeySetDocument(ValkeyModuleKey *key, jsonVal *v) {
     jsonDoc d = jsonValToDoc(v);
     size_t size = jsonDocMemUsage(d);
-    ValkeyModule_ModuleTypeSetValue(key, jsonModuleType, jsonDocToValue(d));
+    ValkeyModule_ModuleTypeSetValue(key, jsonModuleType, jsonValueNew(d));
     jsonStatsOnInsert(1, 0, size, size);
 }
 
@@ -2743,13 +2742,13 @@ static int jsonMsetCommand(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int 
             size_t size = jsonDocMemUsage(it->staged), total_json_len = 0;
             for (uint32_t k = i; k != JSON_MSET_NONE; k = items[k].next) total_json_len += items[k].json_len;
             if (it->staged_root) {
-                ValkeyModule_ModuleTypeSetValue(it->key, jsonModuleType, jsonDocToValue(it->staged));
+                ValkeyModule_ModuleTypeSetValue(it->key, jsonModuleType, jsonValueNew(it->staged));
                 jsonStatsOnInsert(1, 0, size, size);
             } else {
-                void *old = NULL;
-                size_t orig_size = jsonDocMemUsage(jsonKeyDoc(it->key));
-                ValkeyModule_ModuleTypeReplaceValue(it->key, jsonModuleType, jsonDocToValue(it->staged), &old);
-                jsonDocFree(jsonDocFromValue(old));
+                jsonDoc old = jsonKeyDoc(it->key);
+                size_t orig_size = jsonDocMemUsage(old);
+                jsonKeyStoreDoc(it->key, it->staged);
+                jsonDocFree(old);
                 jsonStatsOnUpdate(orig_size, size, total_json_len);
             }
             it->staged = 0;

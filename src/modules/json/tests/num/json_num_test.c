@@ -44,6 +44,23 @@ static void put(const void *data, size_t len) {
     }
 }
 
+/* The binary records check_num.py exchanges with the filters below are
+ * little-endian whatever the byte order here: the script need not run on the
+ * machine this program runs on (tests/engine/docker_check.sh runs it on the
+ * host and the program in an emulated container). */
+static int readLE(void *dst, size_t n) {
+    uint8_t b[8];
+    if (n > sizeof(b) || fread(b, 1, n, stdin) != n) return 0;
+    for (size_t i = 0; i < n; i++) ((uint8_t *)dst)[__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ ? n - 1 - i : i] = b[i];
+    return 1;
+}
+
+static void putLE(const void *src, size_t n) {
+    uint8_t b[8];
+    for (size_t i = 0; i < n && i < sizeof(b); i++) b[i] = ((const uint8_t *)src)[__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ ? n - 1 - i : i];
+    put(b, n);
+}
+
 static int sameBits(double a, double b) {
     return memcmp(&a, &b, sizeof(a)) == 0;
 }
@@ -285,7 +302,7 @@ static int selftest(void) {
 
 static int printMode(void) {
     double d;
-    while (fread(&d, sizeof(d), 1, stdin) == 1) {
+    while (readLE(&d, sizeof(d))) {
         char buf[JSON_DOUBLE_BUF + 1];
         int overflow;
         int n = jsonDoublePrint(d, buf);
@@ -309,7 +326,7 @@ static int parseMode(void) {
         if (line[len - 1] == '\n') len--;
         double d = parseExact(line, (size_t)len, &overflow);
         if (overflow != (isinf(d) != 0)) fail("overflow flag", line, (size_t)len, d);
-        put(&d, sizeof(d));
+        putLE(&d, sizeof(d));
     }
     free(line);
     return failures != 0;
@@ -322,13 +339,13 @@ static int decimalMode(void) {
         uint64_t mantissa;
         int32_t exp10, negative;
     } rec;
-    while (fread(&rec, sizeof(rec), 1, stdin) == 1) {
+    while (readLE(&rec.mantissa, 8) && readLE(&rec.exp10, 4) && readLE(&rec.negative, 4)) {
         char text[64];
         int overflow;
         double d = jsonDoubleFromDecimal(rec.mantissa, rec.exp10, rec.negative);
         int n = snprintf(text, sizeof(text), "%s%" PRIu64 "e%d", rec.negative ? "-" : "", rec.mantissa, rec.exp10);
         if (!sameBits(parseExact(text, (size_t)n, &overflow), d)) fail("decimal vs parse", text, (size_t)n, d);
-        put(&d, sizeof(d));
+        putLE(&d, sizeof(d));
     }
     return failures != 0;
 }
@@ -338,7 +355,7 @@ static int fixedMode(void) {
         double d;
         int32_t frac;
     } rec;
-    while (fread(&rec.d, 8, 1, stdin) == 1 && fread(&rec.frac, 4, 1, stdin) == 1) {
+    while (readLE(&rec.d, 8) && readLE(&rec.frac, 4)) {
         char buf[JSON_DOUBLE_BUF + 1];
         int overflow;
         memset(buf, '#', sizeof(buf));

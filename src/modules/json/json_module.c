@@ -319,7 +319,7 @@ static void *jsonTypeRdbLoad(ValkeyModuleIO *rdb, int encver) {
     jsonDoc doc = jsonValToDoc(val);
     size_t size = jsonDocMemUsage(doc);
     jsonStatsOnInsert(1, 0, size, size);
-    return jsonDocToValue(doc);
+    return jsonValueNew(doc);
 }
 
 /* Can run on a save thread (forkless save). It only reads the document. */
@@ -356,25 +356,32 @@ static void jsonTypeFree(void *value) {
     size_t size = jsonDocMemUsage(doc);
     jsonStatsOnDelete(1, size, 0, size);
     jsonDocFree(doc);
+#if JSON_DOC_BOXED
+    ValkeyModule_Free(value);
+#endif
 }
 
 static size_t jsonTypeMemUsage(ValkeyModuleKeyOptCtx *ctx, const void *value, size_t sample_size) {
     VALKEYMODULE_NOT_USED(ctx);
     VALKEYMODULE_NOT_USED(sample_size);
-    return jsonDocMemUsage(jsonDocFromValue((void *)value));
+    size_t size = jsonDocMemUsage(jsonDocFromValue(value));
+#if JSON_DOC_BOXED
+    size += ValkeyModule_MallocUsableSize((void *)value);
+#endif
+    return size;
 }
 
 static size_t jsonTypeFreeEffort(ValkeyModuleKeyOptCtx *ctx, const void *value) {
     VALKEYMODULE_NOT_USED(ctx);
-    return jsonDocFreeEffort(jsonDocFromValue((void *)value));
+    return jsonDocFreeEffort(jsonDocFromValue(value));
 }
 
 static void *jsonTypeCopy(ValkeyModuleKeyOptCtx *ctx, const void *value) {
     VALKEYMODULE_NOT_USED(ctx);
-    jsonDoc copy = jsonDocCopy(jsonDocFromValue((void *)value));
+    jsonDoc copy = jsonDocCopy(jsonDocFromValue(value));
     size_t size = jsonDocMemUsage(copy);
     jsonStatsOnInsert(1, 0, size, size);
-    return jsonDocToValue(copy);
+    return jsonValueNew(copy);
 }
 
 /* Feeds one scalar to the digest the way the external module does. */
@@ -458,12 +465,21 @@ static int defragStop(void *ctx) {
  * active-defrag-max-scan-fields. Smaller documents are done in one call. */
 static int jsonTypeDefrag(ValkeyModuleDefragCtx *ctx, ValkeyModuleString *key, void **value) {
     VALKEYMODULE_NOT_USED(key);
+#if JSON_DOC_BOXED
+    /* The cell that holds the document word is an allocation too. */
+    void *moved = ValkeyModule_DefragAlloc(ctx, *value);
+    if (moved) *value = moved;
+#endif
     jsonDoc doc = jsonDocFromValue(*value);
     unsigned long cursor = 0;
     int has_cursor = (ValkeyModule_DefragCursorGet(ctx, &cursor) == VALKEYMODULE_OK);
     if (!has_cursor) cursor = 0;
     int more = jsonDocDefrag(&doc, defragMove, defragStop, ctx, &cursor);
-    *value = jsonDocToValue(doc);
+#if JSON_DOC_BOXED
+    *(jsonDoc *)*value = doc;
+#else
+    *value = (void *)(uintptr_t)doc;
+#endif
     if (!more) {
         atomic_fetch_add_explicit(&jsonStats.defrag_count, 1, memory_order_relaxed);
         return 0;

@@ -226,6 +226,8 @@ def start_docs(r):
     docs += [d for d in G.EDGE if len(d) < 3000]
     docs += [d for d in G.random_docs(60 if QUICK else 300, seed=13) if len(d) < 6000]
     docs += r.sample([d for d in G.number_docs() if len(d) < 400], 60 if QUICK else 300)
+    # Every encoding with asymmetric bytes (byte order and widths), so that changes read and rewrite each of them.
+    docs += random.Random(17).sample([d for d in G.layout_docs() if len(d) < 3000], 80 if QUICK else 400)
     docs += ['"abcdefg"', '"' + "s" * 250 + '"', "7", "0.5", "null", "[]", "{}", "[0.50,0.25]", "[1,2,3]", "[0.5,1.5]", '{"a":[0.50,1.25,3]}']
     edge = []
     for n in (1, 3, 4, 5, 126, 127, 128, 129, 130, 254, 255, 256, 257):

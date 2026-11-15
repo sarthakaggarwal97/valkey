@@ -374,6 +374,75 @@ def caps_docs():
     docs.append('{"big":%s,"small":{"u19999":1,"u16500":{"u200":2,"u127":3,"u128":4},"u0":[{"u16383":5},{"u16384":6}]}}' % big)
     return docs
 
+# ---------------------------------------------------------------- byte order and widths
+
+def dec_text(m, k):
+    """The decimal whose digits are the integer m and that has k fraction digits."""
+    digits = str(abs(m))
+    text = digits[:-k] + "." + digits[-k:] if k < len(digits) else "0." + "0" * (k - len(digits)) + digits
+    return ("-" if m < 0 else "") + text
+
+def layout_docs():
+    """Every encoding of a value, with values whose bytes all differ, so that a field read in the wrong byte order,
+    at the wrong width or at the wrong end of a word shows as a wrong value. Each document runs under every set of
+    caps, so each value is seen packed, in a spine word and in a heap node. Integers and decimal digits use the
+    patterns 0x0102..., which no byte swap or truncation leaves unchanged; strings put a different byte at every
+    position."""
+    ints = [str(i) for i in range(32)]
+    for w in (8, 16, 32, 64):
+        lo, hi = -(1 << (w - 1)), (1 << (w - 1)) - 1
+        pat = int.from_bytes(bytes(range(1, w // 8 + 1)), "big")  # 0x01, 0x0102, 0x01020304, 0x0102030405060708
+        ints += [str(v) for v in (lo, hi, lo + 1, hi - 1, pat, -pat, pat | (1 << (w - 2)), -(pat | (1 << (w - 2))))]
+    ints += [str(v) for v in ((1 << 60) - 1, 1 << 60, -(1 << 60), -(1 << 60) - 1, 0x0102030405060708, 0x7F6E5D4C3B2A1908)]
+    doubles = ["1.5e-7", "-2.5e-7", "1e300", "-1e300", "5e-324", "2.2250738585072014e-308", "1.7976931348623157e+308",
+               "1.2345678901234567e-7", "9.87654321012345e+100", "-0.0", "0.0", "0.5", "-0.75", "3.0", "1.0000000000000002",
+               "123456789012345680000.0"]
+    decimals = []
+    for k in (1, 2, 7, 8, 15, 16, 21, 22, 23, 30, 31):
+        for m in (0x61, 0x0102, 0x01020304, 0x0102030405060708, 102030405060708090, 1, 9, 0x7F, 0x80, 0x7FFF, 0x8000,
+                  0x7FFFFFFF, 0x80000000, 104857600000000000, 104857599999999999):
+            if len(str(m)) <= 18: decimals += [dec_text(m, k), dec_text(-m, k)]
+    raws = ["1e5", "1E+5", "1.0e5", "-1.0e5", "1.00e10", "1.000e10", "-0.00", "1" * 20, "-" + "1" * 25, "1" * 300, "2.50E-3"]
+    texts = []
+    for n in range(0, 17):
+        base = "".join(chr(0x41 + i) for i in range(n))  # ABCD...: a different byte at every position
+        texts += [base, base[::-1].lower()]
+        for p in range(n):
+            texts.append(base[:p] + "\n" + base[p + 1:])     # one byte that needs escaping, at each position
+        if n >= 2: texts.append("\u00e9" * (n // 2) + "x" * (n % 2))  # two-byte characters
+    for n in (62, 63, 64, 65, 255, 256, 257, 300, 65535, 65536):
+        texts.append("".join(chr(0x21 + (i * 7) % 90) for i in range(n)).replace('"', "q").replace("\\", "b"))
+    strs = [json.dumps(t, ensure_ascii=False) for t in texts]
+    scalars = ["null", "false", "true"] + ints + doubles + decimals + raws + strs
+    docs = []
+    for v in scalars:
+        docs += [v, '{"k":%s}' % v, "[%s,null]" % v, '[%s,"0123456789"]' % v]
+    docs.append("[" + ",".join(scalars) + "]")
+    docs.append("{" + ",".join('"m%d":%s' % (i, v) for i, v in enumerate(scalars)) + "}")
+    # Typed arrays of every kind, narrow and wide, packed and in a node: each width's extremes and patterns.
+    def typed(vals):
+        for n in (1, 3, 40, 255, 256, 300):
+            arr = (vals * (n // len(vals) + 1))[:n]
+            docs.append("[" + ",".join(arr) + "]")
+            docs.append('{"a":[' + ",".join(arr) + '],"b":[' + ",".join(arr[::-1]) + "]}")
+    for w in (8, 16, 32, 64):
+        lo, hi = -(1 << (w - 1)), (1 << (w - 1)) - 1
+        pat = int.from_bytes(bytes(range(1, w // 8 + 1)), "big")
+        typed([str(v) for v in (pat, lo, hi, -pat, 3, -1)])
+    typed([d for d in doubles if "e" in d or "E" in d])
+    for k in (1, 2, 7, 8, 15, 16, 22, 23, 31):
+        for w in (8, 16, 32, 64):
+            lo, hi = -(1 << (w - 1)), (1 << (w - 1)) - 1
+            pat = int.from_bytes(bytes(range(1, w // 8 + 1)), "big")
+            typed([dec_text(m, k) for m in (pat, -pat, hi if len(str(hi)) <= 18 else 10**18 - 1, lo if len(str(lo)) <= 19 else -(10**18 - 1), 5)])
+    # Strings of every length a string array holds, with one longer than a word so that it is used.
+    for t in texts:
+        if len(t.encode()) <= 15:
+            s = json.dumps(t, ensure_ascii=False)
+            typed([s, '"HIJKLMNO"', '"' + "ponmlkjihgfedcb" + '"'])
+    typed(["null", "true", "false", "false"])
+    return docs
+
 EDGE = [
     '\ufeff1', '\ufeff {"a":["\ufeff"]}', '\ufeff[]',  # One byte order mark before the text is skipped.
     'null', 'true', 'false', '[]', '{}', '[[]]', '[{}]', '{"a":{}}', '{"a":[]}', '[[[[[[[[[[[[1]]]]]]]]]]]]', '[[],[],{},{}]', '{"a":[],"b":{},"c":[[]]}',

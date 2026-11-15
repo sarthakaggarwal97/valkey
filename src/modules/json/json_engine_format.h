@@ -11,7 +11,9 @@
  *
  * A document is a tree in which any subtree that fits the caps is one PACKED
  * node, and what does not fit is built from "spine" nodes that point at
- * their children. Both encodings are little-endian and 64-bit only.
+ * their children. Neither is ever written out: a document is saved as JSON
+ * text. So both are in the byte order of the machine (see "Byte order"
+ * below), and a spine word is 64 bits wide whatever the width of a pointer.
  *
  *
  * 1. The packed format
@@ -25,7 +27,7 @@
  *   NULL         -                                                 1
  *   FALSE, TRUE  -                                                 1
  *   INT0 + v     - (integer v, 0..31, in the tag)                  1
- *   I8..I64      little-endian two's complement integer            2,3,5,9
+ *   I8..I64      two's complement integer                          2,3,5,9
  *   F64          IEEE-754 double                                   9
  *   DEC(k, w)    decimal with k fraction digits, k <= 15: its      2,3,5,9
  *                digits as a two's complement integer of 1, 2, 4 or
@@ -64,8 +66,8 @@
  * packed decimal when the scale is at most 15. Above that the tag is PK_DECX
  * and a scale byte and eight bytes of M follow.
  *
- * A typed array (TARR) holds only numbers of one kind, as raw little-endian
- * elements of width w: integers of 1, 2, 4 or 8 bytes, doubles, or decimals
+ * A typed array (TARR) holds only numbers of one kind, as raw elements of
+ * width w: integers of 1, 2, 4 or 8 bytes, doubles, or decimals
  * that all have one scale, as their M in 1, 2, 4 or 8 bytes. The emitter
  * makes one only from a non-empty array, but removing elements can leave it
  * empty.
@@ -76,7 +78,14 @@
  *
  * A value slot is one 64-bit word. Its low three bits are a tag:
  *
- *   000              pointer to a heap node (the node's first byte is its kind)
+ *   000              pointer to a heap node (the node's first byte is its
+ *                    kind). Every node comes from the allocator, whose
+ *                    blocks are aligned to at least 8 bytes on every target,
+ *                    32-bit ones included: glibc gives 16 (i386 since 2.26,
+ *                    8 before), jemalloc 8 for its 8-byte class and 16 above,
+ *                    and zmalloc's size prefix, where it has one, is 8 bytes.
+ *                    That leaves the three bits free. Where a pointer has 32
+ *                    bits, it is the low half of the word.
  *   001 101          a double: the word is the IEEE bits rotated left by 3,
  *                    so the tag is its sign and the top two exponent bits.
  *                    These are the doubles of magnitude in [2^-511, 2).
@@ -84,12 +93,14 @@
  *                    |M| * 22 + (scale - 1), for a scale of 1..22 and |M|
  *                    up to 61 bits / 22, which is every |M| of 17 digits
  *   011              a signed 61-bit integer in the upper bits
- *   100              a string of up to 7 bytes: byte 0 is tag, length and
- *                    flags, bytes 1..7 are the string
+ *   100              a string of up to 7 bytes: the low byte is tag, length
+ *                    and flags, and the string is the other seven bytes
+ *                    in memory order (see W_STR_AT)
  *   111              null, false, true, +0.0, -0.0 or, in an object entry, a
  *                    key ID in the upper 32 bits
  *
- * Heap nodes. Offsets are in bytes; every multi-byte field is little-endian.
+ * Heap nodes. Offsets are in bytes; every multi-byte field is in the
+ * machine's byte order.
  *
  *   PACKED   [0] kind  [1..2] blob length  [3..] one packed value
  *
@@ -135,9 +146,18 @@
 #include <stdint.h>
 #include <string.h>
 
-#if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__ || UINTPTR_MAX != UINT64_MAX
-#error "the JSON engine supports 64-bit little-endian targets only"
+/* Byte order. The format is private to the process, so multi-byte fields
+ * are in native order: every one is written and read through the helpers
+ * below, and so is every integer the engine takes from string bytes. The
+ * places that do depend on where the bytes of a word lie name it: an inline
+ * string (W_STR_AT, wordStrBytes), and code that treats eight bytes as one
+ * integer with the first byte lowest, to find a byte by counting bits or to
+ * hash them as SipHash defines it (loadU64LE). */
+#if !defined(__BYTE_ORDER__) || (__BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__ && __BYTE_ORDER__ != __ORDER_BIG_ENDIAN__)
+#error "the JSON engine needs a little-endian or a big-endian target"
 #endif
+#define JSON_BIG_ENDIAN (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+_Static_assert(sizeof(uintptr_t) <= sizeof(uint64_t), "a pointer must fit a spine word");
 
 #define JSON_LIKELY(x) __builtin_expect(!!(x), 1)
 #define JSON_UNLIKELY(x) __builtin_expect(!!(x), 0)
@@ -163,6 +183,14 @@ static inline uint64_t loadU64(const uint8_t *p) {
     uint64_t v;
     memcpy(&v, p, sizeof(v));
     return v;
+}
+
+/* Eight bytes as the integer whose lowest byte is the first of them, on any
+ * byte order: for code that finds the position of a byte by counting bits. A
+ * plain load on little-endian. */
+static inline uint64_t loadU64LE(const uint8_t *p) {
+    const uint64_t v = loadU64(p);
+    return JSON_BIG_ENDIAN ? __builtin_bswap64(v) : v;
 }
 
 static inline double loadF64(const uint8_t *p) {
@@ -503,10 +531,17 @@ static inline const uint8_t *pkText(const uint8_t *p, uint32_t *len) {
 #define W_DEC_SCALES 22
 #define W_DEC_MAGNITUDE_MAX ((((uint64_t)1 << 61) - W_DEC_SCALES) / W_DEC_SCALES)
 
-/* Inline strings: byte 0 is 100 in bits 0..2, the length in bits 3..5 and
- * two flags. */
+/* Inline strings: the low byte of the word is 100 in bits 0..2, the length
+ * in bits 3..5 and two flags. The string is in the other seven bytes, read
+ * and written in memory order: jsonRefString hands out a pointer into the
+ * word. The value of the word as an integer therefore differs between byte
+ * orders, which nothing depends on: such a word is only compared whole. */
 #define W_STR_MAX 7
 #define W_STR_LEN_SHIFT 3
+/* Where the string's bytes start in the memory of the word: after the byte
+ * that holds tag, length and flags when that byte comes first, else at the
+ * front, the tag byte being the last. */
+#define W_STR_AT (JSON_BIG_ENDIAN ? 0 : 1)
 #define W_STR_NOESC 0x40
 #define W_STR_RAWNUM 0x80
 
@@ -514,6 +549,11 @@ static inline const uint8_t *pkText(const uint8_t *p, uint32_t *len) {
 #define W_INT_SHIFT 3
 #define W_INT_MIN (-((int64_t)1 << 60))
 #define W_INT_MAX (((int64_t)1 << 60) - 1)
+
+/* The bytes of the inline string in the word at w. */
+static inline const uint8_t *wordStrBytes(const uint64_t *w) {
+    return (const uint8_t *)w + W_STR_AT;
+}
 
 static inline unsigned wordTag(uint64_t w) {
     return (unsigned)(w & W_TAG_MASK);
@@ -626,7 +666,8 @@ static inline uint32_t nodeLen(const uint8_t *n) {
 }
 
 /* The words of an ARRAY, or the entries of an OBJECT. A node comes from the
- * allocator, so offset 32 is aligned for a 64-bit word. */
+ * allocator, aligned to 8 bytes at least, so offset 32 is aligned for a
+ * 64-bit word on every target. */
 static inline uint64_t *nodeWords(const uint8_t *n) {
     return (uint64_t *)(void *)(uintptr_t)(n + SPINE_HDR);
 }

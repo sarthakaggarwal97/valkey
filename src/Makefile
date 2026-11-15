@@ -333,12 +333,7 @@ else
 	endif
 endif
 
-# Built-in JSON module. BUILD_JSON=no leaves it out. It needs a 64-bit
-# little-endian target, so it is also left out of other builds (32bit, s390x).
-JSON_TARGET_OK := $(shell echo '__SIZEOF_POINTER__ __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__' | $(CC) $(CFLAGS) -x c -E -P - 2>/dev/null | awk 'NF == 3 {print ($$1 == 8 && $$2 == $$3) ? "yes" : "no"}')
-ifneq ($(JSON_TARGET_OK),yes)
-	override BUILD_JSON=no
-endif
+# Built-in JSON module. BUILD_JSON=no leaves it out.
 ifeq ($(BUILD_JSON),no)
 	JSON_MODULE_NAME=
 	JSON_MODULE=
