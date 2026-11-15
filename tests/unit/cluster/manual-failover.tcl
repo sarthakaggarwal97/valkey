@@ -584,6 +584,66 @@ start_cluster 3 2 {tags {external:skip cluster}} {
     }
 }
 
+start_cluster 3 1 {tags {external:skip cluster} overrides {cluster-node-timeout 2000}} {
+    # In the R0/R3 shard, R0 is the primary node and R3 is the replica.
+    #
+    # We trigger a manual failover on R3, so R0 becomes a replica of R3, and
+    # then R3 dies before R0 has completed its first sync with it.
+    #
+    # R0 owned the slots a moment ago and holds the same data, so its data is
+    # well within cluster-replica-validity-factor and it has to fail over and
+    # take the slots back, instead of leaving them on a dead node.
+    test "Demoted primary can fail over if its new primary dies before the first sync" {
+        set R0_nodeid [R 0 cluster myid]
+        set R3_nodeid [R 3 cluster myid]
+        set R3_pid [srv -3 pid]
+
+        # A key in slot 0, which is owned by the R0/R3 shard.
+        set slot0_key "06S"
+        R 0 set $slot0_key bar
+
+        # R0 has no primaryauth, so once it is demoted its PSYNC to R3 is
+        # rejected and its replication link with R3 never comes up.
+        R 3 config set requirepass x
+
+        R 3 cluster failover
+        wait_for_condition 1000 50 {
+            [s 0 role] eq {slave} &&
+            [s -3 role] eq {master}
+        } else {
+            fail "The manual failover does not happen"
+        }
+
+        # Make sure the other primaries know about the new roles before R3
+        # dies, they are the ones that will vote for R0.
+        wait_for_condition 1000 50 {
+            [cluster_has_flag [cluster_get_node_by_id 1 $R3_nodeid] master] eq 1 &&
+            [dict get [cluster_get_node_by_id 1 $R0_nodeid] slaveof] eq $R3_nodeid &&
+
+            [cluster_has_flag [cluster_get_node_by_id 2 $R3_nodeid] master] eq 1 &&
+            [dict get [cluster_get_node_by_id 2 $R0_nodeid] slaveof] eq $R3_nodeid
+        } else {
+            fail "The manual failover is not propagated to the other primaries"
+        }
+
+        # R0 has not synced with R3.
+        assert_equal {down} [s 0 master_link_status]
+
+        exec kill -9 $R3_pid
+
+        # R0 is the only replica of R3, it should fail over and serve the
+        # slots again.
+        wait_for_condition 1000 50 {
+            [s 0 role] eq {master}
+        } else {
+            fail "R0 did not fail over after its new primary died before the first sync: role [s 0 role], cluster_state [CI 0 cluster_state], master_link_down_since_seconds [s 0 master_link_down_since_seconds]"
+        }
+
+        wait_for_cluster_state ok
+        assert_equal {bar} [R 0 get $slot0_key]
+    }
+} ;# start_cluster
+
 # Disable this test case due to #2441.
 if {false} {
 start_cluster 3 2 {tags {external:skip cluster}} {

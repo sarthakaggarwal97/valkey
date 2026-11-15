@@ -6924,6 +6924,11 @@ static void clusterSetPrimary(clusterNode *n, int closeSlots, int full_sync_requ
     if (clusterNodeIsPrimary(myself)) {
         myself->flags &= ~(CLUSTER_NODE_PRIMARY | CLUSTER_NODE_MIGRATE_TO);
         myself->flags |= CLUSTER_NODE_REPLICA;
+        /* A primary demoted within its own shard holds the shard's data up to
+         * now, so its data age for a later failover counts from this moment
+         * and not from "ever" (0), which would make it refuse forever if the
+         * new primary dies before the first sync. */
+        if (!full_sync_required) server.repl_down_since = server.unixtime;
     } else {
         if (myself->replicaof) clusterNodeRemoveReplica(myself->replicaof, myself);
     }
