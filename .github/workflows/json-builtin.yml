@@ -61,6 +61,9 @@ jobs:
           if nm valkey-ref/src/valkey-server | grep -q ' T jsonSet$'; then echo "reference has JSON built in"; exit 1; fi
       - name: Build the external module
         run: |
+          # The module's own build copies valkeymodule.h from Valkey unstable.
+          mkdir -p valkey-json/src/include
+          cp valkey/src/valkeymodule.h valkey-json/src/include/
           cd valkey-json
           g++ -O3 -DNDEBUG -g -fno-omit-frame-pointer -fPIC -std=gnu++17 -march=nehalem \
             -Wno-mismatched-tags -Wno-format '-DVALKEYMODULE_ATTR_COMMON=__attribute__((weak))' \
@@ -132,6 +135,8 @@ jobs:
           cp -a valkey valkey-ref
           make -C valkey -j"$(nproc)" SERVER_CFLAGS=-Werror
           make -C valkey-ref -j"$(nproc)" BUILD_JSON=no
+          mkdir -p valkey-json/src/include
+          cp valkey/src/valkeymodule.h valkey-json/src/include/
           cd valkey-json
           g++ -O2 -fPIC -std=gnu++17 -march=nehalem -Wno-mismatched-tags -Wno-format \
             '-DVALKEYMODULE_ATTR_COMMON=__attribute__((weak))' -Isrc -Isrc/include -I../rapidjson/include \
