@@ -72,6 +72,87 @@ start_cluster 1 1 {tags {external:skip cluster} overrides {cluster-config-save-b
     }
 }
 
+# Return 1 if the node still has an inbound cluster link from the given peer.
+proc has_inbound_cluster_link_from {srv_idx peer_id} {
+    foreach l [R $srv_idx cluster links] {
+        if {[dict get $l direction] eq "from" && [dict get $l node] eq $peer_id} {
+            return 1
+        }
+    }
+    return 0
+}
+
+start_cluster 1 1 {tags {external:skip cluster} overrides {cluster-config-save-behavior sync}} {
+    test {cluster-config-save-behavior sync mode - failover vote is not sent before it is saved} {
+        set R0_nodeid [R 0 cluster myid]
+        set R1_nodeid [R 1 cluster myid]
+
+        # Make sure we don't send PINGs, so that the cluster links between
+        # R0 and R1 carry nothing but what this test sends.
+        for {set j 0} {$j < [llength $::servers]} {incr j} {
+            R $j debug disable-cluster-random-ping 1
+            R $j config set cluster-ping-interval 300000
+        }
+        wait_for_condition 1000 50 {
+            [dict get [cluster_get_node_by_id 0 $R1_nodeid] ping_sent] == 0 &&
+            [dict get [cluster_get_node_by_id 1 $R0_nodeid] ping_sent] == 0
+        } else {
+            fail "The cluster links are not idle"
+        }
+
+        # Create folder that can cause the rename fail, so that R0 can not
+        # save its vote and exits when it tries to.
+        create_nodes_conf_folder 0
+
+        # Stall R0 in a transaction that ends with a PUBLISH. When R0 wakes up
+        # the PUBLISH is queued on its link to R1, so the link already has a
+        # pending write when R0 gets to read what arrived during the stall.
+        set rd [valkey_deferring_client 0]
+        $rd multi
+        $rd debug log "stalling before the vote request"
+        $rd debug sleep 2
+        $rd publish channel message
+        assert_equal {OK} [$rd read]
+        assert_equal {QUEUED} [$rd read]
+        assert_equal {QUEUED} [$rd read]
+        assert_equal {QUEUED} [$rd read]
+        $rd exec
+        wait_for_log_messages 0 {"*stalling before the vote request*"} 0 1000 10
+
+        # While R0 is stalled, R1 starts an election and asks R0 for its vote.
+        # R0 is the only primary, so its vote alone makes R1 the new primary.
+        R 1 cluster failover force
+        wait_for_condition 1000 10 {
+            [CI 1 cluster_stats_messages_auth-req_sent] ne {}
+        } else {
+            fail "R1 did not ask for a vote"
+        }
+
+        # R0 grants the vote, fails to save it and exits.
+        wait_for_condition 1000 50 {
+            [process_is_alive [srv 0 pid]] == 0
+        } else {
+            fail "R0 did not exit"
+        }
+        $rd close
+
+        # Wait for R1 to drop the link from R0. At this point R1 has
+        # processed everything that R0 sent before it exited.
+        wait_for_condition 1000 50 {
+            [has_inbound_cluster_link_from 1 $R0_nodeid] == 0
+        } else {
+            fail "R1 did not drop the link from R0"
+        }
+
+        # The vote never made it to nodes.conf, so it must not have been sent:
+        # R1 should not have received it, nor have been promoted by it.
+        set acks [CI 1 cluster_stats_messages_auth-ack_received]
+        if {$acks eq {}} { set acks 0 }
+        assert_equal 0 $acks "R0 exited without saving its failover vote to nodes.conf, but R1 had already received the vote"
+        assert_equal {slave} [s -1 role] "R1 was promoted by a failover vote that R0 never saved to nodes.conf"
+    }
+}
+
 start_cluster 1 1 {tags {external:skip cluster} overrides {cluster-config-save-behavior best-effort}} {
     test {cluster-config-save-behavior best-effort mode - node continues running when config save fails} {
         # Create folder that can cause the rename fail.
