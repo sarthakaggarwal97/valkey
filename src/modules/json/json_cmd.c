@@ -195,7 +195,6 @@ static int jsonDepthExceeded(ValkeyModuleCtx *ctx, uint32_t path_depth, uint32_t
     } else if (depth > (size_t)jsonConfig.max_path_limit) {
         return 1;
     }
-    jsonStatsUpdateMaxDepth(depth);
     return 0;
 }
 
@@ -2291,7 +2290,6 @@ static jsonVal *jsonParseDocument(ValkeyModuleCtx *ctx, const char *json, size_t
         *err = JSON_MSG_SIZE_LIMIT;
         return NULL;
     }
-    jsonStatsUpdateMaxDepth(jsonValDepth(v));
     return v;
 }
 

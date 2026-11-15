@@ -56,16 +56,7 @@ jsonModuleConfig jsonConfig = {
 static struct {
     atomic_ullong doc_bytes; /* Sum of jsonDocMemUsage over all documents. */
     atomic_ullong num_docs;
-    atomic_ullong max_depth_ever_seen;
-    atomic_ullong max_size_ever_seen;
-    atomic_ullong defrag_count;
 } jsonStats;
-
-static void statsRaiseMax(atomic_ullong *max, unsigned long long v) {
-    unsigned long long cur = atomic_load_explicit(max, memory_order_relaxed);
-    while (v > cur && !atomic_compare_exchange_weak_explicit(max, &cur, v, memory_order_relaxed, memory_order_relaxed)) {
-    }
-}
 
 static void statsResize(size_t orig_size, size_t new_size) {
     if (new_size >= orig_size) {
@@ -83,31 +74,17 @@ void jsonStatsOnInsert(int is_new_key, size_t orig_size, size_t new_size, size_t
     VALKEYMODULE_NOT_USED(inserted_val_size);
     if (is_new_key) atomic_fetch_add_explicit(&jsonStats.num_docs, 1, memory_order_relaxed);
     statsResize(orig_size, new_size);
-    statsRaiseMax(&jsonStats.max_size_ever_seen, new_size);
 }
 
 void jsonStatsOnUpdate(size_t orig_size, size_t new_size, size_t input_json_size) {
     VALKEYMODULE_NOT_USED(input_json_size);
     statsResize(orig_size, new_size);
-    statsRaiseMax(&jsonStats.max_size_ever_seen, new_size);
 }
 
 void jsonStatsOnDelete(int is_delete_key, size_t orig_size, size_t new_size, size_t deleted_val_size) {
     VALKEYMODULE_NOT_USED(deleted_val_size);
     statsResize(orig_size, new_size);
     if (is_delete_key) atomic_fetch_sub_explicit(&jsonStats.num_docs, 1, memory_order_relaxed);
-}
-
-void jsonStatsUpdateMaxDepth(size_t depth) {
-    statsRaiseMax(&jsonStats.max_depth_ever_seen, depth);
-}
-
-unsigned long long jsonStatsMaxDepthEverSeen(void) {
-    return atomic_load_explicit(&jsonStats.max_depth_ever_seen, memory_order_relaxed);
-}
-
-unsigned long long jsonStatsMaxSizeEverSeen(void) {
-    return atomic_load_explicit(&jsonStats.max_size_ever_seen, memory_order_relaxed);
 }
 
 static void jsonInfo(ValkeyModuleInfoCtx *ctx, int for_crash_report) {
@@ -315,7 +292,6 @@ static void *jsonTypeRdbLoad(ValkeyModuleIO *rdb, int encver) {
                                 err == JSON_ERR_DEPTH ? "nested deeper than this server loads" : "invalid payload");
         return NULL;
     }
-    jsonStatsUpdateMaxDepth(jsonValDepth(val));
     jsonDoc doc = jsonValToDoc(val);
     size_t size = jsonDocMemUsage(doc);
     jsonStatsOnInsert(1, 0, size, size);
@@ -480,10 +456,7 @@ static int jsonTypeDefrag(ValkeyModuleDefragCtx *ctx, ValkeyModuleString *key, v
 #else
     *value = (void *)(uintptr_t)doc;
 #endif
-    if (!more) {
-        atomic_fetch_add_explicit(&jsonStats.defrag_count, 1, memory_order_relaxed);
-        return 0;
-    }
+    if (!more) return 0;
     /* More to do. Without a cursor the server cannot resume, so stop here:
      * the rest is picked up on the next defrag cycle from the start. */
     if (ValkeyModule_DefragCursorSet(ctx, cursor) != VALKEYMODULE_OK) return 0;

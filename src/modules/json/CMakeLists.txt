@@ -14,6 +14,11 @@ set(JSON_MODULE_SRCS
     json_num.c)
 
 add_library(valkeyjson STATIC "${JSON_MODULE_SRCS}")
+# The module is linked into the server, so it is built with the server's
+# sanitizer flags too.
+if (VALKEY_SANITIZER_CFLAGS)
+    target_compile_options(valkeyjson PRIVATE ${VALKEY_SANITIZER_CFLAGS})
+endif ()
 
 # On 32-bit x86, use SSE2 for double arithmetic so every operation rounds to
 # double, as on every other target (see Makefile).

@@ -824,7 +824,7 @@ $(LUA_MODULE_NAME): .make-prerequisites FORCE
 # libvalkeyjson.a
 ifneq ($(JSON_MODULE_NAME),)
 $(JSON_MODULE_NAME): .make-prerequisites FORCE
-	$(MAKE) -C modules/json OPTIMIZATION="$(OPTIMIZATION)"
+	$(MAKE) -C modules/json OPTIMIZATION="$(OPTIMIZATION)" CFLAGS="$(CFLAGS) $(SERVER_CFLAGS) $(DEBUG)"
 endif
 
 .PHONY: FORCE

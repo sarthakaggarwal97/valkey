@@ -90,9 +90,6 @@ void jsonStatsOnRead(size_t fetched_val_size);
 void jsonStatsOnInsert(int is_new_key, size_t orig_size, size_t new_size, size_t inserted_val_size);
 void jsonStatsOnUpdate(size_t orig_size, size_t new_size, size_t input_json_size);
 void jsonStatsOnDelete(int is_delete_key, size_t orig_size, size_t new_size, size_t deleted_val_size);
-void jsonStatsUpdateMaxDepth(size_t depth);
-unsigned long long jsonStatsMaxDepthEverSeen(void);
-unsigned long long jsonStatsMaxSizeEverSeen(void);
 
 /* Registers the 24 commands. Implemented in json_cmd.c, called once from the
  * entry point after the data type exists. Returns VALKEYMODULE_OK or
