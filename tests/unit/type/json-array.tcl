@@ -300,13 +300,13 @@ start_server {tags {"json"}} {
 
         test "JSON.ARRPOP \$ path (caps $caps)" {
             r flushall
-            assert_equal OK [r json.set k1 . {[[], ["a"], ["a", "b"], ["a", "b", "c"]]}]
-            r copy k1 k2
-            r copy k1 k3
+            assert_equal OK [r json.set k1{t} . {[[], ["a"], ["a", "b"], ["a", "b", "c"]]}]
+            r copy k1{t} k2{t}
+            r copy k1{t} k3{t}
             foreach {key path index exp exp_new_val} {
-                k1 $.[*] 0  {{} {"a"} {"a"} {"a"}} {[[],[],["b"],["b","c"]]}
-                k2 $.[*] 1  {{} {"a"} {"b"} {"b"}} {[[],[],["a"],["a","c"]]}
-                k3 $.[*] -1 {{} {"a"} {"b"} {"c"}} {[[],[],["a"],["a","b"]]}
+                k1{t} $.[*] 0  {{} {"a"} {"a"} {"a"}} {[[],[],["b"],["b","c"]]}
+                k2{t} $.[*] 1  {{} {"a"} {"b"} {"b"}} {[[],[],["a"],["a","c"]]}
+                k3{t} $.[*] -1 {{} {"a"} {"b"} {"c"}} {[[],[],["a"],["a","b"]]}
             } {
                 assert_equal $exp [r json.arrpop $key $path $index]
                 assert_equal $exp_new_val [r json.get $key .]
@@ -1007,4 +1007,5 @@ start_server {tags {"json"}} {
             }
         }
     }
+    json_set_caps {4096 128}
 }

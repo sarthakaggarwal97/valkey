@@ -553,8 +553,9 @@ start_server {tags {"json"}} {
             r json.set src $ 1.7e308
             set payload [string map {1.7e308 1.8e308} [r dump src]]
             r debug set-skip-checksum-validation 1
-            assert_equal OK [r restore k 0 $payload]
+            set failed [catch {r restore k 0 $payload} res]
             r debug set-skip-checksum-validation 0
+            assert_equal {0 OK} [list $failed $res]
             assert_equal 1.8e308 [r json.get k]
             assert_equal {[1.8e308]} [r json.get k $]
             assert_equal number [r json.type k]
@@ -1393,4 +1394,5 @@ start_server {tags {"json"}} {
             assert_equal 6 $count
         }
     }
+    json_set_caps {4096 128}
 }

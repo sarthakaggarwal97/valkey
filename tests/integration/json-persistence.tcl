@@ -91,12 +91,15 @@ proc json_write_deep_documents {c {raise_limit 1}} {
     set docs {}
     if {$raise_limit} {
         $c config set json.max-path-limit 2000
-        foreach {key text} [list deep:array600 [json_deep_array 600] deep:object1024 [json_deep_object 1024] \
-                                 deep:array1024 [json_deep_array 1024]] {
-            assert_equal OK [$c json.set $key . $text]
-            lappend docs $key $text
+        try {
+            foreach {key text} [list deep:array600 [json_deep_array 600] deep:object1024 [json_deep_object 1024] \
+                                     deep:array1024 [json_deep_array 1024]] {
+                assert_equal OK [$c json.set $key . $text]
+                lappend docs $key $text
+            }
+        } finally {
+            $c config set json.max-path-limit 128
         }
-        $c config set json.max-path-limit 128
     }
     assert_equal OK [$c json.set deep:129 $ [json_deep_array 128]]
     assert_equal 1 [$c json.arrappend deep:129 "\$[string repeat {[0]} 127]" {[1]}]

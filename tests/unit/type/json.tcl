@@ -90,41 +90,40 @@ foreach caps [json_caps_list] {
     # Sanity
     # ------------------------------------------------------------------
 
-    tags {"json cluster:skip"} {
     test "JSON sanity: SET/GET/MSET/MGET/DEL with legacy and JSONPath syntax (caps $caps)" {
         r flushall
-        assert_equal OK [r json.set k1 . {{"a":"1", "b":"2", "c":"3"}}]
-        assert_equal OK [r json.set k2 . {[1,2,3,4,5]}]
-        assert_equal OK [r json.mset k3 . {[1,2,3,4,5]}]
-        assert_equal OK [r json.mset k2 . {[5,4,3,2,1]} k1 . {{"a":"1", "b":"2", "c":"3"}}]
-        assert_equal {{{"a":"1","b":"2","c":"3"}} {[5,4,3,2,1]} {[1,2,3,4,5]}} [r json.mget k1 k2 k3 .]
-        assert_equal OK [r json.set k2 . {[1,2,3,4,5]}]
-        assert_equal {{"a":"1","b":"2","c":"3"}} [r json.get k1]
-        json_assert_get k1 {
+        assert_equal OK [r json.set k1{t} . {{"a":"1", "b":"2", "c":"3"}}]
+        assert_equal OK [r json.set k2{t} . {[1,2,3,4,5]}]
+        assert_equal OK [r json.mset k3{t} . {[1,2,3,4,5]}]
+        assert_equal OK [r json.mset k2{t} . {[5,4,3,2,1]} k1{t} . {{"a":"1", "b":"2", "c":"3"}}]
+        assert_equal {{{"a":"1","b":"2","c":"3"}} {[5,4,3,2,1]} {[1,2,3,4,5]}} [r json.mget k1{t} k2{t} k3{t} .]
+        assert_equal OK [r json.set k2{t} . {[1,2,3,4,5]}]
+        assert_equal {{"a":"1","b":"2","c":"3"}} [r json.get k1{t}]
+        json_assert_get k1{t} {
             {.}    {{"a":"1","b":"2","c":"3"}}
             {.a}   {"1"}
         }
-        json_assert_get k2 {
+        json_assert_get k2{t} {
             {.}    {[1,2,3,4,5]}
             {[-1]} {5}
         }
 
         # pretty print
         foreach {key fmt path exp} {
-            k1 SPACE  {.}    {{"a": "1","b": "2","c": "3"}}
-            k1 INDENT {.}    {{ "a":"1", "b":"2", "c":"3"}}
-            k2 INDENT {.}    {[ 1, 2, 3, 4, 5]}
-            k2 INDENT {[-2]} {4}
+            k1{t} SPACE  {.}    {{"a": "1","b": "2","c": "3"}}
+            k1{t} INDENT {.}    {{ "a":"1", "b":"2", "c":"3"}}
+            k2{t} INDENT {.}    {[ 1, 2, 3, 4, 5]}
+            k2{t} INDENT {[-2]} {4}
         } {
             assert_equal $exp [r json.get $key $fmt { } $path] "JSON.GET $key $fmt ' ' $path"
         }
 
-        assert_equal {{[{"a":"1","b":"2","c":"3"}]} {[[1,2,3,4,5]]}} [r json.mget k1 k2 {$}]
-        json_assert_get k1 {
+        assert_equal {{[{"a":"1","b":"2","c":"3"}]} {[[1,2,3,4,5]]}} [r json.mget k1{t} k2{t} {$}]
+        json_assert_get k1{t} {
             {$}       {[{"a":"1","b":"2","c":"3"}]}
             {$.*}     {["1","2","3"]}
         }
-        json_assert_get k2 {
+        json_assert_get k2{t} {
             {$}       {[[1,2,3,4,5]]}
             {$.[*]}   {[1,2,3,4,5]}
             {$.[-1]}  {[5]}
@@ -133,28 +132,27 @@ foreach caps [json_caps_list] {
 
         # pretty print
         foreach {key fmt path exp} {
-            k1 SPACE  {$}       {[{"a": "1","b": "2","c": "3"}]}
-            k1 INDENT {$}       {[ {  "a":"1",  "b":"2",  "c":"3" }]}
-            k1 INDENT {$.*}     {[ "1", "2", "3"]}
-            k2 INDENT {$}       {[ [  1,  2,  3,  4,  5 ]]}
-            k2 INDENT {$.[0:3]} {[ 1, 2, 3]}
+            k1{t} SPACE  {$}       {[{"a": "1","b": "2","c": "3"}]}
+            k1{t} INDENT {$}       {[ {  "a":"1",  "b":"2",  "c":"3" }]}
+            k1{t} INDENT {$.*}     {[ "1", "2", "3"]}
+            k2{t} INDENT {$}       {[ [  1,  2,  3,  4,  5 ]]}
+            k2{t} INDENT {$.[0:3]} {[ 1, 2, 3]}
         } {
             assert_equal $exp [r json.get $key $fmt { } $path] "JSON.GET $key $fmt ' ' $path"
         }
 
-        assert_equal 1 [r json.del k1]
-        assert_equal 1 [r json.del k2]
-        assert_equal OK [r json.set k1 {$} {{"a":"1", "b":"2", "c":"3"}}]
-        assert_equal OK [r json.set k2 {$} {[1,2,3,4,5]}]
+        assert_equal 1 [r json.del k1{t}]
+        assert_equal 1 [r json.del k2{t}]
+        assert_equal OK [r json.set k1{t} {$} {{"a":"1", "b":"2", "c":"3"}}]
+        assert_equal OK [r json.set k2{t} {$} {[1,2,3,4,5]}]
         foreach {key val_before del_path del_ret val_after} {
-            k1 {[{"a":"1","b":"2","c":"3"}]} {$.*}   3 {[{}]}
-            k2 {[[1,2,3,4,5]]}               {$.[*]} 5 {[[]]}
+            k1{t} {[{"a":"1","b":"2","c":"3"}]} {$.*}   3 {[{}]}
+            k2{t} {[[1,2,3,4,5]]}               {$.[*]} 5 {[[]]}
         } {
             assert_equal $val_before [r json.get $key {$}]
             assert_equal $del_ret [r json.del $key $del_path]
             assert_equal $val_after [r json.get $key {$}]
         }
-    }
     }
 
     # ------------------------------------------------------------------
@@ -1106,59 +1104,58 @@ foreach caps [json_caps_list] {
     # JSON.MGET
     # ------------------------------------------------------------------
 
-    tags {"json cluster:skip"} {
     test "JSON.MGET (caps $caps)" {
         json_setup_wikipedia
-        assert_equal OK [r json.set k1 . {{"foo":"bar1"}}]
-        assert_equal OK [r json.set k2 . {{"foo":"bar2"}}]
-        assert_equal OK [r json.set k3 . {{"foo":"bar3"}}]
-        assert_equal {{"bar1"} {"bar2"} {"bar3"}} [r json.mget k1 k2 k3 .foo]
+        assert_equal OK [r json.set k1{t} . {{"foo":"bar1"}}]
+        assert_equal OK [r json.set k2{t} . {{"foo":"bar2"}}]
+        assert_equal OK [r json.set k3{t} . {{"foo":"bar3"}}]
+        assert_equal {{"bar1"} {"bar2"} {"bar3"}} [r json.mget k1{t} k2{t} k3{t} .foo]
         # the JSON path does not exist
-        assert_equal {{} {} {}} [r json.mget k1 k2 k3 .bar]
-        assert_equal {{[]} {[]} {[]}} [r json.mget k1 k2 k3 {$.bar}]
+        assert_equal {{} {} {}} [r json.mget k1{t} k2{t} k3{t} .bar]
+        assert_equal {{[]} {[]} {[]}} [r json.mget k1{t} k2{t} k3{t} {$.bar}]
         # the key does not exist
-        assert_equal {{} {}} [r json.mget baz foo .]
-        assert_equal {{} {"bar2"}} [r json.mget baz k2 .foo]
-        assert_equal {{} {["bar2"]}} [r json.mget baz k2 {$.foo}]
+        assert_equal {{} {}} [r json.mget baz{t} foo{t} .]
+        assert_equal {{} {"bar2"}} [r json.mget baz{t} k2{t} .foo]
+        assert_equal {{} {["bar2"]}} [r json.mget baz{t} k2{t} {$.foo}]
         # a single key
-        assert_equal {{{"foo":"bar1"}}} [r json.mget k1 .]
+        assert_equal {{{"foo":"bar1"}}} [r json.mget k1{t} .]
         # the same key twice
-        assert_equal {{"bar1"} {"bar1"}} [r json.mget k1 k1 .foo]
+        assert_equal {{"bar1"} {"bar1"}} [r json.mget k1{t} k1{t} .foo]
 
         # Wrong number of arguments
         assert_error "*wrong number of arguments for 'JSON.MGET' command" {r json.mget}
-        assert_error "*wrong number of arguments for 'JSON.MGET' command" {r json.mget k1}
+        assert_error "*wrong number of arguments for 'JSON.MGET' command" {r json.mget k1{t}}
 
-        assert_equal OK [r json.set k4 . {[2,5,{"level0":[null,true,{"level0_1":[3,false]}],"level1":{"level1_0":33}}]}]
-        assert_equal OK [r json.set k5 . {[4,5,{"level0":[null,false,{"level0_1":[null,false]}],"level1":{"level1_0":[12,13]}}]}]
-        assert_equal OK [r json.set k6 . {[2,5,{"level0":[true,20,{"level0_1":[3,true]}],"level1":{"level1_0":33}}]}]
+        assert_equal OK [r json.set k4{t} . {[2,5,{"level0":[null,true,{"level0_1":[3,false]}],"level1":{"level1_0":33}}]}]
+        assert_equal OK [r json.set k5{t} . {[4,5,{"level0":[null,false,{"level0_1":[null,false]}],"level1":{"level1_0":[12,13]}}]}]
+        assert_equal OK [r json.set k6{t} . {[2,5,{"level0":[true,20,{"level0_1":[3,true]}],"level1":{"level1_0":33}}]}]
         foreach {path exp} {
             {$..level0_1}              {{[[3,false]]} {[[null,false]]} {[[3,true]]}}
             {$.[2].level1}             {{[{"level1_0":33}]} {[{"level1_0":[12,13]}]} {[{"level1_0":33}]}}
             {$.[2].level1.level1_0[2]} {{[]} {[]} {[]}}
             {$.[2].level1.level1_0[1]} {{[]} {[13]} {[]}}
         } {
-            assert_equal $exp [r json.mget k4 k5 k6 $path] "JSON.MGET k4 k5 k6 $path"
+            assert_equal $exp [r json.mget k4{t} k5{t} k6{t} $path] "JSON.MGET k4{t} k5{t} k6{t} $path"
         }
     }
 
     test "JSON.MGET with a non-JSON key, a failing path and an invalid path (caps $caps)" {
         json_setup_wikipedia
-        r json.set k1 . {[0,1,2]}
-        r json.set k2 . {{"a":1}}
+        r set str_key{t} [r get str_key]
+        r json.set k1{t} . {[0,1,2]}
+        r json.set k2{t} . {{"a":1}}
         # A key of another type fails the whole command, as in the module.
-        assert_error "WRONGTYPE Not a JSON document key" {r json.mget k1 str_key nokey {$}}
-        assert_error "WRONGTYPE Not a JSON document key" {r json.mget k1 str_key nokey .}
-        assert_error "WRONGTYPE Not a JSON document key" {r json.mget str_key .}
+        assert_error "WRONGTYPE Not a JSON document key" {r json.mget k1{t} str_key{t} nokey{t} {$}}
+        assert_error "WRONGTYPE Not a JSON document key" {r json.mget k1{t} str_key{t} nokey{t} .}
+        assert_error "WRONGTYPE Not a JSON document key" {r json.mget str_key{t} .}
         # A legacy path that does not exist in one document gives null for that
         # document, but other legacy path errors fail the command, as in the module.
-        assert_equal {{} 1 {}} [r json.mget k1 k2 nokey .a]
-        assert_error "OUTOFBOUNDARIES Array index is out of bounds" {r json.mget k1 nokey {.[77]}}
-        assert_equal {{[]} {}} [r json.mget k1 nokey {$[77]}]
+        assert_equal {{} 1 {}} [r json.mget k1{t} k2{t} nokey{t} .a]
+        assert_error "OUTOFBOUNDARIES Array index is out of bounds" {r json.mget k1{t} nokey{t} {.[77]}}
+        assert_equal {{[]} {}} [r json.mget k1{t} nokey{t} {$[77]}]
         # An invalid JSONPath gives null for every key, as in the module.
-        assert_equal {{} {}} [r json.mget k1 nokey {$[0}]
-        assert_equal {{} {}} [r json.mget nokey1 nokey2 {$[}]
-    }
+        assert_equal {{} {}} [r json.mget k1{t} nokey{t} {$[0}]
+        assert_equal {{} {}} [r json.mget nokey1{t} nokey2{t} {$[}]
     }
 
     # ------------------------------------------------------------------
@@ -1393,58 +1390,56 @@ foreach caps [json_caps_list] {
         assert_equal {k1 k2 k3} [r command getkeys JSON.MSET k1 . 1 k2 . 2 k3 . 3]
     }
 
-    tags {"json cluster:skip"} {
     test "JSON.SET, JSON.GET, JSON.MGET, JSON.DEL and JSON.FORGET reply shapes in RESP2 and RESP3" {
         r flushall
-        r json.set k1 . {{"a":1,"b":"two"}}
+        r json.set k1{t} . {{"a":1,"b":"two"}}
         foreach proto {2 3} {
             r hello $proto
             set null [json_raw_null $proto]
 
             # parsed replies are the same in both protocols
-            assert_equal {{"a":1,"b":"two"}} [r json.get k1]
-            assert_equal {[1]} [r json.get k1 {$.a}]
-            assert_equal {{"$.a":[1],".b":["two"]}} [r json.get k1 {$.a} .b]
-            assert_equal {1 {}} [r json.mget k1 nokey .a]
-            assert_equal {{["two"]} {}} [r json.mget k1 nokey {$.b}]
+            assert_equal {{"a":1,"b":"two"}} [r json.get k1{t}]
+            assert_equal {[1]} [r json.get k1{t} {$.a}]
+            assert_equal {{"$.a":[1],".b":["two"]}} [r json.get k1{t} {$.a} .b]
+            assert_equal {1 {}} [r json.mget k1{t} nokey{t} .a]
+            assert_equal {{["two"]} {}} [r json.mget k1{t} nokey{t} {$.b}]
 
             r readraw 1
             # nulls: a missing key, a failed NX or XX
-            assert_equal $null [r json.get nokey]
-            assert_equal $null [r json.get nokey {$.a}]
-            assert_equal $null [r json.set k1 . 1 NX]
-            assert_equal $null [r json.set nokey . 1 XX]
-            assert_equal $null [r json.set k1 {$.zz} 1 XX]
+            assert_equal $null [r json.get nokey{t}]
+            assert_equal $null [r json.get nokey{t} {$.a}]
+            assert_equal $null [r json.set k1{t} . 1 NX]
+            assert_equal $null [r json.set nokey{t} . 1 XX]
+            assert_equal $null [r json.set k1{t} {$.zz} 1 XX]
             # a simple string for a successful SET
-            assert_equal {+OK} [r json.set k1 {$.c} true]
+            assert_equal {+OK} [r json.set k1{t} {$.c} true]
             # a bulk string for GET, also with a JSONPath and with several paths
-            assert_equal {$1} [r json.get k1 .a]
+            assert_equal {$1} [r json.get k1{t} .a]
             assert_equal 1 [r read]
-            assert_equal {$2} [r json.get k1 {$.zz}]
+            assert_equal {$2} [r json.get k1{t} {$.zz}]
             assert_equal {[]} [r read]
-            assert_equal {$23} [r json.get k1 .a {$.c}]
+            assert_equal {$23} [r json.get k1{t} .a {$.c}]
             assert_equal {{".a":[1],"$.c":[true]}} [r read]
             # an array of bulk strings and nulls for MGET
-            assert_equal {*3} [r json.mget k1 nokey k1 .b]
+            assert_equal {*3} [r json.mget k1{t} nokey{t} k1{t} .b]
             assert_equal {$5} [r read]
             assert_equal {"two"} [r read]
             assert_equal $null [r read]
             assert_equal {$5} [r read]
             assert_equal {"two"} [r read]
             # integers for DEL and FORGET
-            assert_equal {:0} [r json.del nokey]
-            assert_equal {:0} [r json.forget k1 {$.zz}]
-            assert_equal {:1} [r json.del k1 .c]
-            assert_equal {:1} [r json.forget k1 {$.a}]
+            assert_equal {:0} [r json.del nokey{t}]
+            assert_equal {:0} [r json.forget k1{t} {$.zz}]
+            assert_equal {:1} [r json.del k1{t} .c]
+            assert_equal {:1} [r json.forget k1{t} {$.a}]
             # errors
-            assert_equal {-NONEXISTENT JSON path does not exist} [r json.get k1 .a]
+            assert_equal {-NONEXISTENT JSON path does not exist} [r json.get k1{t} .a]
             r readraw 0
 
-            assert_equal OK [r json.set k1 .a 1]
-            assert_equal {{"b":"two","a":1}} [r json.get k1]
-            r json.set k1 . {{"a":1,"b":"two"}}
+            assert_equal OK [r json.set k1{t} .a 1]
+            assert_equal {{"b":"two","a":1}} [r json.get k1{t}]
+            r json.set k1{t} . {{"a":1,"b":"two"}}
         }
         r hello 2
-    }
     }
 }

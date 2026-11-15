@@ -68,9 +68,9 @@ proc json_deep_object {n} {
 # Stores `text` under `key` although it is nested deeper than
 # json.max-path-limit: the limit is raised for the write and put back.
 proc json_set_deep {key text} {
-    r config set json.max-path-limit 2000000
-    assert_equal OK [r json.set $key . $text]
-    r config set json.max-path-limit 128
+    with_config json.max-path-limit 2000000 {
+        assert_equal OK [r json.set $key . $text]
+    }
 }
 
 # Runs a command that must fail with an error matching `pattern`, and must do
@@ -129,54 +129,54 @@ start_server {tags {"json"}} {
         test "Every command that takes JSON text rejects ill-formed UTF-8 and changes nothing - B1 (caps $caps)" {
             r flushall
             set doc {{"s":"x","arr":["a"],"o":{"k":1}}}
-            r json.set k . $doc
+            r json.set k{t} . $doc
             foreach hex {80 c080 eda080 f4908080 ff c2} {
                 set bad "\"[json_hex $hex]\""
-                assert_error "SYNTAXERR*" {r json.mset k .s $bad}
-                assert_error "SYNTAXERR*" {r json.mset other . 1 k .s $bad}
-                assert_error "SYNTAXERR*" {r json.mset k .s $bad other . 1}
-                assert_error "SYNTAXERR*" {r json.merge k . "{\"s\":$bad}"}
-                assert_error "SYNTAXERR*" {r json.merge k .o "{$bad:1}"}
-                assert_error "SYNTAXERR*" {r json.strappend k .s $bad}
-                assert_error "SYNTAXERR*" {r json.strappend k \$.s $bad}
-                assert_error "SYNTAXERR*" {r json.arrappend k .arr $bad}
-                assert_error "SYNTAXERR*" {r json.arrappend k .arr {"ok"} $bad}
-                assert_error "SYNTAXERR*" {r json.arrappend k \$.arr $bad {"ok"}}
-                assert_error "SYNTAXERR*" {r json.arrinsert k .arr 0 $bad}
-                assert_error "SYNTAXERR*" {r json.arrinsert k .arr 0 {"ok"} $bad}
-                assert_error "SYNTAXERR*" {r json.arrindex k .arr $bad}
+                assert_error "SYNTAXERR*" {r json.mset k{t} .s $bad}
+                assert_error "SYNTAXERR*" {r json.mset other{t} . 1 k{t} .s $bad}
+                assert_error "SYNTAXERR*" {r json.mset k{t} .s $bad other{t} . 1}
+                assert_error "SYNTAXERR*" {r json.merge k{t} . "{\"s\":$bad}"}
+                assert_error "SYNTAXERR*" {r json.merge k{t} .o "{$bad:1}"}
+                assert_error "SYNTAXERR*" {r json.strappend k{t} .s $bad}
+                assert_error "SYNTAXERR*" {r json.strappend k{t} \$.s $bad}
+                assert_error "SYNTAXERR*" {r json.arrappend k{t} .arr $bad}
+                assert_error "SYNTAXERR*" {r json.arrappend k{t} .arr {"ok"} $bad}
+                assert_error "SYNTAXERR*" {r json.arrappend k{t} \$.arr $bad {"ok"}}
+                assert_error "SYNTAXERR*" {r json.arrinsert k{t} .arr 0 $bad}
+                assert_error "SYNTAXERR*" {r json.arrinsert k{t} .arr 0 {"ok"} $bad}
+                assert_error "SYNTAXERR*" {r json.arrindex k{t} .arr $bad}
             }
-            assert_equal $doc [r json.get k]
-            assert_equal 0 [r exists other]
+            assert_equal $doc [r json.get k{t}]
+            assert_equal 0 [r exists other{t}]
         }
 
         test "A new member name that is not valid UTF-8 is refused when it comes from a path - B1 (caps $caps)" {
             r flushall
             r json.set u $ {{}}
-            r json.set keep . {{"a":{"b":1}}}
+            r json.set keep{t} . {{"a":{"b":1}}}
             foreach hex {fffe 80 c080 eda080 f4908080 c3 ff} {
                 set bad [json_hex $hex]
                 assert_error "SYNTAXERR Failed to parse JSON string due to syntax error" {r json.set u "\$.$bad" 1}
                 foreach path [list "\$.$bad" ".$bad" "\$\[\"$bad\"\]" "\$\['$bad'\]" "\$.a.$bad" ".a.$bad" "\$.a\[\"x$bad\"\]"] {
-                    assert_error "SYNTAXERR Failed to parse JSON string due to syntax error" {r json.set keep $path 1}
-                    assert_error "SYNTAXERR*" {r json.set keep $path {{"x":[1]}} NX}
-                    assert_error "SYNTAXERR*" {r json.mset keep $path 1}
-                    assert_error "SYNTAXERR*" {r json.mset other . 1 keep $path 1}
-                    assert_error "SYNTAXERR*" {r json.merge keep $path 1}
+                    assert_error "SYNTAXERR Failed to parse JSON string due to syntax error" {r json.set keep{t} $path 1}
+                    assert_error "SYNTAXERR*" {r json.set keep{t} $path {{"x":[1]}} NX}
+                    assert_error "SYNTAXERR*" {r json.mset keep{t} $path 1}
+                    assert_error "SYNTAXERR*" {r json.mset other{t} . 1 keep{t} $path 1}
+                    assert_error "SYNTAXERR*" {r json.merge keep{t} $path 1}
                 }
                 # A read or a delete through such a path just matches nothing.
-                assert_equal {[]} [r json.get keep "\$.$bad"]
-                assert_equal 0 [r json.del keep "\$.$bad"]
-                assert_equal {[]} [r json.numincrby keep "\$.$bad" 1]
+                assert_equal {[]} [r json.get keep{t} "\$.$bad"]
+                assert_equal 0 [r json.del keep{t} "\$.$bad"]
+                assert_equal {[]} [r json.numincrby keep{t} "\$.$bad" 1]
             }
             assert_equal {{}} [r json.get u]
-            assert_equal {{"a":{"b":1}}} [r json.get keep]
-            assert_equal 0 [r exists other]
+            assert_equal {{"a":{"b":1}}} [r json.get keep{t}]
+            assert_equal 0 [r exists other{t}]
             # A name of well-formed multi-byte characters is accepted.
             set e [json_hex c3a9]
-            assert_equal OK [r json.set keep "\$.$e" 1]
-            assert_equal OK [r json.merge keep "\$.a.$e$e" 2]
-            assert_equal "{\"a\":{\"b\":1,\"$e$e\":2},\"$e\":1}" [r json.get keep]
+            assert_equal OK [r json.set keep{t} "\$.$e" 1]
+            assert_equal OK [r json.merge keep{t} "\$.a.$e$e" 2]
+            assert_equal "{\"a\":{\"b\":1,\"$e$e\":2},\"$e\":1}" [r json.get keep{t}]
         }
 
         test "A member whose name is not valid UTF-8 and arrived through RESTORE can be read, updated and deleted by path - B1 (caps $caps)" {
@@ -185,8 +185,9 @@ start_server {tags {"json"}} {
             r json.set src . {{"AAAA":1,"z":2}}
             set payload [string map [list AAAA $bad] [r dump src]]
             r debug set-skip-checksum-validation 1
-            assert_equal OK [r restore t 0 $payload]
+            set failed [catch {r restore t 0 $payload} res]
             r debug set-skip-checksum-validation 0
+            assert_equal {0 OK} [list $failed $res]
             assert_equal "{\"$bad\":1,\"z\":2}" [r json.get t]
             assert_equal {[1]} [r json.get t "\$.$bad"]
             # The name exists, so this is an update, not a new name.
@@ -223,21 +224,22 @@ start_server {tags {"json"}} {
             set bad [json_hex fffe80c0]
             set payload [string map [list AAAA $bad BBBB $bad] [r dump src]]
             r debug set-skip-checksum-validation 1
-            assert_equal OK [r restore k 0 $payload]
+            set failed [catch {r restore k{t} 0 $payload} res]
             r debug set-skip-checksum-validation 0
+            assert_equal {0 OK} [list $failed $res]
             set text "{\"name\":\"$bad\",\"list\":\[\"$bad\",1\]}"
-            assert_equal $text [r json.get k]
-            assert_equal 4 [r json.strlen k .name]
+            assert_equal $text [r json.get k{t}]
+            assert_equal 4 [r json.strlen k{t} .name]
             # It survives a reload and a copy, and ordinary writes work on it.
             r debug reload
-            assert_equal $text [r json.get k]
-            r copy k k2
-            assert_equal $text [r json.get k2]
-            assert_equal 3 [r json.arrappend k .list {"ok"}]
-            assert_equal 6 [r json.strappend k .name {"ok"}]
-            assert_equal "{\"name\":\"${bad}ok\",\"list\":\[\"$bad\",1,\"ok\"\]}" [r json.get k]
+            assert_equal $text [r json.get k{t}]
+            r copy k{t} k2{t}
+            assert_equal $text [r json.get k2{t}]
+            assert_equal 3 [r json.arrappend k{t} .list {"ok"}]
+            assert_equal 6 [r json.strappend k{t} .name {"ok"}]
+            assert_equal "{\"name\":\"${bad}ok\",\"list\":\[\"$bad\",1,\"ok\"\]}" [r json.get k{t}]
             # The client still cannot write such bytes.
-            assert_error "SYNTAXERR*" {r json.set k .name "\"$bad\""}
+            assert_error "SYNTAXERR*" {r json.set k{t} .name "\"$bad\""}
         } {} {needs:debug}
     }
     json_set_caps {4096 128}
@@ -325,29 +327,29 @@ start_server {tags {"json"}} {
             # text and a NUL byte is not JSON, in every command that takes JSON text.
             r flushall
             set doc {{"s":"x","arr":["a"],"o":{"k":1}}}
-            r json.set k . $doc
+            r json.set k{t} . $doc
             foreach text [list "1\x00" "{\"a\":1}\x00" "\[1\]\x00garbage" "\x001" "\x00" "\[1,\x002\]" "\"a\x00b\"" \
                                "{\"a\x00\":1}" "tr\x00ue" "1\x00\x00" " \x00 1"] {
-                assert_error "SYNTAXERR Failed to parse JSON string due to syntax error" {r json.set new . $text}
-                assert_error "SYNTAXERR*" {r json.set k . $text}
-                assert_error "SYNTAXERR*" {r json.set k .s $text}
-                assert_error "SYNTAXERR*" {r json.mset k .s $text}
-                assert_error "SYNTAXERR*" {r json.mset other . 1 k .s $text}
-                assert_error "SYNTAXERR*" {r json.merge k .o $text}
-                assert_error "SYNTAXERR*" {r json.arrappend k .arr $text}
-                assert_error "SYNTAXERR*" {r json.arrappend k .arr 1 $text}
-                assert_error "SYNTAXERR*" {r json.arrinsert k .arr 0 $text}
-                assert_error "SYNTAXERR*" {r json.arrindex k .arr $text}
+                assert_error "SYNTAXERR Failed to parse JSON string due to syntax error" {r json.set new{t} . $text}
+                assert_error "SYNTAXERR*" {r json.set k{t} . $text}
+                assert_error "SYNTAXERR*" {r json.set k{t} .s $text}
+                assert_error "SYNTAXERR*" {r json.mset k{t} .s $text}
+                assert_error "SYNTAXERR*" {r json.mset other{t} . 1 k{t} .s $text}
+                assert_error "SYNTAXERR*" {r json.merge k{t} .o $text}
+                assert_error "SYNTAXERR*" {r json.arrappend k{t} .arr $text}
+                assert_error "SYNTAXERR*" {r json.arrappend k{t} .arr 1 $text}
+                assert_error "SYNTAXERR*" {r json.arrinsert k{t} .arr 0 $text}
+                assert_error "SYNTAXERR*" {r json.arrindex k{t} .arr $text}
             }
-            assert_error "SYNTAXERR*" {r json.strappend k .s "\"z\"\x00"}
-            assert_error "SYNTAXERR*" {r json.strappend k .s "\"z\x00\""}
-            assert_equal 0 [r exists new other]
-            assert_equal $doc [r json.get k]
+            assert_error "SYNTAXERR*" {r json.strappend k{t} .s "\"z\"\x00"}
+            assert_error "SYNTAXERR*" {r json.strappend k{t} .s "\"z\x00\""}
+            assert_equal 0 [r exists new{t} other{t}]
+            assert_equal $doc [r json.get k{t}]
             # The escape for U+0000 inside a string is valid JSON and is kept.
-            assert_equal OK [r json.set k .s {"a\u0000b"}]
-            assert_equal 3 [r json.strlen k .s]
-            assert_equal 4 [r json.strappend k .s {"\u0000"}]
-            assert_equal {"a\u0000b\u0000"} [r json.get k .s]
+            assert_equal OK [r json.set k{t} .s {"a\u0000b"}]
+            assert_equal 3 [r json.strlen k{t} .s]
+            assert_equal 4 [r json.strappend k{t} .s {"\u0000"}]
+            assert_equal {"a\u0000b\u0000"} [r json.get k{t} .s]
             assert_equal PONG [r ping]
         }
 
@@ -355,33 +357,33 @@ start_server {tags {"json"}} {
             r flushall
             set bom [json_hex efbbbf]
             # One leading BOM is skipped by every command that takes JSON text.
-            assert_equal OK [r json.set k . "$bom{\"s\":\"x\",\"arr\":\[\],\"o\":{}}"]
-            assert_equal {{"s":"x","arr":[],"o":{}}} [r json.get k]
-            assert_equal OK [r json.set k .n "${bom}1"]
-            assert_equal OK [r json.set k \$.t "$bom \n true"]
-            assert_equal 1 [r json.arrappend k .arr "${bom}7"]
-            assert_equal 3 [r json.arrappend k .arr "$bom\"a\"" "$bom\[\]"]
-            assert_equal 4 [r json.arrinsert k .arr 0 "${bom}null"]
-            assert_equal 1 [r json.arrindex k .arr "${bom}7"]
-            assert_equal 2 [r json.arrindex k .arr "$bom\"a\""]
-            assert_equal 2 [r json.strappend k .s "$bom\"y\""]
-            assert_equal OK [r json.merge k .o "$bom{\"m\":1}"]
-            assert_equal OK [r json.mset k .o.q "${bom}2" k2 . "$bom\[1\]"]
-            assert_equal {{"s":"xy","arr":[null,7,"a",[]],"o":{"m":1,"q":2},"n":1,"t":true}} [r json.get k]
-            assert_equal {[1]} [r json.get k2]
+            assert_equal OK [r json.set k{t} . "$bom{\"s\":\"x\",\"arr\":\[\],\"o\":{}}"]
+            assert_equal {{"s":"x","arr":[],"o":{}}} [r json.get k{t}]
+            assert_equal OK [r json.set k{t} .n "${bom}1"]
+            assert_equal OK [r json.set k{t} \$.t "$bom \n true"]
+            assert_equal 1 [r json.arrappend k{t} .arr "${bom}7"]
+            assert_equal 3 [r json.arrappend k{t} .arr "$bom\"a\"" "$bom\[\]"]
+            assert_equal 4 [r json.arrinsert k{t} .arr 0 "${bom}null"]
+            assert_equal 1 [r json.arrindex k{t} .arr "${bom}7"]
+            assert_equal 2 [r json.arrindex k{t} .arr "$bom\"a\""]
+            assert_equal 2 [r json.strappend k{t} .s "$bom\"y\""]
+            assert_equal OK [r json.merge k{t} .o "$bom{\"m\":1}"]
+            assert_equal OK [r json.mset k{t} .o.q "${bom}2" k2{t} . "$bom\[1\]"]
+            assert_equal {{"s":"xy","arr":[null,7,"a",[]],"o":{"m":1,"q":2},"n":1,"t":true}} [r json.get k{t}]
+            assert_equal {[1]} [r json.get k2{t}]
             # Only one, only at the very start, and not alone.
             foreach text [list "$bom${bom}1" "$bom" " ${bom}1" "1$bom" "\[${bom}1\]" "{\"a\":${bom}1}" "$bom $bom 1" \
                                "[json_hex efbb]1" "[json_hex fffe]1" "[json_hex feff]1"] {
                 assert_error "SYNTAXERR*" {r json.set new . $text}
-                assert_error "SYNTAXERR*" {r json.arrappend k .arr $text}
+                assert_error "SYNTAXERR*" {r json.arrappend k{t} .arr $text}
             }
             assert_equal 0 [r exists new]
             # Inside a string the same three bytes are ordinary content.
-            assert_equal OK [r json.set k .s "\"a${bom}b\""]
-            assert_equal 5 [r json.strlen k .s]
-            assert_equal "\"a${bom}b\"" [r json.get k .s]
-            assert_equal OK [r json.set k . "$bom\"$bom\""]
-            assert_equal "\"$bom\"" [r json.get k]
+            assert_equal OK [r json.set k{t} .s "\"a${bom}b\""]
+            assert_equal 5 [r json.strlen k{t} .s]
+            assert_equal "\"a${bom}b\"" [r json.get k{t} .s]
+            assert_equal OK [r json.set k{t} . "$bom\"$bom\""]
+            assert_equal "\"$bom\"" [r json.get k{t}]
         }
     }
     json_set_caps {4096 128}
@@ -443,58 +445,58 @@ start_server {tags {"json"}} {
             # A document may be nested max(json.max-path-limit, 1024) levels whatever
             # its source, so one that was written under a higher limit still loads.
             r flushall
-            json_set_deep deep [json_deep_array 1024]
-            json_set_deep deepo [json_deep_object 1024]
+            json_set_deep deep{t} [json_deep_array 1024]
+            json_set_deep deepo{t} [json_deep_object 1024]
             assert_equal {json.max-path-limit 128} [r config get json.max-path-limit]
             r debug reload
-            assert_equal ReJSON-RL [r type deep]
-            assert_equal [json_deep_array 1024] [r json.get deep]
-            assert_equal [json_deep_object 1024] [r json.get deepo]
-            assert_equal OK [r restore deep2 0 [r dump deep]]
-            assert_equal OK [r restore deepo2 0 [r dump deepo]]
-            assert_equal 1 [r copy deep deep3]
-            assert_equal 1 [r copy deepo deepo3]
-            foreach key {deep2 deep3} { assert_equal [json_deep_array 1024] [r json.get $key] }
-            foreach key {deepo2 deepo3} { assert_equal [json_deep_object 1024] [r json.get $key] }
-            assert_equal [r debug digest-value deepo] [r debug digest-value deepo2]
-            assert_equal [r debug digest-value deepo] [r debug digest-value deepo3]
+            assert_equal ReJSON-RL [r type deep{t}]
+            assert_equal [json_deep_array 1024] [r json.get deep{t}]
+            assert_equal [json_deep_object 1024] [r json.get deepo{t}]
+            assert_equal OK [r restore deep2{t} 0 [r dump deep{t}]]
+            assert_equal OK [r restore deepo2{t} 0 [r dump deepo{t}]]
+            assert_equal 1 [r copy deep{t} deep3{t}]
+            assert_equal 1 [r copy deepo{t} deepo3{t}]
+            foreach key {deep2{t} deep3{t}} { assert_equal [json_deep_array 1024] [r json.get $key] }
+            foreach key {deepo2{t} deepo3{t}} { assert_equal [json_deep_object 1024] [r json.get $key] }
+            assert_equal [r debug digest-value deepo{t}] [r debug digest-value deepo2{t}]
+            assert_equal [r debug digest-value deepo{t}] [r debug digest-value deepo3{t}]
             # A client is still held to json.max-path-limit.
-            assert_error "LIMIT*" {r json.set other . [json_deep_array 1024]}
-            assert_error "LIMIT*" {r json.set deep . [json_deep_array 129]}
-            assert_equal [json_deep_array 1024] [r json.get deep]
-            assert_equal 0 [r exists other]
+            assert_error "LIMIT*" {r json.set other{t} . [json_deep_array 1024]}
+            assert_error "LIMIT*" {r json.set deep{t} . [json_deep_array 129]}
+            assert_equal [json_deep_array 1024] [r json.get deep{t}]
+            assert_equal 0 [r exists other{t}]
         } {} {needs:debug}
 
         test "JSON: every read command on a document 1,024 levels deep (caps $caps)" {
-            assert_equal 1023 [r json.debug depth deep]
-            assert_equal 1024 [r json.debug depth deepo]
-            assert_equal 1023 [r json.debug fields deep]
-            assert_equal 1024 [r json.debug fields deepo]
-            assert_morethan [r json.debug memory deep] 0
-            assert_morethan [r memory usage deepo] 0
-            assert_equal array [r json.type deep]
-            assert_equal {array} [r json.type deep {$[0][0][0]}]
-            assert_equal 1 [r json.arrlen deep]
-            assert_equal 1 [r json.objlen deepo]
-            assert_equal a [r json.objkeys deepo]
-            assert_equal [json_deep_array 1021] [r json.get deep {[0][0][0]}]
-            assert_equal [json_deep_object 924] [r json.get deepo [string repeat .a 100]]
-            assert_equal "\[[json_deep_array 1014]\]" [r json.get deep "\$[string repeat {[0]} 10]"]
+            assert_equal 1023 [r json.debug depth deep{t}]
+            assert_equal 1024 [r json.debug depth deepo{t}]
+            assert_equal 1023 [r json.debug fields deep{t}]
+            assert_equal 1024 [r json.debug fields deepo{t}]
+            assert_morethan [r json.debug memory deep{t}] 0
+            assert_morethan [r memory usage deepo{t}] 0
+            assert_equal array [r json.type deep{t}]
+            assert_equal {array} [r json.type deep{t} {$[0][0][0]}]
+            assert_equal 1 [r json.arrlen deep{t}]
+            assert_equal 1 [r json.objlen deepo{t}]
+            assert_equal a [r json.objkeys deepo{t}]
+            assert_equal [json_deep_array 1021] [r json.get deep{t} {[0][0][0]}]
+            assert_equal [json_deep_object 924] [r json.get deepo{t} [string repeat .a 100]]
+            assert_equal "\[[json_deep_array 1014]\]" [r json.get deep{t} "\$[string repeat {[0]} 10]"]
             # The innermost values, 1,023 and 1,024 steps down.
-            assert_equal {[[]]} [r json.get deep "\$[string repeat {[0]} 1023]"]
-            assert_equal {[]} [r json.get deep "\$[string repeat {[0]} 1024]"]
-            assert_equal 1 [r json.get deepo [string repeat .a 1024]]
-            assert_equal {[1]} [r json.get deepo "\$[string repeat .a 1024]"]
-            assert_equal integer [r json.type deepo [string repeat .a 1024]]
-            assert_equal [json_deep_array 1024] [lindex [r json.mget deep nokey .] 0]
-            assert_equal -1 [r json.arrindex deep . [json_deep_array 100]]
-            assert_equal -1 [r json.arrindex deep . 1]
-            set pretty [r json.get deep INDENT " " NEWLINE "\n" SPACE " "]
+            assert_equal {[[]]} [r json.get deep{t} "\$[string repeat {[0]} 1023]"]
+            assert_equal {[]} [r json.get deep{t} "\$[string repeat {[0]} 1024]"]
+            assert_equal 1 [r json.get deepo{t} [string repeat .a 1024]]
+            assert_equal {[1]} [r json.get deepo{t} "\$[string repeat .a 1024]"]
+            assert_equal integer [r json.type deepo{t} [string repeat .a 1024]]
+            assert_equal [json_deep_array 1024] [lindex [r json.mget deep{t} nokey{t} .] 0]
+            assert_equal -1 [r json.arrindex deep{t} . [json_deep_array 100]]
+            assert_equal -1 [r json.arrindex deep{t} . 1]
+            set pretty [r json.get deep{t} INDENT " " NEWLINE "\n" SPACE " "]
             assert_morethan [string length $pretty] 2048
             # A recursive path visits every level.
-            assert_equal [concat [lrepeat 1022 1] 0] [r json.arrlen deep {$..[0]}]
-            assert_equal [concat [lrepeat 1023 object] integer] [r json.type deepo {$..a}]
-            assert_equal 40 [string length [r debug digest-value deep]]
+            assert_equal [concat [lrepeat 1022 1] 0] [r json.arrlen deep{t} {$..[0]}]
+            assert_equal [concat [lrepeat 1023 object] integer] [r json.type deepo{t} {$..a}]
+            assert_equal 40 [string length [r debug digest-value deep{t}]]
             assert_equal PONG [r ping]
         } {} {needs:debug}
 
@@ -502,83 +504,83 @@ start_server {tags {"json"}} {
             # The reply is 1,024 nested arrays, which the test client cannot
             # parse, so it is sent on a connection that is then closed.
             r config resetstat
-            foreach key {deep deepo} {
+            foreach key {deep{t} deepo{t}} {
                 set rd [valkey_deferring_client]
                 $rd select 9
                 $rd read
                 $rd json.resp $key
                 $rd flush
                 wait_for_condition 100 20 {
-                    [string match "*calls=[expr {$key eq "deep" ? 1 : 2}],*" [cmdrstat JSON.RESP r]]
+                    [string match "*calls=[expr {$key eq "deep{t}" ? 1 : 2}],*" [cmdrstat JSON.RESP r]]
                 } else {
                     fail "JSON.RESP was not executed"
                 }
                 $rd close
             }
             assert_equal PONG [r ping]
-            assert_equal [json_deep_array 1024] [r json.get deep]
+            assert_equal [json_deep_array 1024] [r json.get deep{t}]
         }
 
         test "JSON: writes on a document 1,024 levels deep are held to json.max-path-limit (caps $caps)" {
             # Near the root: the nesting of the written value counts from its position.
-            assert_equal 2 [r json.arrappend deep2 {$[0][0]} 1]
-            assert_equal 3 [r json.arrinsert deep2 {[0][0]} 0 {"first"}]
-            assert_equal OK [r json.set deepo2 .a.a.b {{"x":[1,2,3]}}]
-            assert_equal OK [r json.set deepo2 .top 1]
-            assert_equal {[1,2,3]} [r json.get deepo2 .a.a.b.x]
-            assert_equal {a top} [r json.objkeys deepo2]
-            assert_equal OK [r json.merge deepo2 . {{"top":null,"m":{"n":1}}}]
-            assert_equal {a m} [r json.objkeys deepo2]
-            assert_equal 1024 [r json.debug depth deepo2]
+            assert_equal 2 [r json.arrappend deep2{t} {$[0][0]} 1]
+            assert_equal 3 [r json.arrinsert deep2{t} {[0][0]} 0 {"first"}]
+            assert_equal OK [r json.set deepo2{t} .a.a.b {{"x":[1,2,3]}}]
+            assert_equal OK [r json.set deepo2{t} .top 1]
+            assert_equal {[1,2,3]} [r json.get deepo2{t} .a.a.b.x]
+            assert_equal {a top} [r json.objkeys deepo2{t}]
+            assert_equal OK [r json.merge deepo2{t} . {{"top":null,"m":{"n":1}}}]
+            assert_equal {a m} [r json.objkeys deepo2{t}]
+            assert_equal 1024 [r json.debug depth deepo2{t}]
             # Below the limit of 128 levels a write that adds a value is refused.
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.set deep2 "\$\[0\]\[0\]\[1\][string repeat {[0]} 197]" 1}
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.arrappend deep2 "\$\[0\]\[0\]\[1\][string repeat {[0]} 197]" 1}
-            assert_error "LIMIT*" {r json.arrappend deep3 "\$[string repeat {[0]} 1023]" 1}
-            assert_error "LIMIT*" {r json.set deepo3 "\$[string repeat .a 200].b" 1}
+            assert_error "LIMIT Document path nesting limit is exceeded" {r json.set deep2{t} "\$\[0\]\[0\]\[1\][string repeat {[0]} 197]" 1}
+            assert_error "LIMIT Document path nesting limit is exceeded" {r json.arrappend deep2{t} "\$\[0\]\[0\]\[1\][string repeat {[0]} 197]" 1}
+            assert_error "LIMIT*" {r json.arrappend deep3{t} "\$[string repeat {[0]} 1023]" 1}
+            assert_error "LIMIT*" {r json.set deepo3{t} "\$[string repeat .a 200].b" 1}
             # A value that would push a subtree past the limit is refused.
-            assert_error "LIMIT*" {r json.set deepo2 .a.a.c [json_deep_array 127]}
-            assert_equal OK [r json.set deepo2 .a.a.c [json_deep_array 125]]
+            assert_error "LIMIT*" {r json.set deepo2{t} .a.a.c [json_deep_array 127]}
+            assert_equal OK [r json.set deepo2{t} .a.a.c [json_deep_array 125]]
             # Changing the innermost number in place adds no level and works.
-            assert_equal {[2]} [r json.numincrby deepo3 "\$[string repeat .a 1024]" 1]
-            assert_equal {[3]} [r json.numincrby deepo3 {$..[?(@.a==2)].a} 1]
-            assert_equal [string map {":1" ":3"} [json_deep_object 1024]] [r json.get deepo3]
-            assert_equal [json_deep_array 1024] [r json.get deep3]
+            assert_equal {[2]} [r json.numincrby deepo3{t} "\$[string repeat .a 1024]" 1]
+            assert_equal {[3]} [r json.numincrby deepo3{t} {$..[?(@.a==2)].a} 1]
+            assert_equal [string map {":1" ":3"} [json_deep_object 1024]] [r json.get deepo3{t}]
+            assert_equal [json_deep_array 1024] [r json.get deep3{t}]
             assert_equal PONG [r ping]
         }
 
         test "JSON.DEL, JSON.CLEAR, DEL and UNLINK on documents 1,024 levels deep (caps $caps)" {
             # A sub-path delete removes 1,021 levels at once.
-            assert_equal 1 [r json.del deep {$[0][0][0]}]
-            assert_equal {[[[]]]} [r json.get deep]
-            assert_equal 1 [r json.del deepo .a.a.a]
-            assert_equal {{"a":{"a":{}}}} [r json.get deepo]
-            assert_equal 2 [r json.debug depth deepo]
+            assert_equal 1 [r json.del deep{t} {$[0][0][0]}]
+            assert_equal {[[[]]]} [r json.get deep{t}]
+            assert_equal 1 [r json.del deepo{t} .a.a.a]
+            assert_equal {{"a":{"a":{}}}} [r json.get deepo{t}]
+            assert_equal 2 [r json.debug depth deepo{t}]
             # The innermost value, and a value in the middle.
-            assert_equal 1 [r json.del deepo3 "\$[string repeat .a 1024]"]
-            assert_equal 1023 [r json.debug depth deepo3]
-            assert_equal 1 [r json.clear deep3 "\$[string repeat {[0]} 1000]"]
-            assert_equal 1000 [r json.debug depth deep3]
-            assert_equal 1 [r json.del deep3 "\$[string repeat {[0]} 900]"]
-            assert_equal 899 [r json.debug depth deep3]
+            assert_equal 1 [r json.del deepo3{t} "\$[string repeat .a 1024]"]
+            assert_equal 1023 [r json.debug depth deepo3{t}]
+            assert_equal 1 [r json.clear deep3{t} "\$[string repeat {[0]} 1000]"]
+            assert_equal 1000 [r json.debug depth deep3{t}]
+            assert_equal 1 [r json.del deep3{t} "\$[string repeat {[0]} 900]"]
+            assert_equal 899 [r json.debug depth deep3{t}]
             # Clearing the root container of a deep document.
-            assert_equal 1 [r json.clear deep3]
-            assert_equal {[]} [r json.get deep3]
-            assert_equal 1 [r json.clear deepo3]
-            assert_equal {{}} [r json.get deepo3]
+            assert_equal 1 [r json.clear deep3{t}]
+            assert_equal {[]} [r json.get deep3{t}]
+            assert_equal 1 [r json.clear deepo3{t}]
+            assert_equal {{}} [r json.get deepo3{t}]
             # Whole documents.
-            foreach {key kind} {d1 array d2 object d3 array d4 object d5 object d6 object} {
+            foreach {key kind} {d1{t} array d2{t} object d3{t} array d4{t} object d5{t} object d6{t} object} {
                 json_set_deep $key [json_deep_$kind 1024]
             }
             r debug reload
-            assert_equal 1 [r json.del d1]
-            assert_equal 1 [r json.forget d2 $]
-            assert_equal 1 [r del d3]
-            assert_equal 1 [r unlink d4]
-            assert_equal OK [r json.set d5 . 1]
-            assert_equal OK [r set d6 string]
+            assert_equal 1 [r json.del d1{t}]
+            assert_equal 1 [r json.forget d2{t} $]
+            assert_equal 1 [r del d3{t}]
+            assert_equal 1 [r unlink d4{t}]
+            assert_equal OK [r json.set d5{t} . 1]
+            assert_equal OK [r set d6{t} string]
             wait_lazyfree_done r
-            assert_equal 0 [r exists d1 d2 d3 d4]
-            assert_equal 1 [r json.get d5]
+            assert_equal 0 [r exists d1{t} d2{t} d3{t} d4{t}]
+            assert_equal 1 [r json.get d5{t}]
             r flushall async
             wait_lazyfree_done r
             json_assert_num_documents 0
@@ -588,70 +590,75 @@ start_server {tags {"json"}} {
     json_set_caps {4096 128}
 
     test {JSON: 1,025 levels are refused by RESTORE with the default limit and accepted after raising it} {
-        r flushall
-        json_set_deep a1024 [json_deep_array 1024]
-        json_set_deep a1025 [json_deep_array 1025]
-        json_set_deep o1024 [json_deep_object 1024]
-        json_set_deep o1025 [json_deep_object 1025]
-        foreach key {a1024 a1025 o1024 o1025} { set bound_payload($key) [r dump $key] }
-        r flushall
-        assert_equal {json.max-path-limit 128} [r config get json.max-path-limit]
-        # Both sides of the bound of max(128, 1024) levels.
-        assert_equal OK [r restore a1024 0 $bound_payload(a1024)]
-        assert_equal OK [r restore o1024 0 $bound_payload(o1024)]
-        assert_error "ERR Bad data format" {r restore a1025 0 $bound_payload(a1025)}
-        assert_error "ERR Bad data format" {r restore o1025 0 $bound_payload(o1025)}
-        assert_error "ERR Bad data format" {r restore a1024 0 $bound_payload(a1025) replace}
-        assert_equal 0 [r exists a1025 o1025]
-        assert_equal [json_deep_array 1024] [r json.get a1024]
-        json_assert_num_documents 2
-        # A limit below 1,024 does not lower the bound, a limit above it raises it.
-        foreach limit {1 64 1024} {
-            r config set json.max-path-limit $limit
+        with_config json.max-path-limit 128 {
+            r flushall
+            json_set_deep a1024 [json_deep_array 1024]
+            json_set_deep a1025 [json_deep_array 1025]
+            json_set_deep o1024 [json_deep_object 1024]
+            json_set_deep o1025 [json_deep_object 1025]
+            foreach key {a1024 a1025 o1024 o1025} { set bound_payload($key) [r dump $key] }
+            r flushall
+            assert_equal {json.max-path-limit 128} [r config get json.max-path-limit]
+            # Both sides of the bound of max(128, 1024) levels.
+            assert_equal OK [r restore a1024 0 $bound_payload(a1024)]
+            assert_equal OK [r restore o1024 0 $bound_payload(o1024)]
             assert_error "ERR Bad data format" {r restore a1025 0 $bound_payload(a1025)}
-            assert_equal OK [r restore a1024 0 $bound_payload(a1024) replace]
+            assert_error "ERR Bad data format" {r restore o1025 0 $bound_payload(o1025)}
+            assert_error "ERR Bad data format" {r restore a1024 0 $bound_payload(a1025) replace}
+            assert_equal 0 [r exists a1025]
+            assert_equal 0 [r exists o1025]
+            assert_equal [json_deep_array 1024] [r json.get a1024]
+            json_assert_num_documents 2
+            # A limit below 1,024 does not lower the bound, a limit above it raises it.
+            foreach limit {1 64 1024} {
+                r config set json.max-path-limit $limit
+                assert_error "ERR Bad data format" {r restore a1025 0 $bound_payload(a1025)}
+                assert_equal OK [r restore a1024 0 $bound_payload(a1024) replace]
+            }
+            r config set json.max-path-limit 1025
+            assert_equal OK [r restore a1025 0 $bound_payload(a1025)]
+            assert_equal OK [r restore o1025 0 $bound_payload(o1025)]
+            assert_equal [json_deep_array 1025] [r json.get a1025]
+            assert_equal [json_deep_object 1025] [r json.get o1025]
+            r debug reload
+            assert_equal [json_deep_array 1025] [r json.get a1025]
+            # With the limit lowered again the stored documents stay readable and writable.
+            r config set json.max-path-limit 128
+            assert_equal 1024 [r json.debug depth a1025]
+            assert_equal 1025 [r json.debug depth o1025]
+            assert_equal [json_deep_object 1025] [r json.get o1025]
+            assert_equal {[1]} [r json.get o1025 "\$[string repeat .a 1025]"]
+            assert_equal 2 [r json.arrappend a1025 {$[0]} 1]
+            assert_equal 1 [r json.del a1025 {$[0][0]}]
+            assert_equal {[[1]]} [r json.get a1025]
+            assert_equal 1 [r del o1025]
+            r flushall
         }
-        r config set json.max-path-limit 1025
-        assert_equal OK [r restore a1025 0 $bound_payload(a1025)]
-        assert_equal OK [r restore o1025 0 $bound_payload(o1025)]
-        assert_equal [json_deep_array 1025] [r json.get a1025]
-        assert_equal [json_deep_object 1025] [r json.get o1025]
-        r debug reload
-        assert_equal [json_deep_array 1025] [r json.get a1025]
-        # With the limit lowered again the stored documents stay readable and writable.
-        r config set json.max-path-limit 128
-        assert_equal 1024 [r json.debug depth a1025]
-        assert_equal 1025 [r json.debug depth o1025]
-        assert_equal [json_deep_object 1025] [r json.get o1025]
-        assert_equal {[1]} [r json.get o1025 "\$[string repeat .a 1025]"]
-        assert_equal 2 [r json.arrappend a1025 {$[0]} 1]
-        assert_equal 1 [r json.del a1025 {$[0][0]}]
-        assert_equal {[[1]]} [r json.get a1025]
-        assert_equal 1 [r del o1025]
-        r flushall
     } {OK} {needs:debug}
 
     test {JSON: after the limit is lowered a document within 1,024 levels stays readable and reloadable} {
-        r flushall
-        r config set json.max-path-limit 2000
-        assert_equal OK [r json.set a . [json_deep_array 1024]]
-        assert_equal OK [r json.set o . [json_deep_object 1024]]
-        assert_equal OK [r json.set mid . [json_deep_object 600]]
-        set digest [debug_digest]
-        foreach limit {1024 128 64 1 0} {
-            r config set json.max-path-limit $limit
-            assert_equal [json_deep_array 1024] [r json.get a]
-            assert_equal [json_deep_object 1024] [r json.get o]
-            r debug reload
-            assert_equal $digest [debug_digest]
-            assert_equal [json_deep_array 1024] [r json.get a]
-            assert_equal [json_deep_object 1024] [r json.get o]
-            assert_equal [json_deep_object 600] [r json.get mid]
-            assert_equal OK [r restore copy 0 [r dump o] replace]
-            assert_equal 1 [r del copy]
+        with_config json.max-path-limit 128 {
+            r flushall
+            r config set json.max-path-limit 2000
+            assert_equal OK [r json.set a . [json_deep_array 1024]]
+            assert_equal OK [r json.set o . [json_deep_object 1024]]
+            assert_equal OK [r json.set mid . [json_deep_object 600]]
+            set digest [debug_digest]
+            foreach limit {1024 128 64 1 0} {
+                r config set json.max-path-limit $limit
+                assert_equal [json_deep_array 1024] [r json.get a]
+                assert_equal [json_deep_object 1024] [r json.get o]
+                r debug reload
+                assert_equal $digest [debug_digest]
+                assert_equal [json_deep_array 1024] [r json.get a]
+                assert_equal [json_deep_object 1024] [r json.get o]
+                assert_equal [json_deep_object 600] [r json.get mid]
+                assert_equal OK [r restore copy 0 [r dump o] replace]
+                assert_equal 1 [r del copy]
+            }
+            r config set json.max-path-limit 128
+            r flushall
         }
-        r config set json.max-path-limit 128
-        r flushall
     } {OK} {needs:debug}
 }
 
@@ -659,20 +666,22 @@ start_server {tags {"json"}} {
 # reload leaves the dataset empty, so this has a server of its own.
 start_server {tags {"json"}} {
     test {JSON: DEBUG RELOAD fails when a stored document is deeper than max(json.max-path-limit, 1024)} {
-        r config set json.max-path-limit 2000
-        assert_equal OK [r json.set deep . [json_deep_array 1025]]
-        assert_equal OK [r json.set other . {{"a":1}}]
-        r debug reload
-        assert_equal [json_deep_array 1025] [r json.get deep]
-        r config set json.max-path-limit 128
-        assert_equal [json_deep_array 1025] [r json.get deep]
-        assert_error "*Error trying to load the RDB dump*" {r debug reload}
-        assert_equal PONG [r ping]
-        # The server keeps working after the failed load.
-        r flushall
-        assert_equal OK [r json.set again . {[1,2,3]}]
-        r debug reload
-        assert_equal {[1,2,3]} [r json.get again]
+        with_config json.max-path-limit 128 {
+            r config set json.max-path-limit 2000
+            assert_equal OK [r json.set deep . [json_deep_array 1025]]
+            assert_equal OK [r json.set other . {{"a":1}}]
+            r debug reload
+            assert_equal [json_deep_array 1025] [r json.get deep]
+            r config set json.max-path-limit 128
+            assert_equal [json_deep_array 1025] [r json.get deep]
+            assert_error "*Error trying to load the RDB dump*" {r debug reload}
+            assert_equal PONG [r ping]
+            # The server keeps working after the failed load.
+            r flushall
+            assert_equal OK [r json.set again . {[1,2,3]}]
+            r debug reload
+            assert_equal {[1,2,3]} [r json.get again]
+        }
     } {} {needs:debug}
 }
 
@@ -687,52 +696,52 @@ start_server {tags {"json"}} {
         test "JSON: a document 5,000 levels deep loads once json.max-path-limit is at least 5,000 (caps $caps)" {
             r flushall
             r config set json.max-path-limit 6000
-            assert_equal OK [r json.set deep . [json_deep_array 5000]]
-            assert_equal OK [r json.set deepo . [json_deep_object 5000]]
+            assert_equal OK [r json.set deep{t} . [json_deep_array 5000]]
+            assert_equal OK [r json.set deepo{t} . [json_deep_object 5000]]
             set digest [debug_digest]
             r debug reload
             assert_equal $digest [debug_digest]
-            assert_equal [json_deep_array 5000] [r json.get deep]
-            assert_equal [json_deep_object 5000] [r json.get deepo]
-            assert_equal OK [r restore deep2 0 [r dump deep]]
-            assert_equal OK [r restore deepo2 0 [r dump deepo]]
-            assert_equal 1 [r copy deep deep3]
-            assert_equal 1 [r copy deepo deepo3]
-            foreach key {deep2 deep3} { assert_equal [json_deep_array 5000] [r json.get $key] }
-            foreach key {deepo2 deepo3} { assert_equal [json_deep_object 5000] [r json.get $key] }
-            assert_equal [r debug digest-value deepo] [r debug digest-value deepo2]
+            assert_equal [json_deep_array 5000] [r json.get deep{t}]
+            assert_equal [json_deep_object 5000] [r json.get deepo{t}]
+            assert_equal OK [r restore deep2{t} 0 [r dump deep{t}]]
+            assert_equal OK [r restore deepo2{t} 0 [r dump deepo{t}]]
+            assert_equal 1 [r copy deep{t} deep3{t}]
+            assert_equal 1 [r copy deepo{t} deepo3{t}]
+            foreach key {deep2{t} deep3{t}} { assert_equal [json_deep_array 5000] [r json.get $key] }
+            foreach key {deepo2{t} deepo3{t}} { assert_equal [json_deep_object 5000] [r json.get $key] }
+            assert_equal [r debug digest-value deepo{t}] [r debug digest-value deepo2{t}]
             # Beyond the raised limit a client is refused, and so is a payload.
-            assert_error "LIMIT*" {r json.set other . [json_deep_array 6001]}
-            assert_equal OK [r json.set other . [json_deep_array 6000]]
-            set payload [r dump other]
+            assert_error "LIMIT*" {r json.set other{t} . [json_deep_array 6001]}
+            assert_equal OK [r json.set other{t} . [json_deep_array 6000]]
+            set payload [r dump other{t}]
             r config set json.max-path-limit 5999
-            assert_error "ERR Bad data format" {r restore other2 0 $payload}
+            assert_error "ERR Bad data format" {r restore other2{t} 0 $payload}
             r config set json.max-path-limit 6000
-            assert_equal OK [r restore other2 0 $payload]
-            assert_equal 2 [r del other other2]
+            assert_equal OK [r restore other2{t} 0 $payload]
+            assert_equal 2 [r del other{t} other2{t}]
         } {} {needs:debug}
 
         test "JSON: reads on a document 5,000 levels deep (caps $caps)" {
-            assert_equal 4999 [r json.debug depth deep]
-            assert_equal 5000 [r json.debug depth deepo]
-            assert_equal 4999 [r json.debug fields deep]
-            assert_equal 5000 [r json.debug fields deepo]
-            assert_morethan [r json.debug memory deep] 0
-            assert_morethan [r memory usage deepo] 0
-            assert_equal array [r json.type deep]
-            assert_equal {array} [r json.type deep {$[0][0][0]}]
-            assert_equal 1 [r json.arrlen deep]
-            assert_equal 1 [r json.objlen deepo]
-            assert_equal a [r json.objkeys deepo]
-            assert_equal [json_deep_array 4997] [r json.get deep {[0][0][0]}]
-            assert_equal [json_deep_object 4900] [r json.get deepo [string repeat .a 100]]
-            assert_equal "\[[json_deep_array 4990]\]" [r json.get deep "\$[string repeat {[0]} 10]"]
-            assert_equal {[1]} [r json.get deepo "\$[string repeat .a 5000]"]
-            assert_equal [json_deep_array 5000] [lindex [r json.mget deep nokey .] 0]
-            assert_equal -1 [r json.arrindex deep . [json_deep_array 100]]
-            set pretty [r json.get deep INDENT " " NEWLINE "\n" SPACE " "]
+            assert_equal 4999 [r json.debug depth deep{t}]
+            assert_equal 5000 [r json.debug depth deepo{t}]
+            assert_equal 4999 [r json.debug fields deep{t}]
+            assert_equal 5000 [r json.debug fields deepo{t}]
+            assert_morethan [r json.debug memory deep{t}] 0
+            assert_morethan [r memory usage deepo{t}] 0
+            assert_equal array [r json.type deep{t}]
+            assert_equal {array} [r json.type deep{t} {$[0][0][0]}]
+            assert_equal 1 [r json.arrlen deep{t}]
+            assert_equal 1 [r json.objlen deepo{t}]
+            assert_equal a [r json.objkeys deepo{t}]
+            assert_equal [json_deep_array 4997] [r json.get deep{t} {[0][0][0]}]
+            assert_equal [json_deep_object 4900] [r json.get deepo{t} [string repeat .a 100]]
+            assert_equal "\[[json_deep_array 4990]\]" [r json.get deep{t} "\$[string repeat {[0]} 10]"]
+            assert_equal {[1]} [r json.get deepo{t} "\$[string repeat .a 5000]"]
+            assert_equal [json_deep_array 5000] [lindex [r json.mget deep{t} nokey{t} .] 0]
+            assert_equal -1 [r json.arrindex deep{t} . [json_deep_array 100]]
+            set pretty [r json.get deep{t} INDENT " " NEWLINE "\n" SPACE " "]
             assert_morethan [string length $pretty] 10000
-            assert_equal 40 [string length [r debug digest-value deep]]
+            assert_equal 40 [string length [r debug digest-value deep{t}]]
             assert_equal PONG [r ping]
         } {} {needs:debug}
 
@@ -740,9 +749,9 @@ start_server {tags {"json"}} {
             # Without a bound, `$..*` on such a document builds a result of gigabytes.
             set peak [s used_memory_peak]
             foreach {cmd key path} {
-                json.get deep {$..*}        json.get deepo {$..*}        json.get deepo {$..a}
-                json.get deep {$..[0]}      json.arrlen deep {$..[0]}    json.type deepo {$..a}
-                json.objkeys deepo {$..a}   json.resp deep {$..*}        json.debug deep {$..*}
+                json.get deep{t} {$..*}        json.get deepo{t} {$..*}        json.get deepo{t} {$..a}
+                json.get deep{t} {$..[0]}      json.arrlen deep{t} {$..[0]}    json.type deepo{t} {$..a}
+                json.objkeys deepo{t} {$..a}   json.resp deep{t} {$..*}        json.debug deep{t} {$..*}
             } {
                 if {$cmd eq "json.debug"} {
                     json_assert_fails_fast "LIMIT Parser recursion depth is exceeded" 2000 json.debug memory $key $path
@@ -751,92 +760,92 @@ start_server {tags {"json"}} {
                 }
             }
             # Write commands too, and they change nothing.
-            json_assert_fails_fast "LIMIT Parser recursion depth is exceeded" 2000 json.del deep3 {$..[0]}
-            json_assert_fails_fast "LIMIT Parser recursion depth is exceeded" 2000 json.set deepo3 {$..a} 2
-            json_assert_fails_fast "LIMIT Parser recursion depth is exceeded" 2000 json.numincrby deepo3 {$..a} 1
-            json_assert_fails_fast "LIMIT Parser recursion depth is exceeded" 2000 json.clear deep3 {$..*}
-            assert_equal [json_deep_array 5000] [r json.get deep3]
-            assert_equal [json_deep_object 5000] [r json.get deepo3]
+            json_assert_fails_fast "LIMIT Parser recursion depth is exceeded" 2000 json.del deep3{t} {$..[0]}
+            json_assert_fails_fast "LIMIT Parser recursion depth is exceeded" 2000 json.set deepo3{t} {$..a} 2
+            json_assert_fails_fast "LIMIT Parser recursion depth is exceeded" 2000 json.numincrby deepo3{t} {$..a} 1
+            json_assert_fails_fast "LIMIT Parser recursion depth is exceeded" 2000 json.clear deep3{t} {$..*}
+            assert_equal [json_deep_array 5000] [r json.get deep3{t}]
+            assert_equal [json_deep_object 5000] [r json.get deepo3{t}]
             assert_lessthan [expr {[s used_memory_peak] - $peak}] [expr {64 * 1024 * 1024}]
             # A descent that starts further down is within the bound.
-            assert_equal 903 [llength [r json.arrlen deep "\$[string repeat {[0]} 4096]..\[0\]"]]
-            assert_equal [concat [lrepeat 99 object] integer] [r json.type deepo "\$[string repeat .a 4900]..a"]
+            assert_equal 903 [llength [r json.arrlen deep{t} "\$[string repeat {[0]} 4096]..\[0\]"]]
+            assert_equal [concat [lrepeat 99 object] integer] [r json.type deepo{t} "\$[string repeat .a 4900]..a"]
             assert_equal PONG [r ping]
         }
 
         test "JSON: the bound of a recursive descent is 4,096 levels below its start (caps $caps)" {
-            foreach {key text} [list a4097 [json_deep_array 4097] a4098 [json_deep_array 4098] \
-                                     o4097 [json_deep_object 4097] o4098 [json_deep_object 4098]] {
+            foreach {key text} [list a4097{t} [json_deep_array 4097] a4098{t} [json_deep_array 4098] \
+                                     o4097{t} [json_deep_object 4097] o4098{t} [json_deep_object 4098]] {
                 assert_equal OK [r json.set $key . $text]
             }
-            assert_equal 4096 [llength [r json.arrlen a4097 {$..[0]}]]
-            assert_error "LIMIT Parser recursion depth is exceeded" {r json.arrlen a4098 {$..[0]}}
-            assert_equal 4096 [llength [r json.arrlen a4098 {$[0]..[0]}]]
-            assert_equal 4097 [llength [r json.type o4097 {$..a}]]
-            assert_error "LIMIT Parser recursion depth is exceeded" {r json.type o4098 {$..a}}
-            assert_equal 4097 [llength [r json.type o4098 {$.a..a}]]
-            assert_equal 4 [r del a4097 a4098 o4097 o4098]
+            assert_equal 4096 [llength [r json.arrlen a4097{t} {$..[0]}]]
+            assert_error "LIMIT Parser recursion depth is exceeded" {r json.arrlen a4098{t} {$..[0]}}
+            assert_equal 4096 [llength [r json.arrlen a4098{t} {$[0]..[0]}]]
+            assert_equal 4097 [llength [r json.type o4097{t} {$..a}]]
+            assert_error "LIMIT Parser recursion depth is exceeded" {r json.type o4098{t} {$..a}}
+            assert_equal 4097 [llength [r json.type o4098{t} {$.a..a}]]
+            assert_equal 4 [r del a4097{t} a4098{t} o4097{t} o4098{t}]
         }
 
         test "JSON.RESP on a document 5,000 levels deep does not crash the server (caps $caps)" {
             r config resetstat
-            foreach key {deep deepo} {
+            foreach key {deep{t} deepo{t}} {
                 set rd [valkey_deferring_client]
                 $rd select 9
                 $rd read
                 $rd json.resp $key
                 $rd flush
                 wait_for_condition 100 20 {
-                    [string match "*calls=[expr {$key eq "deep" ? 1 : 2}],*" [cmdrstat JSON.RESP r]]
+                    [string match "*calls=[expr {$key eq "deep{t}" ? 1 : 2}],*" [cmdrstat JSON.RESP r]]
                 } else {
                     fail "JSON.RESP was not executed"
                 }
                 $rd close
             }
             assert_equal PONG [r ping]
-            assert_equal [json_deep_array 5000] [r json.get deep]
+            assert_equal [json_deep_array 5000] [r json.get deep{t}]
         }
 
         test "JSON: writes and deletes on documents 5,000 levels deep (caps $caps)" {
-            assert_equal 2 [r json.arrappend deep2 {$[0][0]} 1]
-            assert_equal OK [r json.set deepo2 .a.a.b {{"x":[1,2,3]}}]
-            assert_equal {[2]} [r json.numincrby deepo3 "\$[string repeat .a 5000]" 1]
-            assert_equal [string map {":1" ":2"} [json_deep_object 5000]] [r json.get deepo3]
-            assert_equal 2 [r json.arrappend deep3 "\$[string repeat {[0]} 4998]" {"innermost"}]
-            assert_equal {[[],"innermost"]} [r json.get deep3 "[string repeat {[0]} 4998]"]
+            assert_equal 2 [r json.arrappend deep2{t} {$[0][0]} 1]
+            assert_equal OK [r json.set deepo2{t} .a.a.b {{"x":[1,2,3]}}]
+            assert_equal {[2]} [r json.numincrby deepo3{t} "\$[string repeat .a 5000]" 1]
+            assert_equal [string map {":1" ":2"} [json_deep_object 5000]] [r json.get deepo3{t}]
+            assert_equal 2 [r json.arrappend deep3{t} "\$[string repeat {[0]} 4998]" {"innermost"}]
+            assert_equal {[[],"innermost"]} [r json.get deep3{t} "[string repeat {[0]} 4998]"]
             # A sub-path delete removes 4,997 levels at once.
-            assert_equal 1 [r json.del deep {$[0][0][0]}]
-            assert_equal {[[[]]]} [r json.get deep]
-            assert_equal 1 [r json.del deepo .a.a.a]
-            assert_equal {{"a":{"a":{}}}} [r json.get deepo]
-            assert_equal 1 [r json.clear deep3]
-            assert_equal {[]} [r json.get deep3]
-            assert_equal 1 [r json.clear deepo3]
-            assert_equal {{}} [r json.get deepo3]
+            assert_equal 1 [r json.del deep{t} {$[0][0][0]}]
+            assert_equal {[[[]]]} [r json.get deep{t}]
+            assert_equal 1 [r json.del deepo{t} .a.a.a]
+            assert_equal {{"a":{"a":{}}}} [r json.get deepo{t}]
+            assert_equal 1 [r json.clear deep3{t}]
+            assert_equal {[]} [r json.get deep3{t}]
+            assert_equal 1 [r json.clear deepo3{t}]
+            assert_equal {{}} [r json.get deepo3{t}]
             # Whole documents: delete, unlink, overwrite, expire, evict, flush.
-            foreach {key kind} {d1 array d2 object d3 array d4 object d5 object d6 object d7 array d8 object} {
+            foreach {key kind} {d1{t} array d2{t} object d3{t} array d4{t} object d5{t} object d6{t} object d7{t} array d8{t} object} {
                 assert_equal OK [r json.set $key . [json_deep_$kind 5000]]
             }
             r debug reload
-            assert_equal 1 [r json.del d1]
-            assert_equal 1 [r json.forget d2 $]
-            assert_equal 1 [r del d3]
-            assert_equal 1 [r unlink d4]
-            assert_equal OK [r json.set d5 . 1]
-            assert_equal OK [r set d6 string]
-            r pexpire d7 1
+            assert_equal 1 [r json.del d1{t}]
+            assert_equal 1 [r json.forget d2{t} $]
+            assert_equal 1 [r del d3{t}]
+            assert_equal 1 [r unlink d4{t}]
+            assert_equal OK [r json.set d5{t} . 1]
+            assert_equal OK [r set d6{t} string]
+            r pexpire d7{t} 1
             wait_for_condition 100 20 {
-                [r exists d7] == 0
+                [r exists d7{t}] == 0
             } else {
                 fail "key did not expire"
             }
-            assert_equal 8 [r del d5 d6 deep deepo deep2 deepo2 deep3 deepo3]
+            assert_equal 8 [r del d5{t} d6{t} deep{t} deepo{t} deep2{t} deepo2{t} deep3{t} deepo3{t}]
             r config set maxmemory-policy allkeys-random
             r config set maxmemory 1
             catch {r set trigger 1}
             r config set maxmemory 0
             r config set maxmemory-policy noeviction
-            assert_equal 0 [r exists d8]
+            assert_equal 0 [r exists d8{t}]
             r flushall async
             wait_lazyfree_done r
             json_assert_num_documents 0
@@ -844,31 +853,34 @@ start_server {tags {"json"}} {
         } {} {needs:debug}
     }
     json_set_caps {4096 128}
+    r config set json.max-path-limit 128
 
     test {JSON: mixed nesting 100,000 levels deep survives load, reads, writes and free once the limit allows it} {
-        r flushall
-        r config set json.max-path-limit 2000000
-        set n 100000
-        set text "[string repeat "\{\"a\":\[" [expr {$n / 2}]]null[string repeat "\]\}" [expr {$n / 2}]]"
-        assert_equal OK [r json.set deep . $text]
-        r debug reload
-        assert_equal $n [r json.debug depth deep]
-        assert_equal [string length $text] [string length [r json.get deep]]
-        assert_equal OK [r restore deep2 0 [r dump deep]]
-        assert_equal 1 [r copy deep deep3]
-        assert_equal [r debug digest-value deep] [r debug digest-value deep2]
-        assert_morethan [r memory usage deep] 0
-        assert_equal object [r json.type deep {.a[0].a[0]}]
-        json_assert_fails_fast "LIMIT Parser recursion depth is exceeded" 2000 json.get deep {$..*}
-        assert_equal OK [r json.set deep {.a[0].b} 1]
-        assert_equal 1 [r json.del deep {$.a[0].a}]
-        assert_equal {{"a":[{"b":1}]}} [r json.get deep]
-        assert_equal 1 [r json.clear deep2]
-        assert_equal 1 [r unlink deep3]
-        assert_equal 1 [r del deep2]
-        wait_lazyfree_done r
-        r config set json.max-path-limit 128
-        assert_equal PONG [r ping]
+        with_config json.max-path-limit 128 {
+            r flushall
+            r config set json.max-path-limit 2000000
+            set n 100000
+            set text "[string repeat "\{\"a\":\[" [expr {$n / 2}]]null[string repeat "\]\}" [expr {$n / 2}]]"
+            assert_equal OK [r json.set deep{t} . $text]
+            r debug reload
+            assert_equal $n [r json.debug depth deep{t}]
+            assert_equal [string length $text] [string length [r json.get deep{t}]]
+            assert_equal OK [r restore deep2{t} 0 [r dump deep{t}]]
+            assert_equal 1 [r copy deep{t} deep3{t}]
+            assert_equal [r debug digest-value deep{t}] [r debug digest-value deep2{t}]
+            assert_morethan [r memory usage deep{t}] 0
+            assert_equal object [r json.type deep{t} {.a[0].a[0]}]
+            json_assert_fails_fast "LIMIT Parser recursion depth is exceeded" 2000 json.get deep{t} {$..*}
+            assert_equal OK [r json.set deep{t} {.a[0].b} 1]
+            assert_equal 1 [r json.del deep{t} {$.a[0].a}]
+            assert_equal {{"a":[{"b":1}]}} [r json.get deep{t}]
+            assert_equal 1 [r json.clear deep2{t}]
+            assert_equal 1 [r unlink deep3{t}]
+            assert_equal 1 [r del deep2{t}]
+            wait_lazyfree_done r
+            r config set json.max-path-limit 128
+            assert_equal PONG [r ping]
+        }
     } {} {needs:debug}
 
     # ---------------------------------------------------------------------
@@ -880,54 +892,54 @@ start_server {tags {"json"}} {
 
         test "JSON path: repeated matches are returned as before while they are few (caps $caps)" {
             r flushall
-            r json.set u . [json_deep_object 30]
-            r json.set w . [json_deep_array 30]
+            r json.set u{t} . [json_deep_object 30]
+            r json.set w{t} . [json_deep_array 30]
             set a29 [json_deep_object 29]
             set a28 [json_deep_object 28]
-            assert_equal "\[$a29,$a29\]" [r json.get u {$['a','a']}]
-            assert_equal "\[$a28,$a28,$a28,$a28\]" [r json.get u {$['a','a']['a','a']}]
-            assert_equal {object object} [r json.type u {$['a','a']}]
-            assert_equal {1 1 1 1 1 1 1 1} [r json.arrlen w {$[0,0][0,0][0,0]}]
-            assert_equal 1024 [llength [r json.arrlen w "\$[string repeat {[0,0]} 10]"]]
-            assert_equal 1024 [llength [r json.objlen u "\$[string repeat {['a','a']} 10]"]]
+            assert_equal "\[$a29,$a29\]" [r json.get u{t} {$['a','a']}]
+            assert_equal "\[$a28,$a28,$a28,$a28\]" [r json.get u{t} {$['a','a']['a','a']}]
+            assert_equal {object object} [r json.type u{t} {$['a','a']}]
+            assert_equal {1 1 1 1 1 1 1 1} [r json.arrlen w{t} {$[0,0][0,0][0,0]}]
+            assert_equal 1024 [llength [r json.arrlen w{t} "\$[string repeat {[0,0]} 10]"]]
+            assert_equal 1024 [llength [r json.objlen u{t} "\$[string repeat {['a','a']} 10]"]]
         }
 
         test "JSON path: a query whose repeated matches multiply fails fast with a LIMIT error (caps $caps)" {
             set limit "*LIMIT Total number of repeated matches in the query result exceeds the limit*"
             set peak [s used_memory_peak]
             # 2^22 and 2^24 matches if they were collected.
-            json_assert_fails_fast $limit 2000 json.get u "\$[string repeat {['a','a']} 22]"
-            json_assert_fails_fast $limit 2000 json.arrlen w "\$[string repeat {[0,0]} 24]"
+            json_assert_fails_fast $limit 2000 json.get u{t} "\$[string repeat {['a','a']} 22]"
+            json_assert_fails_fast $limit 2000 json.arrlen w{t} "\$[string repeat {[0,0]} 24]"
             foreach n {16 20 22 24 26 29} {
-                json_assert_fails_fast $limit 2000 json.get u "\$[string repeat {['a','a']} $n]"
-                json_assert_fails_fast $limit 2000 json.type u "\$[string repeat {['a','a']} $n]"
-                json_assert_fails_fast $limit 2000 json.objlen u "\$[string repeat {['a','a']} $n]"
-                json_assert_fails_fast $limit 2000 json.resp u "\$[string repeat {['a','a']} $n]"
-                json_assert_fails_fast $limit 2000 json.arrlen w "\$[string repeat {[0,0]} $n]"
-                json_assert_fails_fast $limit 2000 json.arrindex w "\$[string repeat {[0,0]} $n]" 1
-                json_assert_fails_fast $limit 2000 json.get u "\$[string repeat {['a','a','a']} $n]"
+                json_assert_fails_fast $limit 2000 json.get u{t} "\$[string repeat {['a','a']} $n]"
+                json_assert_fails_fast $limit 2000 json.type u{t} "\$[string repeat {['a','a']} $n]"
+                json_assert_fails_fast $limit 2000 json.objlen u{t} "\$[string repeat {['a','a']} $n]"
+                json_assert_fails_fast $limit 2000 json.resp u{t} "\$[string repeat {['a','a']} $n]"
+                json_assert_fails_fast $limit 2000 json.arrlen w{t} "\$[string repeat {[0,0]} $n]"
+                json_assert_fails_fast $limit 2000 json.arrindex w{t} "\$[string repeat {[0,0]} $n]" 1
+                json_assert_fails_fast $limit 2000 json.get u{t} "\$[string repeat {['a','a','a']} $n]"
             }
-            json_assert_fails_fast $limit 2000 json.mget u w "\$[string repeat {['a','a']} 22]"
+            json_assert_fails_fast $limit 2000 json.mget u{t} w{t} "\$[string repeat {['a','a']} 22]"
             assert_lessthan [expr {[s used_memory_peak] - $peak}] [expr {64 * 1024 * 1024}]
-            assert_equal [json_deep_object 30] [r json.get u]
+            assert_equal [json_deep_object 30] [r json.get u{t}]
             assert_equal PONG [r ping]
         }
 
         test "JSON path: a write through repeated matches succeeds and changes each value once (caps $caps)" {
             # A write drops a value that is matched twice, so nothing multiplies.
             set t0 [clock milliseconds]
-            assert_equal OK [r json.set u "\$[string repeat {['a','a']} 26]" 7]
+            assert_equal OK [r json.set u{t} "\$[string repeat {['a','a']} 26]" 7]
             assert_lessthan [expr {[clock milliseconds] - $t0}] 2000
-            assert_equal "[string repeat "\{\"a\":" 26]7[string repeat "\}" 26]" [r json.get u]
-            assert_equal {[8]} [r json.numincrby u "\$[string repeat {['a','a']} 26]" 1]
-            assert_equal {[8]} [r json.get u "\$[string repeat .a 26]"]
-            assert_equal 1 [r json.del w "\$[string repeat {[0,0]} 24]"]
-            assert_equal [json_deep_array 24] [r json.get w]
-            assert_equal 1 [r json.arrappend w "\$[string repeat {[0,0]} 23]" 5]
-            assert_equal 1 [r json.clear w "\$[string repeat {[0,0]} 23]"]
-            assert_equal [json_deep_array 24] [r json.get w]
-            assert_equal 1 [r json.del u "\$[string repeat {['a','a']} 26]"]
-            assert_equal "[string repeat "\{\"a\":" 25]{}[string repeat "\}" 25]" [r json.get u]
+            assert_equal "[string repeat "\{\"a\":" 26]7[string repeat "\}" 26]" [r json.get u{t}]
+            assert_equal {[8]} [r json.numincrby u{t} "\$[string repeat {['a','a']} 26]" 1]
+            assert_equal {[8]} [r json.get u{t} "\$[string repeat .a 26]"]
+            assert_equal 1 [r json.del w{t} "\$[string repeat {[0,0]} 24]"]
+            assert_equal [json_deep_array 24] [r json.get w{t}]
+            assert_equal 1 [r json.arrappend w{t} "\$[string repeat {[0,0]} 23]" 5]
+            assert_equal 1 [r json.clear w{t} "\$[string repeat {[0,0]} 23]"]
+            assert_equal [json_deep_array 24] [r json.get w{t}]
+            assert_equal 1 [r json.del u{t} "\$[string repeat {['a','a']} 26]"]
+            assert_equal "[string repeat "\{\"a\":" 25]{}[string repeat "\}" 25]" [r json.get u{t}]
         }
     }
     json_set_caps {4096 128}

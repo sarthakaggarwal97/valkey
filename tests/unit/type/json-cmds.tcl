@@ -887,4 +887,5 @@ start_server {tags {"json"}} {
             assert_equal {{"a":0,"b":0.0,"c":"","d":false,"e":null,"f":{},"g":[]}} [r json.get k2]
         }
     }
+    json_set_caps {4096 128}
 }

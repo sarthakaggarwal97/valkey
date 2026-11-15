@@ -127,11 +127,12 @@ proc json_missing_key_table {} {
     }
 }
 
-# A sequence of write commands on keys k and k2, with what the external module
+# A sequence of write commands on keys k and k2{k}, with what the external module
 # does for each: its reply, the keyspace events it fires, and whether it
 # propagates the command (to replicas and the AOF). "nil" is a null reply,
 # "E:<prefix>" an error. The sequence includes writes that match nothing, with
-# both path syntaxes (design 2.4).
+# both path syntaxes (design 2.4). The hash tag puts k2{k} in the slot of k, so
+# that JSON.MSET may name both on a server in cluster mode.
 proc json_write_effects_table {} {
     return {
         {{json.set k . {{"a":1,"b":true,"s":"x","arr":[1,2,3],"o":{"x":1}}}} OK {json.set:k} 1}
@@ -142,8 +143,8 @@ proc json_write_effects_table {} {
         {{json.set k {.arr[*].q} 1}         OK                {json.set:k}       1}
         {{json.set k . 1 NX}                nil               {}                 0}
         {{json.set k3 . 1 XX}               nil               {}                 0}
-        {{json.mset k $.a 4 k2 . {{"z":1}}} OK                {json.mset:k json.mset:k2} 1}
-        {{json.mset k $.zz.yy 4 k2 . {{"z":2}}} E:NONEXISTENT {}                 0}
+        {{json.mset k $.a 4 k2{k} . {{"z":1}}} OK             {json.mset:k json.mset:k2{k}} 1}
+        {{json.mset k $.zz.yy 4 k2{k} . {{"z":2}}} E:NONEXISTENT {}              0}
         {{json.merge k $.o {{"y":2}}}       OK                {json.merge:k}     1}
         {{json.merge k $.nomatch.x 1}       E:NONEXISTENT     {}                 0}
         {{json.numincrby k $.a 1}           {[5]}             {json.numincrby:k} 1}
@@ -186,7 +187,7 @@ proc json_write_effects_table {} {
         {{json.forget k .zz}                0                 {}                 0}
         {{json.del nokey}                   0                 {}                 0}
         {{json.del k}                       1                 {json.del:k}       1}
-        {{json.forget k2}                   1                 {json.del:k2}      1}
+        {{json.forget k2{k}}                1                 {json.del:k2{k}}   1}
     }
 }
 
@@ -556,19 +557,19 @@ start_server {tags {"json"}} {
 
     test {JSON: every command replies WRONGTYPE on a key of another type} {
         r flushall
-        r set str hello
+        r set str{t} hello
         r lpush lst a
         r hset hsh f v
-        foreach key {str lst hsh} {
+        foreach key {str{t} lst hsh} {
             foreach row [json_missing_key_table] {
                 set cmd [string map [list K $key] [lindex $row 0]]
                 assert_error "WRONGTYPE Not a JSON document key*" {r {*}$cmd}
             }
         }
-        assert_error "WRONGTYPE*" {r json.mget nokey str .}
-        assert_error "WRONGTYPE*" {r json.mset newkey . 1 str . 2}
-        assert_equal 0 [r exists newkey]
-        assert_equal hello [r get str]
+        assert_error "WRONGTYPE*" {r json.mget nokey{t} str{t} .}
+        assert_error "WRONGTYPE*" {r json.mset newkey{t} . 1 str{t} . 2}
+        assert_equal 0 [r exists newkey{t}]
+        assert_equal hello [r get str{t}]
         assert_equal {a} [r lrange lst 0 -1]
         assert_equal v [r hget hsh f]
     }
@@ -609,17 +610,19 @@ start_server {tags {"json"}} {
         }
 
         test "JSON: OBJECT ENCODING, REFCOUNT, IDLETIME and FREQ do not crash (caps $caps)" {
-            r json.set doc . {{"a":1,"b":[1,2,3],"c":{"d":"x"}}}
-            assert_equal raw [r object encoding doc]
-            assert_equal 1 [r object refcount doc]
-            assert {[r object idletime doc] >= 0}
-            assert_error "*LFU*" {r object freq doc}
-            r config set maxmemory-policy allkeys-lfu
-            assert {[r object freq doc] >= 0}
-            r json.get doc
-            assert {[r object freq doc] >= 0}
-            r config set maxmemory-policy noeviction
-            assert_equal PONG [r ping]
+            with_config maxmemory-policy noeviction {
+                r json.set doc . {{"a":1,"b":[1,2,3],"c":{"d":"x"}}}
+                assert_equal raw [r object encoding doc]
+                assert_equal 1 [r object refcount doc]
+                assert {[r object idletime doc] >= 0}
+                assert_error "*LFU*" {r object freq doc}
+                r config set maxmemory-policy allkeys-lfu
+                assert {[r object freq doc] >= 0}
+                r json.get doc
+                assert {[r object freq doc] >= 0}
+                r config set maxmemory-policy noeviction
+                assert_equal PONG [r ping]
+            }
         } {} {needs:debug}
 
         test "JSON: DEBUG OBJECT and TOUCH work on a JSON key (caps $caps)" {
@@ -631,59 +634,59 @@ start_server {tags {"json"}} {
         test "JSON: COPY makes an independent document (caps $caps)" {
             r flushall
             set text [json_big_document 40]
-            r json.set src . $text
-            assert_equal 1 [r copy src dst]
-            assert_equal ReJSON-RL [r type dst]
-            assert_equal $text [r json.get dst]
-            assert_equal [debug_digest_value src] [debug_digest_value dst]
+            r json.set src{t} . $text
+            assert_equal 1 [r copy src{t} dst{t}]
+            assert_equal ReJSON-RL [r type dst{t}]
+            assert_equal $text [r json.get dst{t}]
+            assert_equal [debug_digest_value src{t}] [debug_digest_value dst{t}]
 
             # Changing one leaves the other.
-            r json.set src .m0.name {"changed"}
-            r json.arrappend dst .m1.tags 99
-            r json.del src .m2
-            assert_equal {"changed"} [r json.get src .m0.name]
-            assert_equal {"member-0"} [r json.get dst .m0.name]
-            assert_equal {[1,2,"t1"]} [r json.get src .m1.tags]
-            assert_equal {[1,2,"t1",99]} [r json.get dst .m1.tags]
-            assert_equal {{"id":2,"name":"member-2","tags":[2,4,"t2"]}} [r json.get dst .m2]
+            r json.set src{t} .m0.name {"changed"}
+            r json.arrappend dst{t} .m1.tags 99
+            r json.del src{t} .m2
+            assert_equal {"changed"} [r json.get src{t} .m0.name]
+            assert_equal {"member-0"} [r json.get dst{t} .m0.name]
+            assert_equal {[1,2,"t1"]} [r json.get src{t} .m1.tags]
+            assert_equal {[1,2,"t1",99]} [r json.get dst{t} .m1.tags]
+            assert_equal {{"id":2,"name":"member-2","tags":[2,4,"t2"]}} [r json.get dst{t} .m2]
 
             # Deleting the source leaves the copy intact.
-            r del src
-            assert_equal 40 [r json.objlen dst]
+            r del src{t}
+            assert_equal 40 [r json.objlen dst{t}]
             json_assert_num_documents 1
 
             # No overwrite without REPLACE.
-            r json.set other . {[1]}
-            assert_equal 0 [r copy other dst]
-            assert_equal 40 [r json.objlen dst]
-            assert_equal 1 [r copy other dst replace]
-            assert_equal {[1]} [r json.get dst]
+            r json.set other{t} . {[1]}
+            assert_equal 0 [r copy other{t} dst{t}]
+            assert_equal 40 [r json.objlen dst{t}]
+            assert_equal 1 [r copy other{t} dst{t} replace]
+            assert_equal {[1]} [r json.get dst{t}]
             json_assert_num_documents 2
         } {} {needs:debug}
 
         test "JSON: COPY to another database (caps $caps)" {
             r flushall
-            r json.set src . {{"a":[1,2.50,"x"],"b":{"c":null}}}
-            assert_equal 1 [r copy src dst db 10]
+            r json.set src{t} . {{"a":[1,2.50,"x"],"b":{"c":null}}}
+            assert_equal 1 [r copy src{t} dst{t} db 10]
             r select 10
-            assert_equal {{"a":[1,2.50,"x"],"b":{"c":null}}} [r json.get dst]
-            r json.set dst .b.c true
+            assert_equal {{"a":[1,2.50,"x"],"b":{"c":null}}} [r json.get dst{t}]
+            r json.set dst{t} .b.c true
             r select 9
-            assert_equal {{"a":[1,2.50,"x"],"b":{"c":null}}} [r json.get src]
-            assert_equal 0 [r exists dst]
+            assert_equal {{"a":[1,2.50,"x"],"b":{"c":null}}} [r json.get src{t}]
+            assert_equal 0 [r exists dst{t}]
         } {} {singledb:skip}
 
         test "JSON: RENAME and RENAMENX (caps $caps)" {
             r flushall
-            r json.set a . {{"x":[1,2,3]}}
-            r json.set b . {"other"}
-            assert_equal OK [r rename a c]
-            assert_equal 0 [r exists a]
-            assert_equal {{"x":[1,2,3]}} [r json.get c]
-            assert_equal 0 [r renamenx c b]
-            assert_equal OK [r rename c b]
-            assert_equal {{"x":[1,2,3]}} [r json.get b]
-            assert_equal 4 [r json.arrappend b .x 4]
+            r json.set a{t} . {{"x":[1,2,3]}}
+            r json.set b{t} . {"other"}
+            assert_equal OK [r rename a{t} c{t}]
+            assert_equal 0 [r exists a{t}]
+            assert_equal {{"x":[1,2,3]}} [r json.get c{t}]
+            assert_equal 0 [r renamenx c{t} b{t}]
+            assert_equal OK [r rename c{t} b{t}]
+            assert_equal {{"x":[1,2,3]}} [r json.get b{t}]
+            assert_equal 4 [r json.arrappend b{t} .x 4]
             json_assert_num_documents 1
         }
 
@@ -783,22 +786,26 @@ start_server {tags {"json"}} {
         }
 
         test "JSON: an expired document is gone and can be created again (caps $caps)" {
-            r flushall
-            r debug set-active-expire 0
-            r json.set k . {{"a":[1,2,3]}}
-            r pexpire k 1
-            wait_for_condition 50 20 {
-                [r exists k] == 0
-            } else {
-                fail "key did not expire"
+            with_cleanup {
+                r flushall
+                r debug set-active-expire 0
+                r json.set k . {{"a":[1,2,3]}}
+                r pexpire k 1
+                wait_for_condition 50 20 {
+                    [r exists k] == 0
+                } else {
+                    fail "key did not expire"
+                }
+                assert_equal {} [r json.get k]
+                assert_error "SYNTAXERR*" {r json.set k .a 1}
+                assert_error "NONEXISTENT*" {r json.arrappend k .a 4}
+                assert_equal OK [r json.set k . {{"b":1}}]
+                assert_equal {{"b":1}} [r json.get k]
+                assert_equal -1 [r ttl k]
+                r debug set-active-expire 1
+            } {
+                r debug set-active-expire 1
             }
-            assert_equal {} [r json.get k]
-            assert_error "SYNTAXERR*" {r json.set k .a 1}
-            assert_error "NONEXISTENT*" {r json.arrappend k .a 4}
-            assert_equal OK [r json.set k . {{"b":1}}]
-            assert_equal {{"b":1}} [r json.get k]
-            assert_equal -1 [r ttl k]
-            r debug set-active-expire 1
         } {OK} {needs:debug}
 
         test "JSON: MEMORY USAGE (caps $caps)" {
@@ -870,7 +877,7 @@ start_server {tags {"json"}} {
             json_set_caps $caps
 
             # 1. One JSON.SET.
-            set key whole:$n
+            set key whole{t}:$n
             r json.set $key . $text
             lappend digests [debug_digest_value $key]
             assert_equal $text [r json.get $key]
@@ -903,10 +910,10 @@ start_server {tags {"json"}} {
             lappend digests [debug_digest_value $key]
 
             # 4. Copied, restored, and written with JSON.MSET.
-            r copy whole:$n copied:$n
-            r restore restored:$n 0 [r dump whole:$n]
+            r copy whole{t}:$n copied{t}:$n
+            r restore restored:$n 0 [r dump whole{t}:$n]
             r json.mset mset:$n . $text
-            lappend digests [debug_digest_value copied:$n] [debug_digest_value restored:$n] [debug_digest_value mset:$n]
+            lappend digests [debug_digest_value copied{t}:$n] [debug_digest_value restored:$n] [debug_digest_value mset:$n]
 
             # 5. Grown past the caps and shrunk back.
             set key grown:$n
@@ -982,19 +989,19 @@ start_server {tags {"json"}} {
         test "JSON: UNLINK of a large document (caps $caps)" {
             r flushall
             set text [json_big_document 3000]
-            r json.set big . $text
-            r json.set small . {{"a":1}}
-            assert_equal 3000 [r json.objlen big]
+            r json.set big{t} . $text
+            r json.set small{t} . {{"a":1}}
+            assert_equal 3000 [r json.objlen big{t}]
             json_assert_num_documents 2
-            assert_equal 1 [r unlink big]
-            assert_equal 0 [r exists big]
+            assert_equal 1 [r unlink big{t}]
+            assert_equal 0 [r exists big{t}]
             wait_lazyfree_done r
             json_assert_num_documents 1
-            assert_equal {{"a":1}} [r json.get small]
+            assert_equal {{"a":1}} [r json.get small{t}]
             # The key can be created again with the same member names.
-            r json.set big . $text
-            assert_equal $text [r json.get big]
-            assert_equal 2 [r unlink big small]
+            r json.set big{t} . $text
+            assert_equal $text [r json.get big{t}]
+            assert_equal 2 [r unlink big{t} small{t}]
             wait_lazyfree_done r
             json_assert_num_documents 0
         }
@@ -1023,34 +1030,37 @@ start_server {tags {"json"}} {
         }
 
         test "JSON: DEL, a root JSON.DEL and an overwrite of a large document with lazyfree configs on (caps $caps)" {
-            r flushall
-            r config set lazyfree-lazy-user-del yes
-            r config set lazyfree-lazy-server-del yes
-            r config set lazyfree-lazy-expire yes
-            set text [json_big_document 2000]
-            r json.set big . $text
-            assert_equal 1 [r del big]
-            r json.set big . $text
-            assert_equal 1 [r json.del big]
-            r json.set big . $text
-            assert_equal OK [r json.set big . {{"small":1}}]
-            assert_equal {{"small":1}} [r json.get big]
-            r json.set big . $text
-            assert_equal OK [r set big string]
-            r json.set big2 . $text
-            assert_equal OK [r rename big2 big]
-            assert_equal 2000 [r json.objlen big]
-            r pexpire big 1
-            wait_for_condition 100 20 {
-                [r exists big] == 0
-            } else {
-                fail "key did not expire"
+            with_cleanup {
+                r flushall
+                r config set lazyfree-lazy-user-del yes
+                r config set lazyfree-lazy-server-del yes
+                r config set lazyfree-lazy-expire yes
+                set text [json_big_document 2000]
+                r json.set big{t} . $text
+                assert_equal 1 [r del big{t}]
+                r json.set big{t} . $text
+                assert_equal 1 [r json.del big{t}]
+                r json.set big{t} . $text
+                assert_equal OK [r json.set big{t} . {{"small":1}}]
+                assert_equal {{"small":1}} [r json.get big{t}]
+                r json.set big{t} . $text
+                assert_equal OK [r set big{t} string]
+                r json.set big2{t} . $text
+                assert_equal OK [r rename big2{t} big{t}]
+                assert_equal 2000 [r json.objlen big{t}]
+                r pexpire big{t} 1
+                wait_for_condition 100 20 {
+                    [r exists big{t}] == 0
+                } else {
+                    fail "key did not expire"
+                }
+                wait_lazyfree_done r
+                json_assert_num_documents 0
+            } {
+                r config set lazyfree-lazy-user-del no
+                r config set lazyfree-lazy-server-del no
+                r config set lazyfree-lazy-expire no
             }
-            wait_lazyfree_done r
-            json_assert_num_documents 0
-            r config set lazyfree-lazy-user-del no
-            r config set lazyfree-lazy-server-del no
-            r config set lazyfree-lazy-expire no
         }
     }
     json_set_caps {4096 128}
@@ -1107,19 +1117,19 @@ start_server {tags {"json"}} {
 
     test {JSON: WATCH is not invalidated by JSON read commands} {
         r flushall
-        r json.set k . {{"a":1,"b":true,"s":"x","arr":[1,2,3],"o":{"x":1}}}
+        r json.set k{t} . {{"a":1,"b":true,"s":"x","arr":[1,2,3],"o":{"x":1}}}
         set other [valkey_client]
-        r watch k nokey
+        r watch k{t} nokey{t}
         foreach cmd {
-            {json.get k} {json.get k $.a} {json.mget k nokey $} {json.strlen k .s} {json.objlen k}
-            {json.objkeys k} {json.arrlen k .arr} {json.arrindex k .arr 2} {json.type k}
-            {json.resp k} {json.debug memory k} {json.debug fields k} {json.debug depth k}
-            {json.get nokey} {json.type nokey}
+            {json.get k{t}} {json.get k{t} $.a} {json.mget k{t} nokey{t} $} {json.strlen k{t} .s} {json.objlen k{t}}
+            {json.objkeys k{t}} {json.arrlen k{t} .arr} {json.arrindex k{t} .arr 2} {json.type k{t}}
+            {json.resp k{t}} {json.debug memory k{t}} {json.debug fields k{t}} {json.debug depth k{t}}
+            {json.get nokey{t}} {json.type nokey{t}}
         } {
             $other {*}$cmd
         }
-        catch {$other json.strlen k .a}
-        catch {$other json.get k .nosuch}
+        catch {$other json.strlen k{t} .a}
+        catch {$other json.get k{t} .nosuch}
         r multi
         r ping
         assert_equal {PONG} [r exec]
@@ -1158,8 +1168,8 @@ start_server {tags {"json"}} {
 
     test {JSON: client tracking invalidation after JSON reads (RESP3)} {
         r flushall
-        r json.set k . {{"a":1,"arr":[1,2]}}
-        r json.set k2 . {{"a":1}}
+        r json.set k{t} . {{"a":1,"arr":[1,2]}}
+        r json.set k2{t} . {{"a":1}}
         set rd [valkey_deferring_client]
         $rd hello 3
         $rd read
@@ -1167,28 +1177,28 @@ start_server {tags {"json"}} {
         assert_equal OK [$rd read]
 
         foreach {read write} {
-            {json.get k}            {json.set k .a 2}
-            {json.get k $.a}        {json.numincrby k .a 1}
-            {json.mget k k2 $.a}    {json.arrappend k .arr 3}
-            {json.type k}           {json.del k .arr}
-            {json.objlen k}         {json.merge k . {{"b":1}}}
-            {json.objkeys k}        {json.clear k}
-            {json.resp k}           {json.set k . {{"a":1,"arr":[1,2]}}}
-            {json.arrlen k .arr}    {json.arrpop k .arr}
-            {json.arrindex k .arr 1} {json.del k}
+            {json.get k{t}}            {json.set k{t} .a 2}
+            {json.get k{t} $.a}        {json.numincrby k{t} .a 1}
+            {json.mget k{t} k2{t} $.a}    {json.arrappend k{t} .arr 3}
+            {json.type k{t}}           {json.del k{t} .arr}
+            {json.objlen k{t}}         {json.merge k{t} . {{"b":1}}}
+            {json.objkeys k{t}}        {json.clear k{t}}
+            {json.resp k{t}}           {json.set k{t} . {{"a":1,"arr":[1,2]}}}
+            {json.arrlen k{t} .arr}    {json.arrpop k{t} .arr}
+            {json.arrindex k{t} .arr 1} {json.del k{t}}
         } {
             $rd {*}$read
             $rd read
             r {*}$write
-            assert_equal {invalidate k} [$rd read] "after '$read' and '$write'"
+            assert_equal {invalidate k{t}} [$rd read] "after '$read' and '$write'"
         }
 
         # JSON.MGET tracks every key it reads.
-        r json.set k . 1
-        $rd json.mget k k2 .
+        r json.set k{t} . 1
+        $rd json.mget k{t} k2{t} .
         $rd read
-        r json.set k2 .a 5
-        assert_equal {invalidate k2} [$rd read]
+        r json.set k2{t} .a 5
+        assert_equal {invalidate k2{t}} [$rd read]
 
         # A key that did not exist when it was read is tracked too.
         $rd json.get later
@@ -1197,11 +1207,11 @@ start_server {tags {"json"}} {
         assert_equal {invalidate later} [$rd read]
 
         # A write that the tracking client makes itself.
-        $rd json.get k
+        $rd json.get k{t}
         $rd read
-        $rd json.set k . 2
+        $rd json.set k{t} . 2
         assert_equal OK [$rd read]
-        assert_equal {invalidate k} [$rd read]
+        assert_equal {invalidate k{t}} [$rd read]
         $rd close
     }
 
@@ -1230,68 +1240,80 @@ start_server {tags {"json"}} {
         json_set_caps $caps
 
         test "JSON: keyspace events, replies and propagation of every write command (caps $caps)" {
-            r flushall
-            r config set notify-keyspace-events KEA
-            set rd [valkey_deferring_client]
-            assert_equal {1} [psubscribe $rd "__keyevent@*__:*"]
-            foreach row [json_write_effects_table] {
-                lassign $row cmd reply events propagated
-                set dirty [s rdb_changes_since_last_save]
-                json_check_reply $cmd $reply
-                # A marker event delimits what the command fired.
-                r publish __keyevent@9__:marker x
-                set fired {}
-                while 1 {
-                    lassign [$rd read] _ _ channel key
-                    set event [lindex [split $channel :] 1]
-                    if {$event eq "marker"} break
-                    lappend fired $event:$key
+            with_cleanup {
+                r flushall
+                r config set notify-keyspace-events KEA
+                set rd [valkey_deferring_client]
+                assert_equal {1} [psubscribe $rd "__keyevent@*__:*"]
+                foreach row [json_write_effects_table] {
+                    lassign $row cmd reply events propagated
+                    set dirty [s rdb_changes_since_last_save]
+                    json_check_reply $cmd $reply
+                    # A marker event delimits what the command fired.
+                    r publish __keyevent@9__:marker x
+                    set fired {}
+                    while 1 {
+                        lassign [$rd read] _ _ channel key
+                        set event [lindex [split $channel :] 1]
+                        if {$event eq "marker"} break
+                        lappend fired $event:$key
+                    }
+                    assert_equal $events $fired "events of '$cmd'"
+                    assert_equal $propagated [expr {[s rdb_changes_since_last_save] - $dirty}] "dirty counter after '$cmd'"
                 }
-                assert_equal $events $fired "events of '$cmd'"
-                assert_equal $propagated [expr {[s rdb_changes_since_last_save] - $dirty}] "dirty counter after '$cmd'"
+                $rd close
+                r config set notify-keyspace-events ""
+                assert_equal 0 [r dbsize]
+            } {
+                r config set notify-keyspace-events ""
             }
-            $rd close
-            r config set notify-keyspace-events ""
-            assert_equal 0 [r dbsize]
         }
     }
     json_set_caps {4096 128}
 
     test {JSON: keyspace events arrive on both the keyspace and the keyevent channel} {
-        r flushall
-        r config set notify-keyspace-events KEA
-        set rd [valkey_deferring_client]
-        assert_equal {1} [psubscribe $rd "__key*@*__:*"]
-        r json.set doc . {{"a":1}}
-        assert_equal "pmessage __key*@*__:* __keyspace@9__:doc json.set" [$rd read]
-        assert_equal "pmessage __key*@*__:* __keyevent@9__:json.set doc" [$rd read]
-        r json.numincrby doc .a 1
-        assert_equal "pmessage __key*@*__:* __keyspace@9__:doc json.numincrby" [$rd read]
-        assert_equal "pmessage __key*@*__:* __keyevent@9__:json.numincrby doc" [$rd read]
-        r json.forget doc
-        assert_equal "pmessage __key*@*__:* __keyspace@9__:doc json.del" [$rd read]
-        assert_equal "pmessage __key*@*__:* __keyevent@9__:json.del doc" [$rd read]
-        $rd close
+        with_cleanup {
+            r flushall
+            r config set notify-keyspace-events KEA
+            set rd [valkey_deferring_client]
+            assert_equal {1} [psubscribe $rd "__key*@*__:*"]
+            r json.set doc . {{"a":1}}
+            assert_equal "pmessage __key*@*__:* __keyspace@9__:doc json.set" [$rd read]
+            assert_equal "pmessage __key*@*__:* __keyevent@9__:json.set doc" [$rd read]
+            r json.numincrby doc .a 1
+            assert_equal "pmessage __key*@*__:* __keyspace@9__:doc json.numincrby" [$rd read]
+            assert_equal "pmessage __key*@*__:* __keyevent@9__:json.numincrby doc" [$rd read]
+            r json.forget doc
+            assert_equal "pmessage __key*@*__:* __keyspace@9__:doc json.del" [$rd read]
+            assert_equal "pmessage __key*@*__:* __keyevent@9__:json.del doc" [$rd read]
+            $rd close
+        } {
+            r config set notify-keyspace-events ""
+        }
     }
 
     test {JSON: events are in the generic class (g), not in the string or module-type classes} {
-        r flushall
-        set rd [valkey_deferring_client]
-        assert_equal {1} [psubscribe $rd "__keyevent@*__:*"]
-        # String ($) and new-key (n) classes only: nothing from JSON.
-        r config set notify-keyspace-events E\$
-        r json.set doc . {{"a":1}}
-        r json.numincrby doc .a 1
-        r set marker 1
-        assert_equal "pmessage __keyevent@*__:* __keyevent@9__:set marker" [$rd read]
-        # Generic class.
-        r config set notify-keyspace-events Eg
-        r json.numincrby doc .a 1
-        assert_equal "pmessage __keyevent@*__:* __keyevent@9__:json.numincrby doc" [$rd read]
-        r json.del doc
-        assert_equal "pmessage __keyevent@*__:* __keyevent@9__:json.del doc" [$rd read]
-        r config set notify-keyspace-events ""
-        $rd close
+        with_cleanup {
+            r flushall
+            set rd [valkey_deferring_client]
+            assert_equal {1} [psubscribe $rd "__keyevent@*__:*"]
+            # String ($) and new-key (n) classes only: nothing from JSON.
+            r config set notify-keyspace-events E\$
+            r json.set doc . {{"a":1}}
+            r json.numincrby doc .a 1
+            r set marker 1
+            assert_equal "pmessage __keyevent@*__:* __keyevent@9__:set marker" [$rd read]
+            # Generic class.
+            r config set notify-keyspace-events Eg
+            r json.numincrby doc .a 1
+            assert_equal "pmessage __keyevent@*__:* __keyevent@9__:json.numincrby doc" [$rd read]
+            r json.del doc
+            assert_equal "pmessage __keyevent@*__:* __keyevent@9__:json.del doc" [$rd read]
+            r config set notify-keyspace-events ""
+            $rd close
+        } {
+            r config set notify-keyspace-events ""
+        }
     }
 
     # ---------------------------------------------------------------------
@@ -1304,38 +1326,38 @@ start_server {tags {"json"}} {
         test "JSON: commands inside MULTI/EXEC (caps $caps)" {
             r flushall
             r multi
-            assert_equal QUEUED [r json.set k . {{"a":1,"arr":[]}}]
-            r json.numincrby k .a 41
-            r json.arrappend k .arr 1 2 3
-            r json.get k
-            r json.del k .arr
-            r json.get k
+            assert_equal QUEUED [r json.set k{t} . {{"a":1,"arr":[]}}]
+            r json.numincrby k{t} .a 41
+            r json.arrappend k{t} .arr 1 2 3
+            r json.get k{t}
+            r json.del k{t} .arr
+            r json.get k{t}
             assert_equal {OK 42 3 {{"a":42,"arr":[1,2,3]}} 1 {{"a":42}}} [r exec]
 
             # A command that fails at run time does not undo the others.
             r multi
-            r json.numincrby k .a 1
-            r json.strappend k .a {"x"}
-            r json.set nokey .a 1
-            r json.numincrby k .a 1
+            r json.numincrby k{t} .a 1
+            r json.strappend k{t} .a {"x"}
+            r json.set nokey{t} .a 1
+            r json.numincrby k{t} .a 1
             assert_error "*WRONGTYPE*" {r exec}
-            assert_equal {{"a":44}} [r json.get k]
-            assert_equal 0 [r exists nokey]
-            r json.set k .a 42
+            assert_equal {{"a":44}} [r json.get k{t}]
+            assert_equal 0 [r exists nokey{t}]
+            r json.set k{t} .a 42
 
             # DISCARD drops the queue.
             r multi
-            r json.set k .a 0
-            r json.del k
+            r json.set k{t} .a 0
+            r json.del k{t}
             assert_equal OK [r discard]
-            assert_equal {{"a":42}} [r json.get k]
+            assert_equal {{"a":42}} [r json.get k{t}]
 
             # A wrong arity is caught at queue time and aborts the transaction.
             r multi
-            r json.set k .a 1
-            assert_error "ERR wrong number of arguments for 'JSON.SET' command" {r json.set k}
+            r json.set k{t} .a 1
+            assert_error "ERR wrong number of arguments for 'JSON.SET' command" {r json.set k{t}}
             assert_error "EXECABORT*" {r exec}
-            assert_equal {{"a":42}} [r json.get k]
+            assert_equal {{"a":42}} [r json.get k{t}]
         }
 
         test "JSON: commands from Lua scripts (caps $caps)" {
@@ -1391,25 +1413,29 @@ start_server {tags {"json"}} {
     json_set_caps {4096 128}
 
     test {JSON: write commands are refused when over maxmemory only if flagged denyoom} {
-        r flushall
-        r json.set doc . {{"a":1,"arr":[1,2,3],"s":"x","b":true}}
-        r config set maxmemory 1
-        # Flagged denyoom by the module.
-        assert_error "OOM*" {r json.set doc .a 2}
-        assert_error "OOM*" {r json.mset doc .a 2}
-        assert_error "OOM*" {r json.merge doc .a 2}
-        assert_error "OOM*" {r json.strappend doc .s {"y"}}
-        assert_error "OOM*" {r json.toggle doc .b}
-        assert_error "OOM*" {r json.arrappend doc .arr 4}
-        assert_error "OOM*" {r json.arrinsert doc .arr 0 0}
-        # Not flagged: they do not grow the document, or the module allows them.
-        assert_equal {{"a":1,"arr":[1,2,3],"s":"x","b":true}} [r json.get doc]
-        assert_equal 2 [r json.numincrby doc .a 1]
-        assert_equal 3 [r json.arrpop doc .arr]
-        assert_equal 1 [r json.arrtrim doc .arr 0 0]
-        assert_equal 1 [r json.clear doc .arr]
-        assert_equal 1 [r json.del doc .arr]
-        r config set maxmemory 0
-        assert_equal {{"a":2,"s":"x","b":true}} [r json.get doc]
+        with_cleanup {
+            r flushall
+            r json.set doc . {{"a":1,"arr":[1,2,3],"s":"x","b":true}}
+            r config set maxmemory 1
+            # Flagged denyoom by the module.
+            assert_error "OOM*" {r json.set doc .a 2}
+            assert_error "OOM*" {r json.mset doc .a 2}
+            assert_error "OOM*" {r json.merge doc .a 2}
+            assert_error "OOM*" {r json.strappend doc .s {"y"}}
+            assert_error "OOM*" {r json.toggle doc .b}
+            assert_error "OOM*" {r json.arrappend doc .arr 4}
+            assert_error "OOM*" {r json.arrinsert doc .arr 0 0}
+            # Not flagged: they do not grow the document, or the module allows them.
+            assert_equal {{"a":1,"arr":[1,2,3],"s":"x","b":true}} [r json.get doc]
+            assert_equal 2 [r json.numincrby doc .a 1]
+            assert_equal 3 [r json.arrpop doc .arr]
+            assert_equal 1 [r json.arrtrim doc .arr 0 0]
+            assert_equal 1 [r json.clear doc .arr]
+            assert_equal 1 [r json.del doc .arr]
+            r config set maxmemory 0
+            assert_equal {{"a":2,"s":"x","b":true}} [r json.get doc]
+        } {
+            r config set maxmemory 0
+        }
     }
 }

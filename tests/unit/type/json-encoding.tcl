@@ -885,12 +885,21 @@ start_server {tags {"json"}} {
             set m16 [r json.debug memory dec:d16]
             set m32 [r json.debug memory dec:d32]
             set m64 [r json.debug memory dec:d64]
+            set m8n [r json.debug memory dec:d8n]
+            set m15 [r json.debug memory dec:d15]
             assert_lessthan $m8 2000
-            assert_equal $m8 [r json.debug memory dec:d8n]
+            # Each width step adds at least 1,000 bytes. Two arrays of one width
+            # differ by no more than the allocator's rounding: the size glibc malloc
+            # reports for one request can vary by 16 bytes, jemalloc's does not.
+            assert_range $m8n [expr {$m8 - 64}] [expr {$m8 + 64}]
+            assert_range $m15 [expr {$m64 - 64}] [expr {$m64 + 64}]
+            if {[string match "jemalloc*" [s mem_allocator]]} {
+                assert_equal $m8 $m8n
+                assert_equal $m64 $m15
+            }
             assert_lessthan $m8 $m16
             assert_lessthan $m16 $m32
             assert_lessthan $m32 $m64
-            assert_equal $m64 [r json.debug memory dec:d15]
             # Two scales, or an integer among the decimals: not one typed array.
             assert_morethan [r json.debug memory dec:mixedscale] $m16
             assert_morethan [r json.debug memory dec:withint] $m16
@@ -907,40 +916,40 @@ start_server {tags {"json"}} {
 
         test "JSON typed decimal arrays widen from 1 to 2, 4 and 8 bytes per element (caps $caps)" {
             set elements [json_gen_script 300 {format %.2f [expr {($i % 128) / 100.0}]}]
-            r json.set arr . [json_array_text $elements]
-            set narrow [r json.debug memory arr]
+            r json.set arr{t} . [json_array_text $elements]
+            set narrow [r json.debug memory arr{t}]
             assert_lessthan $narrow 600
 
             # Still one byte: the ends of its range.
             lappend elements 1.27 -1.28
-            assert_equal 302 [r json.arrappend arr . 1.27 -1.28]
-            json_assert_doc arr [json_array_text $elements]
+            assert_equal 302 [r json.arrappend arr{t} . 1.27 -1.28]
+            json_assert_doc arr{t} [json_array_text $elements]
             # Two bytes, by append.
             lappend elements 1.28 -327.68 327.67
-            assert_equal 305 [r json.arrappend arr . 1.28 -327.68 327.67]
-            json_assert_doc arr [json_array_text $elements]
+            assert_equal 305 [r json.arrappend arr{t} . 1.28 -327.68 327.67]
+            json_assert_doc arr{t} [json_array_text $elements]
             # Four bytes, by overwriting one element.
             lset elements 5 327.68
-            assert_equal OK [r json.set arr {[5]} 327.68]
+            assert_equal OK [r json.set arr{t} {[5]} 327.68]
             lset elements 6 -21474836.48
-            assert_equal OK [r json.set arr {$[6]} -21474836.48]
-            json_assert_doc arr [json_array_text $elements]
+            assert_equal OK [r json.set arr{t} {$[6]} -21474836.48]
+            json_assert_doc arr{t} [json_array_text $elements]
             # Eight bytes, by insert at the front, up to 15 digits.
             set elements [linsert $elements 0 21474836.48 9999999999999.99 -9999999999999.99]
-            assert_equal 308 [r json.arrinsert arr . 0 21474836.48 9999999999999.99 -9999999999999.99]
-            json_assert_doc arr [json_array_text $elements]
-            assert_morethan [r json.debug memory arr] $narrow
-            assert_equal [lrepeat 308 number] [r json.type arr {$[*]}]
+            assert_equal 308 [r json.arrinsert arr{t} . 0 21474836.48 9999999999999.99 -9999999999999.99]
+            json_assert_doc arr{t} [json_array_text $elements]
+            assert_morethan [r json.debug memory arr{t}] $narrow
+            assert_equal [lrepeat 308 number] [r json.type arr{t} {$[*]}]
             # 16 digits with the same two fraction digits: no longer a decimal.
             lappend elements 99999999999999.99
-            assert_equal 309 [r json.arrappend arr . 99999999999999.99]
-            json_assert_doc arr [json_array_text $elements]
+            assert_equal 309 [r json.arrappend arr{t} . 99999999999999.99]
+            json_assert_doc arr{t} [json_array_text $elements]
             # Take the wide ones out again.
-            assert_equal 99999999999999.99 [r json.arrpop arr]
-            assert_equal 6 [r json.arrtrim arr . 3 8]
-            json_assert_doc arr [json_array_text [lrange $elements 3 8]]
-            r copy arr dec:widened replace
-            lappend json_decimal_docs dec:widened [json_array_text [lrange $elements 3 8]]
+            assert_equal 99999999999999.99 [r json.arrpop arr{t}]
+            assert_equal 6 [r json.arrtrim arr{t} . 3 8]
+            json_assert_doc arr{t} [json_array_text [lrange $elements 3 8]]
+            r copy arr{t} dec:widened{t} replace
+            lappend json_decimal_docs dec:widened{t} [json_array_text [lrange $elements 3 8]]
         }
 
         test "JSON decimal array: another scale or kind makes it a plain array and the text stays exact (caps $caps)" {
@@ -971,44 +980,44 @@ start_server {tags {"json"}} {
 
         test "JSON decimal array: arithmetic stores the canonical text of the result - B3 (caps $caps)" {
             set elements [concat {*}[lrepeat 100 {1.50 2.25 3.00}]]
-            r json.set arr . [json_array_text $elements]
+            r json.set arr{t} . [json_array_text $elements]
             # One element at a time: the others keep their text.
-            assert_equal {[1.75]} [r json.numincrby arr {$[0]} 0.25]
-            assert_equal {[2.375]} [r json.numincrby arr {$[1]} 0.125]
-            assert_equal {[4.0]} [r json.numincrby arr {$[2]} 1]
-            assert_equal 3.0 [r json.nummultby arr {[3]} 2]
-            assert_equal 0.0 [r json.nummultby arr {[4]} 0]
-            assert_equal -3.0 [r json.nummultby arr {[5]} -1]
+            assert_equal {[1.75]} [r json.numincrby arr{t} {$[0]} 0.25]
+            assert_equal {[2.375]} [r json.numincrby arr{t} {$[1]} 0.125]
+            assert_equal {[4.0]} [r json.numincrby arr{t} {$[2]} 1]
+            assert_equal 3.0 [r json.nummultby arr{t} {[3]} 2]
+            assert_equal 0.0 [r json.nummultby arr{t} {[4]} 0]
+            assert_equal -3.0 [r json.nummultby arr{t} {[5]} -1]
             set elements [lreplace $elements 0 5 1.75 2.375 4.0 3.0 0.0 -3.0]
-            json_assert_doc arr [json_array_text $elements]
-            assert_equal [lrepeat 300 number] [r json.type arr {$[*]}]
+            json_assert_doc arr{t} [json_array_text $elements]
+            assert_equal [lrepeat 300 number] [r json.type arr{t} {$[*]}]
             # All of them: every element is now a computed double in canonical text. The
             # expected texts are spelled out, not computed by Tcl.
             set doubled {1.75 3.5 2.375 4.75 4.0 8.0 3.0 6.0 0.0 0.0 -3.0 -6.0 1.50 3.0 2.25 4.5 3.00 6.0}
             set elements [lmap e $elements {dict get $doubled $e}]
-            assert_equal [json_array_text $elements] [r json.nummultby arr {$[*]} 2]
-            json_assert_doc arr [json_array_text $elements]
+            assert_equal [json_array_text $elements] [r json.nummultby arr{t} {$[*]} 2]
+            json_assert_doc arr{t} [json_array_text $elements]
             set plus {3.5 3.75 4.75 5.0 8.0 8.25 6.0 6.25 0.0 0.25 -6.0 -5.75 3.0 3.25 4.5 4.75}
             set elements [lmap e $elements {dict get $plus $e}]
-            assert_equal [json_array_text $elements] [r json.numincrby arr {$[*]} 0.25]
-            json_assert_doc arr [json_array_text $elements]
-            assert_equal {[3.75,5.0,8.25]} [r json.get arr {$[0:3]}]
+            assert_equal [json_array_text $elements] [r json.numincrby arr{t} {$[*]} 0.25]
+            json_assert_doc arr{t} [json_array_text $elements]
+            assert_equal {[3.75,5.0,8.25]} [r json.get arr{t} {$[0:3]}]
             # An integer operand does not make an integer of a decimal (the type is stable).
-            r json.set arr . {[1.50,2.50,-0.50]}
-            assert_equal {[3.0,5.0,-1.0]} [r json.nummultby arr {$[*]} 2]
-            assert_equal {number number number} [r json.type arr {$[*]}]
-            assert_equal {[3.0,5.0,-1.0]} [r json.get arr]
-            r copy arr dec:computed replace
-            lappend json_decimal_docs dec:computed {[3.0,5.0,-1.0]}
+            r json.set arr{t} . {[1.50,2.50,-0.50]}
+            assert_equal {[3.0,5.0,-1.0]} [r json.nummultby arr{t} {$[*]} 2]
+            assert_equal {number number number} [r json.type arr{t} {$[*]}]
+            assert_equal {[3.0,5.0,-1.0]} [r json.get arr{t}]
+            r copy arr{t} dec:computed{t} replace
+            lappend json_decimal_docs dec:computed{t} {[3.0,5.0,-1.0]}
             # A decimal scalar and member.
-            r json.set k . 19.90
-            assert_equal 20.9 [r json.numincrby k . 1]
-            assert_equal 20.9 [r json.get k]
-            r json.set k . {{"price":19.90,"qty":2}}
-            assert_equal 39.8 [r json.nummultby k .price 2]
-            assert_equal {{"price":39.8,"qty":2}} [r json.get k]
-            r copy k dec:price replace
-            lappend json_decimal_docs dec:price {{"price":39.8,"qty":2}}
+            r json.set k{t} . 19.90
+            assert_equal 20.9 [r json.numincrby k{t} . 1]
+            assert_equal 20.9 [r json.get k{t}]
+            r json.set k{t} . {{"price":19.90,"qty":2}}
+            assert_equal 39.8 [r json.nummultby k{t} .price 2]
+            assert_equal {{"price":39.8,"qty":2}} [r json.get k{t}]
+            r copy k{t} dec:price{t} replace
+            lappend json_decimal_docs dec:price{t} {{"price":39.8,"qty":2}}
         }
 
         test "JSON -0.0 keeps its text and its sign (caps $caps)" {
@@ -1067,14 +1076,16 @@ start_server {tags {"json"}} {
                 assert_equal number [r json.type dec:d8 {[7]}]
                 assert_equal number [r json.type dec:d64 {[7]}]
                 assert_equal number [r json.type dec:small:15 {[0]}]
-                # A copy and a restored dump are the same document.
-                r copy dec:d16 copy:d16 replace
+                # A copy and a restored dump are the same document. The hash tag puts
+                # the copy in the slot of dec:d16, as COPY needs in cluster mode.
+                r copy dec:d16 copy:d16{dec:d16} replace
                 r del restored:d32
                 r restore restored:d32 0 [r dump dec:d32]
-                assert_equal [r json.get dec:d16] [r json.get copy:d16]
+                assert_equal [r json.get dec:d16] [r json.get copy:d16{dec:d16}]
                 assert_equal [r json.get dec:d32] [r json.get restored:d32]
                 assert_equal [debug_digest_value dec:d32] [debug_digest_value restored:d32]
-                r del copy:d16 restored:d32
+                r del copy:d16{dec:d16}
+                r del restored:d32
             }
             json_set_caps $caps
         } {OK} {needs:debug}
@@ -1123,7 +1134,14 @@ start_server {tags {"json"}} {
             assert_equal $m15 [r json.debug memory str:mix15]
             assert_lessthan $m15 [expr {$n * 16 + 1024}]
             assert_lessthan $m15 $m16
-            assert_lessthan $m15 [r json.debug memory str:mix16]
+            # mix16 has strings too long for the 16-byte form, so it is a plain array:
+            # strings of up to 7 bytes sit in the element's word, longer ones in a
+            # block of their own. With jemalloc's size classes that costs more than
+            # mix15. With exact sizes (libc malloc under ASan or valgrind) it can cost
+            # less, so the comparison holds on jemalloc only.
+            if {[string match "jemalloc*" [s mem_allocator]]} {
+                assert_lessthan $m15 [r json.debug memory str:mix16]
+            }
             # Reads.
             assert_equal {["000000000000007"]} [r json.get str:len15 {$[7]}]
             assert_equal {["000000000000998","000000000000999"]} [r json.get str:len15 {$[-2:]}]
@@ -1276,20 +1294,20 @@ start_server {tags {"json"}} {
             expr {srand(20261116)}
             set elements {}
             for {set i 0} {$i < 300} {incr i} { lappend elements [json_string_of_bytes [expr {int(rand() * 16)}]] }
-            r json.set str:random . [json_array_text $elements]
+            r json.set str:random{t} . [json_array_text $elements]
             set count 1500
             if {$::accurate} { set count 15000 }
-            set elements [json_array_model_ops str:random $elements json_short_string_element $count]
+            set elements [json_array_model_ops str:random{t} $elements json_short_string_element $count]
             set text [json_array_text $elements]
-            json_assert_doc str:random $text
+            json_assert_doc str:random{t} $text
 
             # A document of short strings only, big enough for the inline form.
             set strings {}
             for {set i 0} {$i < 500} {incr i} { lappend strings [json_string_of_bytes [expr {$i % 16}]] }
             set stext [json_array_text $strings]
-            r json.set str:whole . $stext
+            r json.set str:whole{t} . $stext
             # The same two documents built element by element.
-            foreach {key list} [list str:random $elements str:whole $strings] {
+            foreach {key list} [list str:random{t} $elements str:whole{t} $strings] {
                 r json.set built:$key . {[]}
                 foreach element $list { r json.arrappend built:$key . $element }
                 assert_equal [r json.get $key] [r json.get built:$key]
@@ -1300,36 +1318,36 @@ start_server {tags {"json"}} {
                 assert_equal [debug_digest_value $key] [debug_digest_value front:$key]
             }
             # COPY.
-            assert_equal 1 [r copy str:whole str:copy]
-            assert_equal 1 [r copy str:random str:copy2]
-            json_assert_doc str:copy $stext
-            json_assert_doc str:copy2 $text
-            assert_equal 501 [r json.arrappend str:copy . {"only the copy"}]
-            assert_equal OK [r json.set str:whole {[0]} {"only the source"}]
-            assert_equal [lindex $strings 0] [r json.get str:copy {[0]}]
-            assert_equal 500 [r json.arrlen str:whole]
-            assert_equal OK [r json.set str:whole {[0]} [lindex $strings 0]]
-            assert_equal {"only the copy"} [r json.arrpop str:copy]
-            assert_equal [debug_digest_value str:whole] [debug_digest_value str:copy]
+            assert_equal 1 [r copy str:whole{t} str:copy{t}]
+            assert_equal 1 [r copy str:random{t} str:copy2{t}]
+            json_assert_doc str:copy{t} $stext
+            json_assert_doc str:copy2{t} $text
+            assert_equal 501 [r json.arrappend str:copy{t} . {"only the copy"}]
+            assert_equal OK [r json.set str:whole{t} {[0]} {"only the source"}]
+            assert_equal [lindex $strings 0] [r json.get str:copy{t} {[0]}]
+            assert_equal 500 [r json.arrlen str:whole{t}]
+            assert_equal OK [r json.set str:whole{t} {[0]} [lindex $strings 0]]
+            assert_equal {"only the copy"} [r json.arrpop str:copy{t}]
+            assert_equal [debug_digest_value str:whole{t}] [debug_digest_value str:copy{t}]
             # DUMP and RESTORE, and DEBUG RELOAD under every cap setting.
-            assert_equal OK [r restore str:restored 0 [r dump str:whole]]
+            assert_equal OK [r restore str:restored 0 [r dump str:whole{t}]]
             json_assert_doc str:restored $stext
             set digest [debug_digest]
             foreach load_caps [json_caps_list] {
                 json_set_caps $load_caps
                 r debug reload
                 assert_equal $digest [debug_digest]
-                json_assert_doc str:whole $stext
-                json_assert_doc str:copy $stext
+                json_assert_doc str:whole{t} $stext
+                json_assert_doc str:copy{t} $stext
                 json_assert_doc str:restored $stext
-                json_assert_doc str:random $text
-                json_assert_doc built:str:random $text
+                json_assert_doc str:random{t} $text
+                json_assert_doc built:str:random{t} $text
                 json_assert_doc esc [r json.get esc]
                 assert_equal 15 [r json.strlen str:len15 {[999]}]
                 assert_equal {"0000000000000999"} [r json.get str:len16 {[999]}]
                 # Loaded arrays take writes.
-                assert_equal 501 [r json.arrappend str:whole . {"after reload"}]
-                assert_equal {"after reload"} [r json.arrpop str:whole]
+                assert_equal 501 [r json.arrappend str:whole{t} . {"after reload"}]
+                assert_equal {"after reload"} [r json.arrpop str:whole{t}]
             }
             json_set_caps $caps
         } {OK} {needs:debug}

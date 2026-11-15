@@ -141,12 +141,15 @@ proc json_write_deep_documents {c {raise_limit 1}} {
     set docs {}
     if {$raise_limit} {
         $c config set json.max-path-limit 2000
-        foreach {key text} [list deep:array600 [json_deep_array 600] deep:object1024 [json_deep_object 1024] \
-                                 deep:array1024 [json_deep_array 1024]] {
-            assert_equal OK [$c json.set $key . $text]
-            lappend docs $key $text
+        try {
+            foreach {key text} [list deep:array600 [json_deep_array 600] deep:object1024 [json_deep_object 1024] \
+                                     deep:array1024 [json_deep_array 1024]] {
+                assert_equal OK [$c json.set $key . $text]
+                lappend docs $key $text
+            }
+        } finally {
+            $c config set json.max-path-limit 128
         }
-        $c config set json.max-path-limit 128
     }
     assert_equal OK [$c json.set deep:129 $ [json_deep_array 128]]
     assert_equal 1 [$c json.arrappend deep:129 "\$[string repeat {[0]} 127]" {[1]}]
@@ -355,6 +358,13 @@ foreach {mdl sdl dual} {no disabled no  yes disabled no  no swapdb no  yes swapd
                     if {$propagated} {
                         assert_morethan [status $primary master_repl_offset] $offset
                     } else {
+                        # The PING a primary sends its replicas every repl-ping-replica-period
+                        # seconds moves the offset too (by 14 bytes). Such a command changes
+                        # nothing, so it is run again, until a run falls between two PINGs.
+                        for {set try 1} {$try < 3 && [status $primary master_repl_offset] != $offset} {incr try} {
+                            set offset [status $primary master_repl_offset]
+                            json_repl_check_reply $primary $cmd $reply
+                        }
                         assert_equal $offset [status $primary master_repl_offset] "'$cmd' moved the replication offset"
                     }
                     assert_equal 1 [$primary wait 1 10000] "WAIT after '$cmd'"

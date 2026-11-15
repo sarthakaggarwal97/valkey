@@ -110,7 +110,8 @@ start_server {tags {"json"}} {
             assert_error "OUTOFBOUNDARIES Array index is out of bounds" {r json.merge merge_error {$.arr[10]} 1}
             assert_error "OUTOFBOUNDARIES Array index is out of bounds" {r json.merge merge_error {.arr[10]} 1}
             assert_equal {{"a":1,"arr":[1,2,3]}} [r json.get merge_error]
-            r del merge_error string_key
+            r del merge_error
+            r del string_key
         }
 
         test "JSON.MERGE replaces an array with the patch (caps $caps)" {
@@ -261,7 +262,7 @@ start_server {tags {"json"}} {
             assert_error "SYNTAXERR A new Valkey key's path must be root" {r json.merge merge_new_key_error .user {{"name":"John"}}}
             assert_error "SYNTAXERR A new Valkey key's path must be root" {r json.merge merge_new_key_error2 .a.b {{"x":1}}}
             assert_error "SYNTAXERR A new Valkey key's path must be root" {r json.merge merge_new_key_error3 {$..field} {{"value":1}}}
-            assert_equal 0 [r exists merge_new_key_error merge_new_key_error2 merge_new_key_error3]
+            foreach key {merge_new_key_error merge_new_key_error2 merge_new_key_error3} { assert_equal 0 [r exists $key] }
             assert_equal OK [r json.merge merge_new_key_error . {{"a":1}}]
             assert_equal OK [r json.merge merge_new_key_error .user {{"name":"John"}}]
             assert_equal {{"a":1,"user":{"name":"John"}}} [r json.get merge_new_key_error]
@@ -319,20 +320,22 @@ start_server {tags {"json"}} {
         }
 
         test "JSON.MERGE honours json.max-path-limit and leaves the document unchanged (caps $caps)" {
-            r config set json.max-path-limit 3
-            r json.set p . {{"a":{"a":{"a":0}}}}
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.merge p {$.a.a} {{"m":{"n":1}}}}
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.merge p {$.a.a} {{"m":{}}}}
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.merge p . {{"a":{"a":{"a":{"a":1}}}}}}
-            assert_error "LIMIT Document path nesting limit is exceeded" {r json.merge fresh . {[[[[1]]]]}}
-            assert_equal 0 [r exists fresh]
-            assert_equal {{"a":{"a":{"a":0}}}} [r json.get p]
-            assert_equal OK [r json.merge p {$.a.a} {{"m":1}}]
-            assert_equal {{"a":{"a":{"a":0,"m":1}}}} [r json.get p]
-            r config set json.max-path-limit 128
-            assert_equal OK [r json.merge p {$.a.a} {{"m":{"n":1}}}]
-            assert_equal {{"a":{"a":{"a":0,"m":{"n":1}}}}} [r json.get p]
-            r del p
+            with_config json.max-path-limit 128 {
+                r config set json.max-path-limit 3
+                r json.set p . {{"a":{"a":{"a":0}}}}
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.merge p {$.a.a} {{"m":{"n":1}}}}
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.merge p {$.a.a} {{"m":{}}}}
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.merge p . {{"a":{"a":{"a":{"a":1}}}}}}
+                assert_error "LIMIT Document path nesting limit is exceeded" {r json.merge fresh . {[[[[1]]]]}}
+                assert_equal 0 [r exists fresh]
+                assert_equal {{"a":{"a":{"a":0}}}} [r json.get p]
+                assert_equal OK [r json.merge p {$.a.a} {{"m":1}}]
+                assert_equal {{"a":{"a":{"a":0,"m":1}}}} [r json.get p]
+                r config set json.max-path-limit 128
+                assert_equal OK [r json.merge p {$.a.a} {{"m":{"n":1}}}]
+                assert_equal {{"a":{"a":{"a":0,"m":{"n":1}}}}} [r json.get p]
+                r del p
+            }
         }
 
         test "JSON.MERGE many members across the packed and tree forms (caps $caps)" {
@@ -379,4 +382,5 @@ start_server {tags {"json"}} {
             r del r3
         }
     }
+    json_set_caps {4096 128}
 }

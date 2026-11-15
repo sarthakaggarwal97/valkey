@@ -301,7 +301,8 @@ start_server {tags {"json"}} {
                 r json.set f . $doc
                 assert_equal $fields [r json.debug fields f] "fields of $doc"
             }
-            r del f g
+            r del f
+            r del g
         }
 
         test "JSON.DEBUG DEPTH (caps $caps)" {
@@ -330,7 +331,7 @@ start_server {tags {"json"}} {
             r json.del k6 .a.b
             assert_equal {{"a":{}}} [r json.get k6]
             assert_equal 1 [r json.debug depth k6]
-            r del k1 k2 k3 k4 k5 k6 k7 k8 k9 k10 k11
+            foreach key {k1 k2 k3 k4 k5 k6 k7 k8 k9 k10 k11} { r del $key }
         }
 
         test "JSON.DEBUG MAX-DEPTH-KEY and MAX-SIZE-KEY (caps $caps)" {
@@ -426,102 +427,110 @@ start_server {tags {"json"}} {
         }
 
         test "json.max-document-size: a string below the limit is stored, one above is refused (B7) (caps $caps)" {
-            # The module's test uses 64 MB, 33 MB and 64 MB. Scaled down by 64.
-            set MB [expr {2**20}]
-            r config set json.max-document-size $MB
-            assert_equal OK [r json.set k . [json_misc_string_of_size [expr {$MB / 2}]]]
-            assert_error "LIMIT Document size limit is exceeded" {
-                r json.set k . [json_misc_string_of_size [expr {2 * $MB}]]
+            with_config json.max-document-size 0 {
+                # The module's test uses 64 MB, 33 MB and 64 MB. Scaled down by 64.
+                set MB [expr {2**20}]
+                r config set json.max-document-size $MB
+                assert_equal OK [r json.set k . [json_misc_string_of_size [expr {$MB / 2}]]]
+                assert_error "LIMIT Document size limit is exceeded" {
+                    r json.set k . [json_misc_string_of_size [expr {2 * $MB}]]
+                }
+                assert_equal [expr {$MB / 2}] [string length [r json.get k]]
+                # 0 means unlimited.
+                r config set json.max-document-size 0
+                assert_equal OK [r json.set k . [json_misc_string_of_size [expr {2 * $MB}]]]
+                assert_equal [expr {2 * $MB}] [string length [r json.get k]]
+                r del k
             }
-            assert_equal [expr {$MB / 2}] [string length [r json.get k]]
-            # 0 means unlimited.
-            r config set json.max-document-size 0
-            assert_equal OK [r json.set k . [json_misc_string_of_size [expr {2 * $MB}]]]
-            assert_equal [expr {2 * $MB}] [string length [r json.get k]]
-            r del k
         }
 
         test "json.max-document-size is checked on every write that grows a document (B7) (caps $caps)" {
-            set doc {{"a":[1,2,3],"s":"abc","o":{"x":1},"n":1}}
-            r config set json.max-document-size 0
-            r json.set d . $doc
-            # Room for about 2 KB more than the document needs now.
-            r config set json.max-document-size [expr {[r json.debug memory d] + 2048}]
-            set small {"0123456789"}
-            set large "\"[string repeat y 8192]\""
+            with_config json.max-document-size 0 {
+                set doc {{"a":[1,2,3],"s":"abc","o":{"x":1},"n":1}}
+                r config set json.max-document-size 0
+                r json.set d{t} . $doc
+                # Room for about 2 KB more than the document needs now.
+                r config set json.max-document-size [expr {[r json.debug memory d{t}] + 2048}]
+                set small {"0123456789"}
+                set large "\"[string repeat y 8192]\""
 
-            # Each of these grows the document by a few bytes and is accepted...
-            assert_equal OK [r json.set d .s $small]
-            assert_equal OK [r json.set d .new $small]
-            assert_equal 4 [r json.arrappend d .a $small]
-            assert_equal 5 [r json.arrinsert d .a 0 $small]
-            assert_equal 20 [r json.strappend d .s $small]
-            assert_equal OK [r json.merge d .o "{\"m\":$small}"]
-            assert_equal OK [r json.mset d .o.x $small]
-            set before [r json.get d]
-            assert_equal {{"a":["0123456789",1,2,3,"0123456789"],"s":"01234567890123456789","o":{"x":"0123456789","m":"0123456789"},"n":1,"new":"0123456789"}} $before
+                # Each of these grows the document by a few bytes and is accepted...
+                assert_equal OK [r json.set d{t} .s $small]
+                assert_equal OK [r json.set d{t} .new $small]
+                assert_equal 4 [r json.arrappend d{t} .a $small]
+                assert_equal 5 [r json.arrinsert d{t} .a 0 $small]
+                assert_equal 20 [r json.strappend d{t} .s $small]
+                assert_equal OK [r json.merge d{t} .o "{\"m\":$small}"]
+                assert_equal OK [r json.mset d{t} .o.x $small]
+                set before [r json.get d{t}]
+                assert_equal {{"a":["0123456789",1,2,3,"0123456789"],"s":"01234567890123456789","o":{"x":"0123456789","m":"0123456789"},"n":1,"new":"0123456789"}} $before
 
-            # ...and each of these would grow it by 8 KB and is refused, changing nothing.
-            assert_error "LIMIT Document size limit is exceeded" {r json.set d .s $large}
-            assert_error "LIMIT Document size limit is exceeded" {r json.set d .new2 $large}
-            assert_error "LIMIT Document size limit is exceeded" {r json.set d {$.a[*]} $large}
-            assert_error "LIMIT Document size limit is exceeded" {r json.set d . "\[$large\]"}
-            assert_error "LIMIT Document size limit is exceeded" {r json.arrappend d .a $large}
-            assert_error "LIMIT Document size limit is exceeded" {r json.arrappend d .a 1 2 $large}
-            assert_error "LIMIT Document size limit is exceeded" {r json.arrinsert d .a 0 $large}
-            assert_error "LIMIT Document size limit is exceeded" {r json.strappend d .s $large}
-            assert_error "LIMIT Document size limit is exceeded" {r json.merge d . "{\"m\":$large}"}
-            assert_error "LIMIT Document size limit is exceeded" {r json.merge d .o "{\"m\":$large}"}
-            assert_error "LIMIT Document size limit is exceeded" {r json.mset d .o.x $large}
-            assert_equal $before [r json.get d]
+                # ...and each of these would grow it by 8 KB and is refused, changing nothing.
+                assert_error "LIMIT Document size limit is exceeded" {r json.set d{t} .s $large}
+                assert_error "LIMIT Document size limit is exceeded" {r json.set d{t} .new2 $large}
+                assert_error "LIMIT Document size limit is exceeded" {r json.set d{t} {$.a[*]} $large}
+                assert_error "LIMIT Document size limit is exceeded" {r json.set d{t} . "\[$large\]"}
+                assert_error "LIMIT Document size limit is exceeded" {r json.arrappend d{t} .a $large}
+                assert_error "LIMIT Document size limit is exceeded" {r json.arrappend d{t} .a 1 2 $large}
+                assert_error "LIMIT Document size limit is exceeded" {r json.arrinsert d{t} .a 0 $large}
+                assert_error "LIMIT Document size limit is exceeded" {r json.strappend d{t} .s $large}
+                assert_error "LIMIT Document size limit is exceeded" {r json.merge d{t} . "{\"m\":$large}"}
+                assert_error "LIMIT Document size limit is exceeded" {r json.merge d{t} .o "{\"m\":$large}"}
+                assert_error "LIMIT Document size limit is exceeded" {r json.mset d{t} .o.x $large}
+                assert_equal $before [r json.get d{t}]
 
-            # Writes that do not grow the document still work at the limit.
-            assert_equal 2 [r json.numincrby d .n 1]
-            assert_equal 1 [r json.del d .new]
-            assert_equal 1 [r json.clear d .o]
+                # Writes that do not grow the document still work at the limit.
+                assert_equal 2 [r json.numincrby d{t} .n 1]
+                assert_equal 1 [r json.del d{t} .new]
+                assert_equal 1 [r json.clear d{t} .o]
 
-            # A new key is held to the limit as well, by JSON.SET, JSON.MERGE and JSON.MSET.
-            assert_error "LIMIT Document size limit is exceeded" {r json.set fresh . $large}
-            assert_error "LIMIT Document size limit is exceeded" {r json.merge fresh . "{\"m\":$large}"}
-            assert_error "LIMIT Document size limit is exceeded" {r json.mset fresh . $large}
-            assert_equal 0 [r exists fresh]
+                # A new key is held to the limit as well, by JSON.SET, JSON.MERGE and JSON.MSET.
+                assert_error "LIMIT Document size limit is exceeded" {r json.set fresh{t} . $large}
+                assert_error "LIMIT Document size limit is exceeded" {r json.merge fresh{t} . "{\"m\":$large}"}
+                assert_error "LIMIT Document size limit is exceeded" {r json.mset fresh{t} . $large}
+                assert_equal 0 [r exists fresh{t}]
 
-            # With the limit lifted every one of them is accepted.
-            r config set json.max-document-size 0
-            assert_equal OK [r json.set d .s $large]
-            assert_equal 6 [r json.arrappend d .a $large]
-            assert_equal 7 [r json.arrinsert d .a 0 $large]
-            assert_equal 16384 [r json.strappend d .s $large]
-            assert_equal OK [r json.merge d .o "{\"m\":$large}"]
-            assert_equal OK [r json.mset d .o.x $large fresh . $large]
-            assert_equal 8194 [string length [r json.get fresh]]
-            assert_morethan [r json.debug memory d] [expr {5 * 8192}]
-            r del d fresh
+                # With the limit lifted every one of them is accepted.
+                r config set json.max-document-size 0
+                assert_equal OK [r json.set d{t} .s $large]
+                assert_equal 6 [r json.arrappend d{t} .a $large]
+                assert_equal 7 [r json.arrinsert d{t} .a 0 $large]
+                assert_equal 16384 [r json.strappend d{t} .s $large]
+                assert_equal OK [r json.merge d{t} .o "{\"m\":$large}"]
+                assert_equal OK [r json.mset d{t} .o.x $large fresh{t} . $large]
+                assert_equal 8194 [string length [r json.get fresh{t}]]
+                assert_morethan [r json.debug memory d{t}] [expr {5 * 8192}]
+                r del d{t} fresh{t}
+            }
         }
 
         test "json.max-document-size: JSON.MSET is refused as a whole when one document would be too large (B7) (caps $caps)" {
-            r config set json.max-document-size 0
-            r json.set d . {{"a":1}}
-            r config set json.max-document-size [expr {[r json.debug memory d] + 2048}]
-            set large "\"[string repeat y 8192]\""
-            assert_error "LIMIT Document size limit is exceeded" {r json.mset n1 . 1 d .a 2 n2 . $large n3 . 3}
-            assert_error "LIMIT Document size limit is exceeded" {r json.mset n1 . 1 d .b $large n3 . 3}
-            assert_equal 0 [r exists n1 n2 n3]
-            assert_equal {{"a":1}} [r json.get d]
-            r config set json.max-document-size 0
-            r del d
+            with_config json.max-document-size 0 {
+                r config set json.max-document-size 0
+                r json.set d{t} . {{"a":1}}
+                r config set json.max-document-size [expr {[r json.debug memory d{t}] + 2048}]
+                set large "\"[string repeat y 8192]\""
+                assert_error "LIMIT Document size limit is exceeded" {r json.mset n1{t} . 1 d{t} .a 2 n2{t} . $large n3{t} . 3}
+                assert_error "LIMIT Document size limit is exceeded" {r json.mset n1{t} . 1 d{t} .b $large n3{t} . 3}
+                assert_equal 0 [r exists n1{t} n2{t} n3{t}]
+                assert_equal {{"a":1}} [r json.get d{t}]
+                r config set json.max-document-size 0
+                r del d{t}
+            }
         }
 
         test "json.max-document-size CONFIG SET and GET round trip (caps $caps)" {
-            assert_equal {json.max-document-size 0} [r config get json.max-document-size]
-            r config set json.max-document-size 65536
-            assert_equal {json.max-document-size 65536} [r config get json.max-document-size]
-            r config set json.max-document-size 64mb
-            assert_equal {json.max-document-size 67108864} [r config get json.max-document-size]
-            assert_error "ERR CONFIG SET failed*" {r config set json.max-document-size -1}
-            assert_error "ERR CONFIG SET failed*" {r config set json.max-document-size abc}
-            assert_equal {json.max-document-size 67108864} [r config get json.max-document-size]
-            r config set json.max-document-size 0
+            with_config json.max-document-size 0 {
+                assert_equal {json.max-document-size 0} [r config get json.max-document-size]
+                r config set json.max-document-size 65536
+                assert_equal {json.max-document-size 65536} [r config get json.max-document-size]
+                r config set json.max-document-size 64mb
+                assert_equal {json.max-document-size 67108864} [r config get json.max-document-size]
+                assert_error "ERR CONFIG SET failed*" {r config set json.max-document-size -1}
+                assert_error "ERR CONFIG SET failed*" {r config set json.max-document-size abc}
+                assert_equal {json.max-document-size 67108864} [r config get json.max-document-size]
+                r config set json.max-document-size 0
+            }
         }
 
         test "JSON.MSET supports all data types on a sub-path (caps $caps)" {
@@ -543,87 +552,88 @@ start_server {tags {"json"}} {
 
         test "JSON.MSET root documents (caps $caps)" {
             assert_equal OK [r json.mset \
-                k1 . {"Boston"} \
-                k2 . 123 \
-                k3 . {["Seattle","Boston"]} \
-                k4 . {[1,2,3]} \
-                k5 . {{"a":"b"}} \
-                k6 . {{}} \
-                k7 . null \
-                k8 . false]
+                k1{t} . {"Boston"} \
+                k2{t} . 123 \
+                k3{t} . {["Seattle","Boston"]} \
+                k4{t} . {[1,2,3]} \
+                k5{t} . {{"a":"b"}} \
+                k6{t} . {{}} \
+                k7{t} . null \
+                k8{t} . false]
             foreach {key value} {
-                k1 {"Boston"}
-                k2 123
-                k3 {["Seattle","Boston"]}
-                k4 {[1,2,3]}
-                k5 {{"a":"b"}}
-                k6 {{}}
-                k7 null
-                k8 false
+                k1{t} {"Boston"}
+                k2{t} 123
+                k3{t} {["Seattle","Boston"]}
+                k4{t} {[1,2,3]}
+                k5{t} {{"a":"b"}}
+                k6{t} {{}}
+                k7{t} null
+                k8{t} false
             } {
                 assert_equal $value [r json.get $key]
                 assert_equal ReJSON-RL [r type $key]
             }
             # A $ root path works the same way.
-            assert_equal OK [r json.mset k1 {$} 1 k9 {$} {[true]}]
-            assert_equal 1 [r json.get k1]
-            assert_equal {[true]} [r json.get k9]
-            r del k9
+            assert_equal OK [r json.mset k1{t} {$} 1 k9{t} {$} {[true]}]
+            assert_equal 1 [r json.get k1{t}]
+            assert_equal {[true]} [r json.get k9{t}]
+            r del k9{t}
         }
 
         test "JSON.MSET error conditions (caps $caps)" {
+            r json.set wikipedia{t} . $::json_misc_wikipedia
             # A new Valkey key's path must be root
-            assert_error "SYNTAXERR Command syntax error" {r json.mset foo .bar {"bar"}}
-            assert_error "SYNTAXERR Command syntax error" {r json.mset foo {$.bar} {"bar"}}
-            assert_equal 0 [r exists foo]
+            assert_error "SYNTAXERR Command syntax error" {r json.mset foo{t} .bar {"bar"}}
+            assert_error "SYNTAXERR Command syntax error" {r json.mset foo{t} {$.bar} {"bar"}}
+            assert_equal 0 [r exists foo{t}]
             assert_error "ERR wrong number of arguments for 'JSON.MSET' command" {r json.mset}
-            assert_error "ERR wrong number of arguments for 'JSON.MSET' command" {r json.mset k1}
-            assert_error "ERR wrong number of arguments for 'JSON.MSET' command" {r json.mset k1 .}
-            assert_error "ERR wrong number of arguments for 'JSON.MSET' command" {r json.mset k1 . 1 k2}
-            assert_error "ERR wrong number of arguments for 'JSON.MSET' command" {r json.mset k1 . 1 k2 .}
-            assert_error "SYNTAXERR Failed to parse JSON string due to syntax error" {r json.mset k1 . 1 k2 . nope}
-            assert_error "NONEXISTENT*" {r json.mset k1 . 1 wikipedia .no.such.parent 1}
-            r set str_key foo
-            assert_error "WRONGTYPE Not a JSON document key" {r json.mset k1 . 1 str_key . 1}
-            assert_error "WRONGTYPE Not a JSON document key" {r json.mset str_key .a 1}
-            assert_equal foo [r get str_key]
+            assert_error "ERR wrong number of arguments for 'JSON.MSET' command" {r json.mset k1{t}}
+            assert_error "ERR wrong number of arguments for 'JSON.MSET' command" {r json.mset k1{t} .}
+            assert_error "ERR wrong number of arguments for 'JSON.MSET' command" {r json.mset k1{t} . 1 k2{t}}
+            assert_error "ERR wrong number of arguments for 'JSON.MSET' command" {r json.mset k1{t} . 1 k2{t} .}
+            assert_error "SYNTAXERR Failed to parse JSON string due to syntax error" {r json.mset k1{t} . 1 k2{t} . nope}
+            assert_error "NONEXISTENT*" {r json.mset k1{t} . 1 wikipedia{t} .no.such.parent 1}
+            r set str_key{t} foo
+            assert_error "WRONGTYPE Not a JSON document key" {r json.mset k1{t} . 1 str_key{t} . 1}
+            assert_error "WRONGTYPE Not a JSON document key" {r json.mset str_key{t} .a 1}
+            assert_equal foo [r get str_key{t}]
             # None of the failed commands changed k1.
-            assert_equal 1 [r json.get k1]
-            r del str_key
+            assert_equal 1 [r json.get k1{t}]
+            r del str_key{t}
         }
 
         test "JSON.MSET mixing root and sub-path writes (caps $caps)" {
-            r json.set wikipedia . $::json_misc_wikipedia
+            r json.set wikipedia{t} . $::json_misc_wikipedia
             assert_equal OK [r json.mset \
-                k1 . {"Boston"} \
-                wikipedia .address.city {"Boston"} \
-                k2 . 123 \
-                wikipedia .age 30 \
-                k3 . {["Seattle","Boston"]} \
-                k4 . {[1,2,3]} \
-                wikipedia {.phoneNumbers[0].number} {"1234567"} \
-                k5 . {{"a":"b"}} \
-                wikipedia .foo {{"a":"b"}} \
-                k6 . {{}} \
-                wikipedia .lastName null \
-                k7 . null \
-                wikipedia .isAlive false \
-                k8 . false]
+                k1{t} . {"Boston"} \
+                wikipedia{t} .address.city {"Boston"} \
+                k2{t} . 123 \
+                wikipedia{t} .age 30 \
+                k3{t} . {["Seattle","Boston"]} \
+                k4{t} . {[1,2,3]} \
+                wikipedia{t} {.phoneNumbers[0].number} {"1234567"} \
+                k5{t} . {{"a":"b"}} \
+                wikipedia{t} .foo {{"a":"b"}} \
+                k6{t} . {{}} \
+                wikipedia{t} .lastName null \
+                k7{t} . null \
+                wikipedia{t} .isAlive false \
+                k8{t} . false]
             foreach {key path value} {
-                k1 . {"Boston"}
-                k2 . 123
-                k3 . {["Seattle","Boston"]}
-                k4 . {[1,2,3]}
-                k5 . {{"a":"b"}}
-                k6 . {{}}
-                k7 . null
-                k8 . false
-                wikipedia .address.city {"Boston"}
-                wikipedia .age 30
-                wikipedia .phoneNumbers[0].number {"1234567"}
-                wikipedia .foo {{"a":"b"}}
-                wikipedia .lastName null
-                wikipedia .isAlive false
+                k1{t} . {"Boston"}
+                k2{t} . 123
+                k3{t} . {["Seattle","Boston"]}
+                k4{t} . {[1,2,3]}
+                k5{t} . {{"a":"b"}}
+                k6{t} . {{}}
+                k7{t} . null
+                k8{t} . false
+                wikipedia{t} .address.city {"Boston"}
+                wikipedia{t} .age 30
+                wikipedia{t} .phoneNumbers[0].number {"1234567"}
+                wikipedia{t} .foo {{"a":"b"}}
+                wikipedia{t} .lastName null
+                wikipedia{t} .isAlive false
             } {
                 assert_equal $value [r json.get $key $path]
             }
@@ -634,104 +644,104 @@ start_server {tags {"json"}} {
             # none of the others may be applied.
             assert_error "SYNTAXERR Command syntax error" {
                 r json.mset \
-                    k1 . {"Seattle"} \
-                    wikipedia .address.city {"Seattle"} \
-                    k2 . 456 \
-                    wikipedia .age 40 \
-                    k3 . {["Seattle","Chicago"]} \
-                    k4 . {[4,5,6]} \
-                    wikipedia {.phoneNumbers[0].number} {"56789"} \
-                    k5 . {{"c":"d"}} \
-                    wikipedia .foo {{"c":"d"}} \
-                    k6 . {{}} \
-                    wikipedia .lastName null \
-                    k7 . null \
-                    foo .bar {"bar"} \
-                    k8 . true
+                    k1{t} . {"Seattle"} \
+                    wikipedia{t} .address.city {"Seattle"} \
+                    k2{t} . 456 \
+                    wikipedia{t} .age 40 \
+                    k3{t} . {["Seattle","Chicago"]} \
+                    k4{t} . {[4,5,6]} \
+                    wikipedia{t} {.phoneNumbers[0].number} {"56789"} \
+                    k5{t} . {{"c":"d"}} \
+                    wikipedia{t} .foo {{"c":"d"}} \
+                    k6{t} . {{}} \
+                    wikipedia{t} .lastName null \
+                    k7{t} . null \
+                    foo{t} .bar {"bar"} \
+                    k8{t} . true
             }
             foreach {key path value} {
-                k1 . {"Boston"}
-                k2 . 123
-                k3 . {["Seattle","Boston"]}
-                k4 . {[1,2,3]}
-                k5 . {{"a":"b"}}
-                k6 . {{}}
-                k7 . null
-                k8 . false
-                wikipedia .address.city {"Boston"}
-                wikipedia .age 30
-                wikipedia .phoneNumbers[0].number {"1234567"}
-                wikipedia .foo {{"a":"b"}}
-                wikipedia .lastName null
-                wikipedia .isAlive false
+                k1{t} . {"Boston"}
+                k2{t} . 123
+                k3{t} . {["Seattle","Boston"]}
+                k4{t} . {[1,2,3]}
+                k5{t} . {{"a":"b"}}
+                k6{t} . {{}}
+                k7{t} . null
+                k8{t} . false
+                wikipedia{t} .address.city {"Boston"}
+                wikipedia{t} .age 30
+                wikipedia{t} .phoneNumbers[0].number {"1234567"}
+                wikipedia{t} .foo {{"a":"b"}}
+                wikipedia{t} .lastName null
+                wikipedia{t} .isAlive false
             } {
                 assert_equal $value [r json.get $key $path]
             }
-            assert_equal 0 [r exists foo]
+            assert_equal 0 [r exists foo{t}]
             # A failure in the last triple, after new keys earlier in the command.
-            assert_error "SYNTAXERR*" {r json.mset new1 . 1 new2 . 2 k1 . {"x"} new3 . nope}
-            assert_equal 0 [r exists new1 new2 new3]
-            assert_equal {"Boston"} [r json.get k1]
-            r del k1 k2 k3 k4 k5 k6 k7 k8
+            assert_error "SYNTAXERR*" {r json.mset new1{t} . 1 new2{t} . 2 k1{t} . {"x"} new3{t} . nope}
+            assert_equal 0 [r exists new1{t} new2{t} new3{t}]
+            assert_equal {"Boston"} [r json.get k1{t}]
+            r del k1{t} k2{t} k3{t} k4{t} k5{t} k6{t} k7{t} k8{t}
         }
 
         test "JSON.MSET naming one key twice: independent sub-paths (caps $caps)" {
-            r json.set m . {{"a":1}}
-            assert_equal OK [r json.mset m .a 2 m .b 3]
-            assert_equal {{"a":2,"b":3}} [r json.get m]
-            r json.set m . {{"a":{"b":1},"c":[1]}}
-            assert_equal OK [r json.mset m .a.b 2 m .c {[1,2]} m .a.d 3 m {$.c[0]} 9]
-            assert_equal {{"a":{"b":2,"d":3},"c":[9,2]}} [r json.get m]
+            r json.set m{t} . {{"a":1}}
+            assert_equal OK [r json.mset m{t} .a 2 m{t} .b 3]
+            assert_equal {{"a":2,"b":3}} [r json.get m{t}]
+            r json.set m{t} . {{"a":{"b":1},"c":[1]}}
+            assert_equal OK [r json.mset m{t} .a.b 2 m{t} .c {[1,2]} m{t} .a.d 3 m{t} {$.c[0]} 9]
+            assert_equal {{"a":{"b":2,"d":3},"c":[9,2]}} [r json.get m{t}]
         }
 
         test "JSON.MSET naming one key twice: later triples see earlier ones (caps $caps)" {
             # Root written three times: the last value wins.
-            assert_equal OK [r json.mset m . 1 m . 2 m . 3]
-            assert_equal 3 [r json.get m]
+            assert_equal OK [r json.mset m{t} . 1 m{t} . 2 m{t} . 3]
+            assert_equal 3 [r json.get m{t}]
             # A new key written twice.
-            assert_equal OK [r json.mset n . {{"a":1}} n . {{"b":2}}]
-            assert_equal {{"b":2}} [r json.get n]
+            assert_equal OK [r json.mset n{t} . {{"a":1}} n{t} . {{"b":2}}]
+            assert_equal {{"b":2}} [r json.get n{t}]
             # The parent replaced first, then a member set inside the new parent.
-            r json.set m . {{"a":{"b":1},"c":[9,2]}}
-            assert_equal OK [r json.mset m .a {{}} m .a.b 7]
-            assert_equal {{"a":{"b":7},"c":[9,2]}} [r json.get m]
+            r json.set m{t} . {{"a":{"b":1},"c":[9,2]}}
+            assert_equal OK [r json.mset m{t} .a {{}} m{t} .a.b 7]
+            assert_equal {{"a":{"b":7},"c":[9,2]}} [r json.get m{t}]
             # The child first, then its parent replaced.
-            r json.set m . {{"a":{"b":1}}}
-            assert_equal OK [r json.mset m .a.b 6 m .a 5]
-            assert_equal {{"a":5}} [r json.get m]
+            r json.set m{t} . {{"a":{"b":1}}}
+            assert_equal OK [r json.mset m{t} .a.b 6 m{t} .a 5]
+            assert_equal {{"a":5}} [r json.get m{t}]
             # Root replaced, then a member of the new root.
-            r json.set m . {{"a":{"b":1}}}
-            assert_equal OK [r json.mset m . {{"x":1}} m .x 2]
-            assert_equal {{"x":2}} [r json.get m]
-            r del n
+            r json.set m{t} . {{"a":{"b":1}}}
+            assert_equal OK [r json.mset m{t} . {{"x":1}} m{t} .x 2]
+            assert_equal {{"x":2}} [r json.get m{t}]
+            r del n{t}
         }
 
         test "JSON.MSET naming one key twice: a triple invalidated by an earlier one fails the whole command (caps $caps)" {
             # The module hits an assert on these (design 2.5). Here the command returns the
             # error a standalone JSON.SET would give and changes nothing, on any key.
-            r json.set m . {{"a":{"b":1}}}
-            assert_error "ERROR Cannot insert a member into a non-object value" {r json.mset m .a 5 m .a.b 6}
-            assert_equal {{"a":{"b":1}}} [r json.get m]
-            assert_error "ERROR Cannot insert a member into a non-object value" {r json.mset m . {[1,2]} m .a 3}
-            assert_equal {{"a":{"b":1}}} [r json.get m]
-            assert_error "ERROR Cannot insert a member into a non-object value" {r json.mset other . 1 m . {[1,2]} m .a.b 3 other2 . 2}
-            assert_equal {{"a":{"b":1}}} [r json.get m]
-            assert_equal 0 [r exists other other2]
-            assert_error "ERROR Cannot insert a member into a non-object value" {r json.mset m {$.a.b} 1 m .a {[]} m {$.a.b} 2}
-            assert_equal {{"a":{"b":1}}} [r json.get m]
+            r json.set m{t} . {{"a":{"b":1}}}
+            assert_error "ERROR Cannot insert a member into a non-object value" {r json.mset m{t} .a 5 m{t} .a.b 6}
+            assert_equal {{"a":{"b":1}}} [r json.get m{t}]
+            assert_error "ERROR Cannot insert a member into a non-object value" {r json.mset m{t} . {[1,2]} m{t} .a 3}
+            assert_equal {{"a":{"b":1}}} [r json.get m{t}]
+            assert_error "ERROR Cannot insert a member into a non-object value" {r json.mset other{t} . 1 m{t} . {[1,2]} m{t} .a.b 3 other2{t} . 2}
+            assert_equal {{"a":{"b":1}}} [r json.get m{t}]
+            assert_equal 0 [r exists other{t} other2{t}]
+            assert_error "ERROR Cannot insert a member into a non-object value" {r json.mset m{t} {$.a.b} 1 m{t} .a {[]} m{t} {$.a.b} 2}
+            assert_equal {{"a":{"b":1}}} [r json.get m{t}]
         }
 
         test "JSON.MSET naming one key twice: every triple is first checked against the stored document (caps $caps)" {
             # As in the module, which validates each triple against the keyspace as it was
             # before the command: a path whose parent only exists after an earlier triple is
             # refused, and so is a sub-path on a key the same command creates.
-            r json.set m . {{"a":2,"b":3}}
-            assert_error "NONEXISTENT JSON path does not exist" {r json.mset m . {{"x":{}}} m .x.y 5}
-            assert_equal {{"a":2,"b":3}} [r json.get m]
-            assert_error "SYNTAXERR Command syntax error" {r json.mset fresh . {{"a":[]}} fresh .a {[1]}}
-            assert_error "SYNTAXERR Command syntax error" {r json.mset fresh .a 1 fresh . {{}}}
-            assert_equal 0 [r exists fresh]
-            r del m
+            r json.set m{t} . {{"a":2,"b":3}}
+            assert_error "NONEXISTENT JSON path does not exist" {r json.mset m{t} . {{"x":{}}} m{t} .x.y 5}
+            assert_equal {{"a":2,"b":3}} [r json.get m{t}]
+            assert_error "SYNTAXERR Command syntax error" {r json.mset fresh{t} . {{"a":[]}} fresh{t} .a {[1]}}
+            assert_error "SYNTAXERR Command syntax error" {r json.mset fresh{t} .a 1 fresh{t} . {{}}}
+            assert_equal 0 [r exists fresh{t}]
+            r del m{t}
         }
 
         test "JSON commands inside MULTI/EXEC (caps $caps)" {
@@ -967,4 +977,5 @@ start_server {tags {"json"}} {
             r flushall
         }
     }
+    json_set_caps {4096 128}
 }
