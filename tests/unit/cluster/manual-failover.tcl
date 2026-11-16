@@ -584,8 +584,6 @@ start_cluster 3 2 {tags {external:skip cluster}} {
     }
 }
 
-# Disable this test case due to #2441.
-if {false} {
 start_cluster 3 2 {tags {external:skip cluster}} {
     # This test consists of two phases.
     # The first phase, we will create a scenario where two primary are on the same shard. See #2279 for more details.
@@ -777,5 +775,4 @@ start_cluster 3 2 {tags {external:skip cluster}} {
         R 4 debug disable-cluster-reconnection 0
         wait_for_cluster_propagation
     }
-}
 }
