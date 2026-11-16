@@ -94,10 +94,15 @@ proc json_cl_name_bytes {node base} {
 }
 
 # Waits until node holds docs documents and its name storage is names bytes.
+# Name storage is counted in allocator usable sizes. jemalloc gives the same
+# size for the same request on every node. glibc malloc may hand out a chunk
+# 16 bytes larger, depending on the heap's history, so there the two nodes
+# need only agree within 10%.
 proc json_cl_wait_target_stats {node docs base names {what ""}} {
+    set slack [expr {[string match {jemalloc*} [getInfoProperty [R $node INFO memory] mem_allocator]] ? 0 : $names / 10}]
     wait_for_condition 100 50 {
         [json_cl_stat $node num_documents] == $docs &&
-        [json_cl_name_bytes $node $base] == $names
+        abs([json_cl_name_bytes $node $base] - $names) <= $slack
     } else {
         fail "node $node: json_num_documents [json_cl_stat $node num_documents] (expected $docs), name storage [json_cl_name_bytes $node $base] (expected $names) $what"
     }
