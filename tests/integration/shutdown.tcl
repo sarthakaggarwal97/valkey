@@ -308,6 +308,14 @@ test "Shutting down primary wait for replica after previous block" {
             resume_process $replica_pid
             $primary_deferring close
 
+            # Wait for the primary to exit, so that the server teardown does
+            # not signal it while it is exiting.
+            wait_for_condition 300 100 {
+                ![is_alive $primary_pid]
+            } else {
+                fail "Primary (pid $primary_pid) did not exit after the replica was resumed"
+            }
+
             # Check for crash.
             assert_equal [count_log_message -1 "*BUG REPORT START*"] 0
         }
