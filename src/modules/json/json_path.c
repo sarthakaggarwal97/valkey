@@ -1556,7 +1556,7 @@ static uint32_t compileChain(compiler *c, int ctx) {
     jsonPath *p = c->path;
     uint32_t first = NO_STEP, prev = NO_STEP;
     for (;;) {
-        int ctx_after;
+        int ctx_after = CTX_REL; /* Set by compileElement. Initialised for gcc's -Wmaybe-uninitialized. */
         ctx = normalCtx(&c->lx, ctx);
         uint32_t key = lexKey(&c->lx, ctx);
         uint32_t si = c->memo ? c->memo[key] : NO_STEP;
