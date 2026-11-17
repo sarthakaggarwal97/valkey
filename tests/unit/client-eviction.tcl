@@ -708,6 +708,94 @@ start_server {} {
     }
 }
 
+# A blocked client served after another client's command made its key ready is re-executed with
+# server.current_client pointing at the blocked client. The client that made the key ready is
+# still executing then, so client eviction must not free it there: freeClient() would free it
+# right away and the outer command would go on to use it.
+start_server {} {
+    test {BLMPOP + maxmemory-clients: eviction during ready-key reexec does not free the executing client} {
+        r flushdb
+        r client no-evict on
+        r config set maxmemory-clients 100mb
+        r config set client-output-buffer-limit "normal 0 0 0"
+        # Disable copy avoidance so unread replies stay in client output buffers
+        r config set min-io-threads-avoid-copy-reply 0
+        r config set min-string-size-avoid-copy-reply 0
+        r config set min-string-size-avoid-copy-reply-threaded 0
+
+        # Load the data from a separate connection and close it, so the large arguments are not
+        # charged to any client when the memory total is sampled below.
+        set loader [valkey_client]
+        $loader setrange fat 300000 x
+        # Many small elements: a BLMPOP of half of them is a ~2MB reply that is copied into the
+        # output buffer of the client that gets it.
+        set count 20000
+        $loader rpush src {*}[lrepeat [expr {$count * 2}] [string repeat e 100]]
+        $loader client setname loader
+        $loader close
+        wait_for_condition 100 10 {
+            ![client_exists loader]
+        } else {
+            fail "loader connection still listed"
+        }
+
+        # Two blocked clients on the same key. The first one served adds its reply to the clients'
+        # memory, the second one is re-executed after that.
+        set rdA [valkey_deferring_client]
+        set rdB [valkey_deferring_client]
+        foreach {name rd} [list waiter_a $rdA waiter_b $rdB] {
+            $rd client setname $name
+            $rd flush
+            assert_equal OK [$rd read]
+            $rd blmpop 0 1 mylist left count $count
+            $rd flush
+        }
+        wait_for_blocked_clients_count 2
+
+        # The largest client, holding GET replies it does not read. Its command is what readies the key.
+        set rdX [valkey_deferring_client]
+        $rdX client setname executing
+        $rdX flush
+        assert_equal OK [$rdX read]
+        set gets 0
+        while {[client_field executing tot-mem] < [mb 3]} {
+            $rdX get fat
+            $rdX flush
+            incr gets
+            wait_for_condition 100 10 {
+                [client_field executing tot-cmds] >= $gets + 1
+            } else {
+                fail "executing client did not run its GET"
+            }
+        }
+
+        # Limit just above the current total: the check before the executing client's own command
+        # passes, but the reply of the first served client brings the total over it before the
+        # second one is re-executed.
+        set total [s mem_clients_normal]
+        r config set maxmemory-clients [expr {$total + [mb 1]}]
+        set evicted [s evicted_clients]
+
+        $rdX rename src mylist
+        $rdX flush
+
+        # Evicting the executing client during the re-execution would free it under its own
+        # command: the server crashes, or reports a use after free under ASan. Once its command is
+        # done the limit is enforced again, so a client is still evicted shortly after.
+        wait_for_condition 100 10 {
+            [s evicted_clients] > $evicted
+        } else {
+            fail "no client was evicted"
+        }
+        assert_equal PONG [r ping]
+        assert_equal 0 [r exists src]
+
+        catch {$rdA close}
+        catch {$rdB close}
+        catch {$rdX close}
+    }
+}
+
 start_server {} {
     # Disable copy avoidance
     r config set min-io-threads-avoid-copy-reply 0

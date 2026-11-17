@@ -4877,8 +4877,14 @@ int processCommand(client *c) {
 
     /* Disconnect some clients if total clients memory is too high. We do this
      * before key eviction, after the last command was executed and consumed
-     * some client output buffer memory. */
-    evictClients();
+     * some client output buffer memory.
+     *
+     * Not when re-executing a blocked client's command: that runs from
+     * handleClientsBlockedOnKeys() while the client whose command made the key
+     * ready can still be on the call stack, and freeing it here would leave its
+     * caller using a freed client. Clients are evicted again by the next command
+     * and in beforeSleep(). */
+    if (!c->flag.reexecuting_command) evictClients();
     if (server.current_client == NULL) {
         /* If we evicted ourself then abort processing the command */
         return C_ERR;
