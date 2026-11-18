@@ -1320,6 +1320,7 @@ void hsetCommand(client *c) {
 void hsetexCommand(client *c) {
     robj *o;
     robj *expire = NULL;
+    int expire_idx = -1;
     robj *comparison = NULL;
     int unit = UNIT_SECONDS;
     int flags = ARGS_NO_FLAGS;
@@ -1338,7 +1339,7 @@ void hsetexCommand(client *c) {
     for (; fields_index < c->argc - 1; fields_index++) {
         if (!strcasecmp(c->argv[fields_index]->ptr, "fields")) {
             /* checking optional flags */
-            if (parseExtendedCommandArgumentsOrReply(c, &flags, &unit, &expire, &comparison, COMMAND_HSET, fields_index++) != C_OK) return;
+            if (parseExtendedCommandArgumentsOrReply(c, &flags, &unit, &expire_idx, &expire, &comparison, COMMAND_HSET, fields_index++) != C_OK) return;
             if (getLongLongFromObjectOrReply(c, c->argv[fields_index++], &num_fields, NULL) != C_OK) return;
             break;
         }
@@ -1425,7 +1426,7 @@ void hsetexCommand(client *c) {
                     (!strcasecmp(c->argv[i]->ptr, "EX") ||
                      !strcasecmp(c->argv[i]->ptr, "PX") ||
                      !strcasecmp(c->argv[i]->ptr, "EXAT"))) {
-                    if (c->argv[i + 1] == expire) {
+                    if (i == expire_idx) {
                         robj *milliseconds_obj = createStringObjectFromLongLong(when);
                         new_argv[new_argc++] = shared.pxat;
                         new_argv[new_argc++] = milliseconds_obj;
@@ -1595,7 +1596,7 @@ void hgetexCommand(client *c) {
     for (; fields_index < c->argc - 1; fields_index++) {
         if (!strcasecmp(c->argv[fields_index]->ptr, "fields")) {
             /* checking optional flags */
-            if (parseExtendedCommandArgumentsOrReply(c, &flags, &unit, &expire, &comparison, COMMAND_HGET, fields_index++) != C_OK) return;
+            if (parseExtendedCommandArgumentsOrReply(c, &flags, &unit, NULL, &expire, &comparison, COMMAND_HGET, fields_index++) != C_OK) return;
             if (getLongLongFromObjectOrReply(c, c->argv[fields_index++], &num_fields, NULL) != C_OK) return;
             break;
         }
