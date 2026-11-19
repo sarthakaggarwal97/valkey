@@ -1114,8 +1114,16 @@ static sds clusterGenNodesConfContent(void) {
  * When called from a bio thread, latency is not recorded because it is not
  * thread-safe.
  *
+ * 'current_epoch' and 'last_vote_epoch' are the values written in the "vars"
+ * line of 'content'. They are passed in because a bio thread must not read
+ * server.cluster, and are only used to log the completed save.
+ *
  * This function take ownership of the 'content' SDS string and will free it. */
-static int clusterSaveConfigImpl(sds content, bool from_bio, bool do_fsync) {
+static int clusterSaveConfigImpl(sds content,
+                                 bool from_bio,
+                                 bool do_fsync,
+                                 uint64_t current_epoch,
+                                 uint64_t last_vote_epoch) {
     sds tmpfilename;
     size_t content_size, offset = 0;
     ssize_t written_bytes;
@@ -1196,6 +1204,12 @@ static int clusterSaveConfigImpl(sds content, bool from_bio, bool do_fsync) {
     }
     retval = C_OK; /* If we reached this point, everything is fine. */
 
+    /* Logged once the new file is in place, so the log shows when the vote in
+     * lastVoteEpoch became durable relative to the FAILOVER_AUTH_ACK that
+     * carries it, see clusterSendFailoverAuthIfNeeded(). */
+    serverLog(LL_VERBOSE, "Cluster config file saved: currentEpoch %llu, lastVoteEpoch %llu",
+              (unsigned long long)current_epoch, (unsigned long long)last_vote_epoch);
+
 cleanup:
     if (fd != -1) {
         latencyStartMonitor(latency);
@@ -1227,12 +1241,14 @@ static int clusterSaveConfig(bool use_bio, bool do_fsync) {
 
     /* The subsequent function will take ownership of the string and be responsible for freeing it. */
     sds content = clusterGenNodesConfContent();
+    uint64_t current_epoch = server.cluster->currentEpoch;
+    uint64_t last_vote_epoch = server.cluster->lastVoteEpoch;
     if (use_bio) {
         /* We can actually always fsync the file in bio, but anyway lets follow the old code. */
-        bioCreateClusterConfigSaveJob(content, do_fsync);
+        bioCreateClusterConfigSaveJob(content, do_fsync, current_epoch, last_vote_epoch);
         return C_OK;
     } else {
-        int res = clusterSaveConfigImpl(content, false, do_fsync);
+        int res = clusterSaveConfigImpl(content, false, do_fsync, current_epoch, last_vote_epoch);
         if (res == C_OK) {
             atomic_store_explicit(&server.cluster_config_save_status, C_OK, memory_order_relaxed);
             atomic_store_explicit(&server.cluster_config_last_save_time, time(NULL), memory_order_relaxed);
@@ -1244,8 +1260,8 @@ static int clusterSaveConfig(bool use_bio, bool do_fsync) {
 }
 
 /* Save the cluster file, it is called from the bio thread. */
-int clusterSaveConfigFromBio(sds content, bool do_fsync) {
-    return clusterSaveConfigImpl(content, true, do_fsync);
+int clusterSaveConfigFromBio(sds content, bool do_fsync, uint64_t current_epoch, uint64_t last_vote_epoch) {
+    return clusterSaveConfigImpl(content, true, do_fsync, current_epoch, last_vote_epoch);
 }
 
 /* Save the cluster configuration file. If the save fails, exit the process. */
@@ -4954,6 +4970,20 @@ void handleLinkIOError(clusterLink *link) {
     freeClusterLink(link);
 }
 
+/* Called on the main thread once 'msg' has been fully written to the link's
+ * socket, by clusterWriteHandler() or clusterHandleWriteCompletion().
+ *
+ * A FAILOVER_AUTH_ACK is logged here and not when it is queued, so that the
+ * log shows whether the vote left before or after the nodes.conf save that
+ * records it, see clusterSendFailoverAuthIfNeeded(). The epoch is the one in
+ * the header, which is the epoch the vote was granted for. */
+static void clusterLogMessageSent(clusterLink *link, clusterMsg *msg) {
+    uint16_t type = ntohs(msg->type) & ~CLUSTERMSG_MODIFIER_MASK;
+    if (type != CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK) return;
+    serverLog(LL_VERBOSE, "Failover auth ACK sent to %.40s (%s) for epoch %llu", clusterLinkGetNodeName(link),
+              clusterLinkGetHumanNodeName(link), (unsigned long long)ntohu64(msg->currentEpoch));
+}
+
 /* Send the messages queued for the link. */
 void clusterWriteHandler(connection *conn) {
     clusterLink *link = connGetPrivateData(conn);
@@ -4991,6 +5021,7 @@ void clusterWriteHandler(connection *conn) {
         }
         serverAssert((msg_offset + nwritten) == msg_len);
         link->head_msg_send_offset = 0;
+        clusterLogMessageSent(link, msg);
 
         /* Delete the node and update our memory tracking */
         uint32_t blocklen = msgblock->totlen;
@@ -9649,6 +9680,7 @@ void clusterHandleWriteCompletion(clusterLink *link) {
         uint32_t msg_len = ntohl(msg->totlen);
         size_t start = (i == 0) ? prev_head_offset : 0;
         clusterBusAddNetworkBytesByType(ntohs(msg->type) & ~CLUSTERMSG_MODIFIER_MASK, msg_len - start, 1);
+        clusterLogMessageSent(link, msg);
         uint32_t blocklen = msgblock->totlen;
         listDelNode(link->send_msg_queue, head);
         link->send_msg_queue_mem -= sizeof(listNode) + blocklen;
