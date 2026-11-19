@@ -147,8 +147,10 @@ typedef union bio_job {
 
     struct {
         int type;
-        sds content;   /* Cluster config file content. */
-        bool do_fsync; /* A flag to indicate that a fsync is required. */
+        sds content;              /* Cluster config file content. */
+        bool do_fsync;            /* A flag to indicate that a fsync is required. */
+        uint64_t current_epoch;   /* currentEpoch written in 'content', for logging. */
+        uint64_t last_vote_epoch; /* lastVoteEpoch written in 'content', for logging. */
     } cluster_save_args;
 } bio_job;
 
@@ -249,10 +251,12 @@ void bioCreateTlsReloadJob(void) {
     bioSubmitJob(BIO_TLS_RELOAD, job);
 }
 
-void bioCreateClusterConfigSaveJob(sds content, bool do_fsync) {
+void bioCreateClusterConfigSaveJob(sds content, bool do_fsync, uint64_t current_epoch, uint64_t last_vote_epoch) {
     bio_job *job = allocBioJob(0);
     job->cluster_save_args.content = content;
     job->cluster_save_args.do_fsync = do_fsync;
+    job->cluster_save_args.current_epoch = current_epoch;
+    job->cluster_save_args.last_vote_epoch = last_vote_epoch;
     bioSubmitJob(BIO_CLUSTER_SAVE, job);
 }
 
@@ -329,7 +333,9 @@ void *bioProcessBackgroundJobs(void *arg) {
 #endif
         } else if (job_type == BIO_CLUSTER_SAVE) {
             static time_t last_save_error_log = 0;
-            if (clusterSaveConfigFromBio(job->cluster_save_args.content, job->cluster_save_args.do_fsync) == C_ERR) {
+            if (clusterSaveConfigFromBio(job->cluster_save_args.content, job->cluster_save_args.do_fsync,
+                                         job->cluster_save_args.current_epoch,
+                                         job->cluster_save_args.last_vote_epoch) == C_ERR) {
                 /* Limit logging rate to 1 line per CONFIG_SAVE_LOG_ERROR_RATE seconds. */
                 if ((server.unixtime - last_save_error_log) > CONFIG_SAVE_LOG_ERROR_RATE) {
                     serverLog(LL_WARNING, "Failed to save the cluster config file in background. Cluster config "

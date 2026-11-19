@@ -43,7 +43,7 @@ void bioCreateFsyncJob(int fd, long long offset, int need_reclaim_cache);
 void bioCreateLazyFreeJob(lazy_free_fn free_fn, int arg_count, ...);
 void bioCreateSaveRDBToDiskJob(connection *conn, int is_dual_channel, compressionAlgo target_algo);
 void bioCreateTlsReloadJob(void);
-void bioCreateClusterConfigSaveJob(sds content, bool do_fsync);
+void bioCreateClusterConfigSaveJob(sds content, bool do_fsync, uint64_t current_epoch, uint64_t last_vote_epoch);
 int inBioThread(void);
 
 /* Background job opcodes */
