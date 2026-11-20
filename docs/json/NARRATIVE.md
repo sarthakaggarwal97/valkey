@@ -14,7 +14,7 @@ reviewers, and asks for three decisions on what comes next.
 **Result.** JSON now runs inside `valkey-server` as a built-in module written in C. It replaces
 the external valkey-json module and stays compatible with it: the same 24 commands, type name,
 module name, file formats and search interface. Measured on Graviton and on x86-64 hardware
-against the external module, with the same server core on both sides, it uses 23% to 49% of
+against the external module, with the same server core on both sides, it uses 11% to 49% of
 the module's memory on eight of nine document shapes and equals it on the ninth. The final code
 is faster on all 69 JSON operations measured on both architectures: median 2.69 times on
 Graviton and 2.30 times on x86-64, minimum 1.22 and 1.03 times. On eight real-world files it uses 6% to 67% of the module's memory, and with 50 connections it serves

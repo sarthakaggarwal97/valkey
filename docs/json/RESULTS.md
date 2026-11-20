@@ -8,7 +8,7 @@ JSON now ships inside `valkey-server` as a built-in module written in C. It repl
 
 Measured against the external module with the same server core on both sides, on Graviton (c7g.16xlarge) and on x86-64 (GitHub-hosted runners, AMD EPYC and Intel Xeon), final code:
 
-- **Memory:** 23% to 49% of the module on eight of nine document shapes, identical on both architectures. The ninth, a large array of short strings, is equal (100%). On eight real-world files it is 6% to 67%.
+- **Memory:** 11% to 49% of the module on eight of nine document shapes, identical on both architectures. The ninth, a large array of short strings, is equal (100%). On eight real-world files it is 6% to 67%.
 - **Speed:** faster on all 69 JSON operations on both architectures. The median is 2.69 times on Graviton and 2.30 times on x86-64. The smallest gain is 1.22 times on Graviton (`JSON.GET` of 10,000 short strings) and 1.03 times on x86-64 (`JSON.GET` of a 100,000-record array). With 50 connections, throughput is 1.3 to 2.1 times the module's.
 - **Persistence:** `SAVE` takes 1.97 s against 2.47 s on Graviton and 1.71 s against 2.22 s on x86-64, for 500,010 keys. Loading takes 2.02 s against 3.10 s on Graviton.
 - **Platforms:** the full Valkey test suite passes with the module built in on x86-64. The JSON tests pass on 32-bit x86 and on s390x (big-endian), which upstream CI builds.

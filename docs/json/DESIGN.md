@@ -36,7 +36,7 @@ on x86-64 GitHub-hosted runners are in §15.
 
 Measured against the external module:
 
-- **Memory.** 23% to 49% of the module's bytes per key on eight of nine document shapes. The
+- **Memory.** 11% to 49% of the module's bytes per key on eight of nine document shapes. The
   ninth, an array of 10,000 strings of 8 to 13 bytes, is at parity (100%).
 - **Time per command.** Lower on all 69 JSON operations measured. The median speed-up is 2.49
   times and the minimum is 1.09 times.
