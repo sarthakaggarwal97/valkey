@@ -200,6 +200,19 @@ Before the serialiser change of `2c17a3a01`, two runs on AMD EPYC 9V74 runners h
 
 Raw results: `json-m0/bench/results/gha-x86/`, `gha-x86-2/` (before) and `gha-x86-final/` (after).
 
+### 3.11 Real workloads
+
+Three public datasets on `Graviton host B` (idle), both servers built from `2170143fc`, the same isolation and measurement as section 3.1, three interleaved rounds per side. NYC taxi trips: the first 1,000,000 documents of the Rally `nyc_taxis` track. Bluesky: the first file of ClickHouse's JSONBench, as all 1,000,000 events and as its 86,812 new posts. Tweets: the 100 tweets of simdjson's `twitter.json`, each under 1,000 keys. Every sampled document (4,331 per round) read back equal on both servers, no command failed, and the recursive queries gave identical replies on both. Rounds differed by at most 6%.
+
+| Dataset | Memory per key, module and built-in | Ratio | `JSON.SET` µs | `SAVE` s | RDB load s |
+|---|---:|---:|---:|---:|---:|
+| NYC taxi trips | 753 and 233 | 31% | 3.96 and 1.79 | 3.87 and 3.17 | 6.84 and 2.81 |
+| Bluesky posts | 1,255 and 734 | 58% | 4.60 and 2.30 | 0.61 and 0.45 | 0.77 and 0.32 |
+| Bluesky event stream | 780 and 451 | 58% | 2.98 and 1.61 | 4.77 and 3.38 | 6.09 and 2.61 |
+| Twitter API tweets | 5,676 and 2,690 | 47% | 21.63 and 12.40 | 2.16 and 1.69 | 3.67 and 1.44 |
+
+All 22 operations are faster: median 3.14 times, smallest 1.51 times (`JSON.SET $.text` on a tweet), largest 19.5 times (`JSON.GET $..id` on a tweet, 53.21 against 2.73 µs). With 50 clients and pipeline 16, throughput is 1.65 times the module's for `JSON.GET $.fare_amount`, 1.95 times for `JSON.NUMINCRBY $.tip_amount 1` and 2.24 times for `JSON.GET $.commit.record.text`. Script: `json-m0/bench/workload.py`. Raw results and the full table: `json-m0/bench/results/workload/`.
+
 ## 4. What changed from the design
 
 `VALKEY_JSON_DESIGN.md` and `VALKEY_JSON_NARRATIVE.md` now describe the system as built. These are the differences from the design as it stood before implementation, all driven by measurements on the host.
