@@ -963,6 +963,8 @@ static void ACLSetSelectorCommandBitsForCategory(hashtable *commands, aclSelecto
         if (!categories && cmd->parent) categories = cmd->parent->acl_categories;
         if (categories & cflag) {
             ACLSetSelectorCommandBit(selector, cmd->id, value);
+            /* The category rule overrides earlier first-arg rules for the command,
+             * like +select|0, which would otherwise still allow it once blocked. */
             ACLResetFirstArgsForCommand(selector, cmd->id);
         }
         if (cmd->subcommands_ht) {
