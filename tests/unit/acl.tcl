@@ -641,6 +641,42 @@ start_server {tags {"acl external:skip"}} {
         assert_equal [lsearch [r acl cat stream] "get"] -1
     }
 
+    test "CLUSTER KEYSLOT is in the fast ACL category" {
+        # It only hashes the key name it is given and never reads the keyspace.
+        assert_not_equal [lsearch -exact [r acl cat fast] "cluster|keyslot"] -1 \
+            "cluster|keyslot is missing from ACL CAT fast"
+        assert_equal [lsearch -exact [r acl cat slow] "cluster|keyslot"] -1 \
+            "cluster|keyslot is listed in ACL CAT slow"
+    }
+
+    test "CLUSTER KEYSLOT permission follows the fast ACL category and not slow" {
+        # The CLUSTER container is in @slow while its KEYSLOT subcommand is in @fast.
+        r ACL SETUSER keyslot-noslow +@all -@slow
+        r ACL SETUSER keyslot-slowonly -@all +@slow
+        set noslow [r ACL DRYRUN keyslot-noslow CLUSTER KEYSLOT foo]
+        set slowonly [r ACL DRYRUN keyslot-slowonly CLUSTER KEYSLOT foo]
+        r ACL DELUSER keyslot-noslow keyslot-slowonly
+
+        assert_equal OK $noslow
+        assert_match {*has no permissions to run the 'cluster|keyslot' command*} $slowonly
+    }
+
+    test "ACL category rules match a subcommand by its own categories" {
+        # CLUSTER INFO is in @slow like its container, CLUSTER KEYSLOT is in @fast.
+        r ACL SETUSER subcat-fastonly -@all +@fast -@slow
+        r ACL SETUSER subcat-nofast +@all +@slow -@fast
+        set fastonly_keyslot [r ACL DRYRUN subcat-fastonly CLUSTER KEYSLOT foo]
+        set fastonly_info [r ACL DRYRUN subcat-fastonly CLUSTER INFO]
+        set nofast_keyslot [r ACL DRYRUN subcat-nofast CLUSTER KEYSLOT foo]
+        set nofast_info [r ACL DRYRUN subcat-nofast CLUSTER INFO]
+        r ACL DELUSER subcat-fastonly subcat-nofast
+
+        assert_equal OK $fastonly_keyslot
+        assert_match {*has no permissions to run the 'cluster|info' command*} $fastonly_info
+        assert_match {*has no permissions to run the 'cluster|keyslot' command*} $nofast_keyslot
+        assert_equal OK $nofast_info
+    }
+
     test "ACL requires explicit permission for scripting for EVAL_RO, EVALSHA_RO and FCALL_RO" {
         r ACL SETUSER scripter on nopass +readonly
         assert_match {*has no permissions to run the 'eval_ro' command*} [r ACL DRYRUN scripter EVAL_RO "" 0]
