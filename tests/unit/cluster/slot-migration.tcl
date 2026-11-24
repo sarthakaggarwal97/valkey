@@ -111,6 +111,19 @@ proc node_seen_healthy_by_all {node_id} {
     return 1
 }
 
+# Returns 1 when every node in the cluster sees $node_id as a replica of $primary_id.
+proc node_seen_as_replica_by_all {node_id primary_id} {
+    for {set j 0} {$j < [llength $::servers]} {incr j} {
+        set node [cluster_get_node_by_id $j $node_id]
+        # A node turned into an empty node no longer knows the whole cluster.
+        if {$node eq {}} continue
+        if {![cluster_has_flag $node slave] || [dict get $node slaveof] ne $primary_id} {
+            return 0
+        }
+    }
+    return 1
+}
+
 # Give the shard back to $primary with a manual failover.
 proc failback {primary} {
     set primary_id [R $primary CLUSTER MYID]
@@ -118,6 +131,19 @@ proc failback {primary} {
         [node_seen_healthy_by_all $primary_id] == 1
     } else {
         fail "node $primary_id is still flagged as failing by some node"
+    }
+    # A voter denies the election to a node it does not see as a replica, and
+    # a packet $primary sent before its demotion can arrive last and leave a
+    # peer seeing a primary until the next one. CLUSTER SLOTS omits an empty
+    # shard, so wait_for_cluster_propagation does not cover this.
+    set replicaof [dict get [cluster_get_myself $primary] slaveof]
+    wait_for_condition 100 100 {
+        [node_seen_as_replica_by_all $primary_id $replicaof] == 1
+    } else {
+        for {set j 0} {$j < [llength $::servers]} {incr j} {
+            puts "R $j sees $primary_id as: [cluster_get_node_by_id $j $primary_id]"
+        }
+        fail "node $primary_id is not seen as a replica of $replicaof by every node"
     }
     assert_equal {OK} [R $primary cluster failover]
     wait_for_role $primary master
