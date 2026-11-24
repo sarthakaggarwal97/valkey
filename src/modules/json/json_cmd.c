@@ -1563,6 +1563,11 @@ static int jsonStrappendCommand(ValkeyModuleCtx *ctx, ValkeyModuleString **argv,
             continue;
         }
         jsonRefString(r, &len);
+        if ((uint64_t)len + app_len > JSON_STRING_MAX) {
+            /* Longer than a string can be. The module's length wraps around here. */
+            err = JSON_MSG_SIZE_LIMIT;
+            break;
+        }
         ops[i].reply = (long long)len + app_len;
         strings++;
     }
@@ -1716,6 +1721,8 @@ static int jsonArrayAddCommand(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, 
             at = index < 0 ? (size == 0 ? 0 : size + index) : index;
             if (at < 0 || at > size) err = JSON_MSG_INDEX_RANGE;
         }
+        /* More elements than an array can have. */
+        if (err == NULL && size + num_vals > (long long)JSON_ARRAY_MAX) err = JSON_MSG_SIZE_LIMIT;
         ops[i].reply = size + num_vals;
         ops[i].a = (uint32_t)at;
     }

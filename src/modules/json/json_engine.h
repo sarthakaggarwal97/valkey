@@ -273,7 +273,13 @@ int jsonDocDefrag(jsonDoc *d, void *(*move)(void *ptr, void *ctx), int (*stop)(v
 /* ----------------------------------------------------------------------------
  * Changing a document
  *
- * These cannot fail: the caller has resolved the locator and checked every
+ * What one string and one array can hold. Lengths and counts are 32 bits, so
+ * a caller that makes a string longer or an array larger checks the result
+ * against these first. */
+#define JSON_STRING_MAX 0xFFFFFFF0u /* Bytes of a string. */
+#define JSON_ARRAY_MAX 0xFFFFFFF0u  /* Elements of an array. */
+
+/* These cannot fail: the caller has resolved the locator and checked every
  * limit first. `loc` with n == 0 names the root. Each call may replace *d.
  * A caller applying several changes in one command applies them so that no
  * change invalidates a locator still to be used: within one array, higher

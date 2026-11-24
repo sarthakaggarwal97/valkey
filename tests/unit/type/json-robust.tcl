@@ -17,6 +17,9 @@
 #     descent of more than 4,096 levels and a formatted reply over 512 MB fail
 #     with a LIMIT error, promptly and without building the result.
 #   - Replies that carry client data (a key name with CR LF in it).
+#   - Very large values (large-memory): a document that grew past the 512 MB a
+#     client may send in one text still loads from RDB and RESTORE, and a
+#     string cannot be appended to past the length the engine holds.
 
 proc json_caps_list {} { return {{4096 128} {64 4} {0 0}} }
 proc json_set_caps {caps} {
@@ -1011,4 +1014,57 @@ start_server {tags {"json"}} {
         assert_equal [expr {8 * 1048576 + 23}] [string length [r json.get obj {$.k1} {$.k2} INDENT $mb]]
         r flushall
     } {OK}
+}
+
+# Sends the last argument of a command whose start the caller has written: a
+# JSON string of `size` characters. Returns the reply.
+proc json_write_big_string {size} {
+    init_large_mem_vars
+    r write "\$[expr {$size + 2}]\r\n\""
+    while {$size >= 500000000} {
+        r write $::str500
+        incr size -500000000
+    }
+    if {$size > 0} {
+        r write [string repeat x $size]
+    }
+    r write "\"\r\n"
+    r flush
+    return [r read]
+}
+
+run_solo {json-large-memory} {
+start_server [list overrides [list save ""] tags {"json large-memory"}] {
+    test {JSON - a document that grew past 512 MB of text loads from RDB and RESTORE} {
+        # One text from a client is limited to 512 MB. Two appends of 300 MB
+        # make a document whose text is longer than that.
+        r json.set big . {[]}
+        for {set i 0} {$i < 2} {incr i} {
+            r write "*4\r\n\$14\r\nJSON.ARRAPPEND\r\n\$3\r\nbig\r\n\$1\r\n.\r\n"
+            assert_equal [expr {$i + 1}] [json_write_big_string 300000000]
+        }
+        set digest [r debug digest-value big]
+        r debug reload
+        assert_equal {300000000 300000000} [r json.strlen big {$[*]}]
+        assert_equal $digest [r debug digest-value big]
+        r restore copy 0 [r dump big]
+        assert_equal {300000000 300000000} [r json.strlen copy {$[*]}]
+        assert_equal $digest [r debug digest-value copy]
+        r flushall
+    } {OK}
+
+    test {JSON.STRAPPEND - a string cannot grow past the length the engine holds} {
+        # Eight appends of 500 MB stay below 4 GiB. The ninth would pass it.
+        r json.set str . {""}
+        for {set i 1} {$i <= 8} {incr i} {
+            r write "*4\r\n\$14\r\nJSON.STRAPPEND\r\n\$3\r\nstr\r\n\$1\r\n.\r\n"
+            assert_equal [expr {$i * 500000000}] [json_write_big_string 500000000]
+        }
+        r write "*4\r\n\$14\r\nJSON.STRAPPEND\r\n\$3\r\nstr\r\n\$1\r\n.\r\n"
+        assert_error {LIMIT Document size limit is exceeded} {json_write_big_string 500000000}
+        assert_equal 4000000000 [r json.strlen str .]
+        assert_equal PONG [r ping]
+        r flushall
+    } {OK}
+}
 }
