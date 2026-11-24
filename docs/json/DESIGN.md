@@ -753,8 +753,16 @@ an ID it remembers is checked before it is used. On the prototype corpus the pre
 right for all but 160 of 43 million keys and parse time on the small records fell by 15% to
 17% (*prototype, superseded*).
 
-**Limits.** One JSON text is at most 2²⁹ bytes (512 MB). A longer text is refused with the
-document size error.
+**Limits.** A JSON text sent by a client is at most 2²⁹ bytes (512 MB). A longer text is
+refused with the document size error. A document can grow past that through later commands,
+so a text on a trusted path (§9) may be up to 2³² − 16 bytes, provided its parsed form stays
+within 2³¹ entries, which is about 715 million values. The parser checks this before it
+starts, by counting the `[`, `{`, `,` and `:` bytes of the text. Bytes inside strings are
+counted too, so the check errs on the side of refusing. A single string is at most 2³² − 16
+bytes and a single array at most 2³² − 16 elements. `JSON.STRAPPEND`, `JSON.ARRAPPEND` and
+`JSON.ARRINSERT` refuse to grow one past that, with the document size error. Nothing stops a
+document from passing the trusted bounds through many commands. Such a document is saved,
+and the next load refuses it and logs that it is larger than this server loads.
 
 **Measured in the server.** Whole-document `JSON.SET` takes 1.76, 2.58 and 3.60 µs for the
 session, profile and order records, against 4.05, 6.27 and 8.96 µs in the module. For the
@@ -1115,8 +1123,9 @@ stream of every step with the real module's.
 that stored the data. A replica or an AOF load must end up with what the primary stored,
 whatever implementation or configuration the primary had. So:
 
-- No client-side check is applied to it: not the nesting limit, not the size limit, not UTF-8
-  validation (B1, C15), not the number range (B2).
+- No client-side check is applied to it: not the nesting limit, not the size limit, not the
+  512 MB limit on one JSON text (§6.1), not UTF-8 validation (B1, C15), not the number range
+  (B2).
 - Its JSON arguments end at their first NUL byte, because the external module reads an
   argument as a C string and that is what a module primary stored for the same command (C1).
 - One bound does apply: the load depth bound. A replica must never hold a document it is
@@ -1128,7 +1137,10 @@ whatever implementation or configuration the primary had. So:
 Before the review, trusted commands skipped only B1 and B2. Two defects followed and are
 fixed: an AOF rewrite lost a document nested deeper than `json.max-path-limit`, because
 loading the AOF replays `JSON.SET` as a command, and a replicated `JSON.ARRAPPEND` nested a
-document one level past the load bound.
+document one level past the load bound. A later review of the whole implementation found a
+third: the parser held trusted text to the 512 MB client limit, so a document that had grown
+past it was saved and then refused on the next load. Trusted text now has the larger bound of
+§6.1.
 
 **Forkless save.** The built-in sets `VALKEYMODULE_OPTIONS_HANDLE_FORKLESS`, which the external
 module does not. JSON data is therefore eligible for forkless save, with the save callback
