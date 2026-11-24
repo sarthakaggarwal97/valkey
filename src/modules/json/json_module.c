@@ -289,7 +289,9 @@ static void *jsonTypeRdbLoad(ValkeyModuleIO *rdb, int encver) {
     }
     if (val == NULL) {
         ValkeyModule_LogIOError(rdb, "warning", "Unable to load JSON document: %s",
-                                err == JSON_ERR_DEPTH ? "nested deeper than this server loads" : "invalid payload");
+                                err == JSON_ERR_DEPTH     ? "nested deeper than this server loads"
+                                : err == JSON_ERR_TOO_BIG ? "larger than this server loads"
+                                                          : "invalid payload");
         return NULL;
     }
     jsonDoc doc = jsonValToDoc(val);

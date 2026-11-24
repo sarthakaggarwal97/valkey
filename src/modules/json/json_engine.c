@@ -854,13 +854,18 @@ _Static_assert((int)T_NULL == (int)PK_NULL && (int)T_FALSE == (int)PK_FALSE && (
 #define TAPE_NOFIT ((uint64_t)1 << 40) /* Added to a frame's packed size by a child that cannot be packed. */
 #define TAPE_NOFIT32 0xFFFFFFFFu
 /* Tape indexes and arena offsets are 32 bits, and a text can need three tape
- * entries per byte ("[[[["). 512 MB of text keeps the entry count below 2^31.
- * The limit is the same where size_t has 32 bits: the format holds such a
+ * entries per byte ("[[[["). 512 MB of text keeps the entry count below 2^31,
+ * so a text from a client is held to that. A trusted text is a document some
+ * server stored. It may have grown past 512 MB one change at a time and must
+ * still load, so it is taken up to what the tape holds: TAPE_MAX_TEXT bytes
+ * and TAPE_MAX_ENTRIES entries (see tapeEntriesFit).
+ * The limits are the same where size_t has 32 bits: the format holds such a
  * text there too, and a text whose tape would not fit the address space
  * stops at engSize like any allocation that fails, rather than refusing
  * texts that do fit, such as 100 MB of long strings. */
 #define TAPE_MAX_INPUT ((size_t)1 << 29)
-#define TAPE_MAX_TEXT 0xFFFFFFF0u   /* Longest single string. */
+#define TAPE_MAX_TEXT JSON_STRING_MAX /* Longest single string, and longest trusted text. */
+#define TAPE_MAX_ENTRIES ((uint64_t)1 << 31)
 #define TAPE_KEEP_ENTRIES 8192      /* Buffers larger than these are released */
 #define TAPE_KEEP_ARENA (64 * 1024) /* when a tape returns to the pool. */
 #define TAPE_KEEP_STACK 1024
@@ -1017,9 +1022,14 @@ static void tapePoolClear(void) {
 }
 
 static inline void tapeNeed(jsonVal *P, uint32_t n) {
-    if (JSON_LIKELY(P->tlen + n <= P->tcap)) return;
+    const uint64_t need = (uint64_t)P->tlen + n;
+    if (JSON_LIKELY(need <= P->tcap)) return;
+    /* More entries than a 32-bit index reaches. No text gets here (see
+     * jsonValParse), only a document of billions of values being copied to a
+     * tape. The engine stops, as it does when an allocation fails. */
+    if (JSON_UNLIKELY(need > TAPE_MAX_ENTRIES)) __builtin_trap();
     uint32_t nc = P->tcap ? P->tcap * 2 : 256;
-    while (nc < P->tlen + n) nc *= 2;
+    while (nc < need) nc *= 2;
     P->tape = engGrow(P->tape, engSize((uint64_t)nc * sizeof(*P->tape)));
     P->tcap = nc;
 }
@@ -2549,8 +2559,22 @@ static jsonVal *tapeFail(jsonVal *P, jsonErr code, size_t off, jsonErr *err, siz
     return NULL;
 }
 
+/* 1 if the tape of a text is sure to stay within TAPE_MAX_ENTRIES. A value or
+ * a member name is the first thing in the text or follows one of '[', '{',
+ * ',' and ':', and takes at most T_CONTAINER_ENTRIES entries, so that many
+ * times the number of those bytes is a bound. Such a byte inside a string is
+ * counted too, which only makes the bound larger. */
+static int tapeEntriesFit(const uint8_t *s, size_t n) {
+    uint64_t starts = 1;
+    for (size_t i = 0; i < n; i++) starts += (s[i] == '[') | (s[i] == '{') | (s[i] == ',') | (s[i] == ':');
+    return starts * T_CONTAINER_ENTRIES <= TAPE_MAX_ENTRIES;
+}
+
 jsonVal *jsonValParse(const char *s, size_t n, int flags, uint32_t max_depth, jsonErr *err, size_t *err_off) {
-    if (n > TAPE_MAX_INPUT) return tapeFail(NULL, JSON_ERR_TOO_BIG, 0, err, err_off);
+    if (n > TAPE_MAX_INPUT &&
+        (!(flags & JSON_PARSE_TRUSTED) || n > TAPE_MAX_TEXT || !tapeEntriesFit((const uint8_t *)s, n))) {
+        return tapeFail(NULL, JSON_ERR_TOO_BIG, 0, err, err_off);
+    }
     jsonVal *P = tapeAcquire();
     const uint8_t *text = (const uint8_t *)s, *errp = text, *start = text;
     P->trusted = (flags & JSON_PARSE_TRUSTED) != 0;
