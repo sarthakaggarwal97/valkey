@@ -947,15 +947,25 @@ static void ACLChangeSelectorPerm(aclSelector *selector, struct serverCommand *c
  * and will set all the bits corresponding to such commands to the specified
  * value. Since the category passed by the user may be nonexistent, the
  * function returns C_ERR if the category was not found, or C_OK if it was
- * found and the operation was performed. */
+ * found and the operation was performed.
+ *
+ * A subcommand is matched on its own categories and not on the ones of its
+ * container, so that it can be outside a category its container is in, like
+ * a fast subcommand of a slow container. A subcommand without any category,
+ * which only a module can create, follows its container. */
 static void ACLSetSelectorCommandBitsForCategory(hashtable *commands, aclSelector *selector, uint64_t cflag, int value) {
     hashtableIterator iter;
     hashtableInitIterator(&iter, commands, 0);
     void *next;
     while (hashtableNext(&iter, &next)) {
         struct serverCommand *cmd = next;
-        if (cmd->acl_categories & cflag) {
-            ACLChangeSelectorPerm(selector, cmd, value);
+        uint64_t categories = cmd->acl_categories;
+        if (!categories && cmd->parent) categories = cmd->parent->acl_categories;
+        if (categories & cflag) {
+            ACLSetSelectorCommandBit(selector, cmd->id, value);
+            /* The category rule overrides earlier first-arg rules for the command,
+             * like +select|0, which would otherwise still allow it once blocked. */
+            ACLResetFirstArgsForCommand(selector, cmd->id);
         }
         if (cmd->subcommands_ht) {
             ACLSetSelectorCommandBitsForCategory(cmd->subcommands_ht, selector, cflag, value);

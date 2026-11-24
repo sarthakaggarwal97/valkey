@@ -641,6 +641,33 @@ start_server {tags {"acl external:skip"}} {
         assert_equal [lsearch [r acl cat stream] "get"] -1
     }
 
+    test "CLUSTER KEYSLOT is in the fast ACL category" {
+        assert_not_equal [lsearch [r acl cat fast] "cluster|keyslot"] -1
+        assert_equal [lsearch [r acl cat slow] "cluster|keyslot"] -1
+    }
+
+    test "ACL fast and slow category rules apply to CLUSTER KEYSLOT as a fast command" {
+        set denied "User keyslot-user has no permissions to run the 'cluster|keyslot' command"
+        set results {}
+        foreach rules {{-@all +@fast} {+@all -@fast} {+@all -@slow} {-@all +@slow}} {
+            r ACL SETUSER keyslot-user reset on nopass {*}$rules
+            lappend results [r ACL DRYRUN keyslot-user CLUSTER KEYSLOT foo]
+        }
+        r ACL DELUSER keyslot-user
+        assert_equal [list OK $denied OK $denied] $results
+    }
+
+    test "ACL fast and slow category rules apply to CLUSTER INFO as a slow command" {
+        set denied "User clusterinfo-user has no permissions to run the 'cluster|info' command"
+        set results {}
+        foreach rules {{-@all +@slow} {+@all -@slow} {+@all -@fast} {-@all +@fast}} {
+            r ACL SETUSER clusterinfo-user reset on nopass {*}$rules
+            lappend results [r ACL DRYRUN clusterinfo-user CLUSTER INFO]
+        }
+        r ACL DELUSER clusterinfo-user
+        assert_equal [list OK $denied OK $denied] $results
+    }
+
     test "ACL requires explicit permission for scripting for EVAL_RO, EVALSHA_RO and FCALL_RO" {
         r ACL SETUSER scripter on nopass +readonly
         assert_match {*has no permissions to run the 'eval_ro' command*} [r ACL DRYRUN scripter EVAL_RO "" 0]
