@@ -576,19 +576,6 @@ start_cluster 3 5 {tags {external:skip cluster} overrides {cluster-allow-replica
         wait_for_slot_state 7 "\[609-<-$R0_id\]"
     }
 
-    test "Empty-shard primary follows a new primary seen only as a newer config epoch" {
-        test_defer_fail { normalize_cluster $shard_pairs }
-        # R7 takes the shard over from R6, but does not see R6 take it back
-        failover_and_back_unseen_by 6 7 7
-        wait_for_role 6 master
-        wait_for_role 7 slave
-        # Validate final states
-        wait_for_slot_state 0 "\[609->-$R6_id\]"
-        wait_for_slot_state 6 "\[609-<-$R0_id\]"
-        wait_for_slot_state 3 "\[609->-$R6_id\]"
-        wait_for_slot_state 7 "\[609-<-$R0_id\]"
-    }
-
     test "Empty-shard migration source does not finalize an import after a failover seen only as a newer config epoch" {
         test_defer_fail { normalize_cluster $shard_pairs }
         # R0 imports slot 6000 of R1 from R6, which owns no slots
@@ -598,8 +585,7 @@ start_cluster 3 5 {tags {external:skip cluster} overrides {cluster-allow-replica
         failover_and_back_unseen_by 6 7 0
         wait_for_role 6 master
         wait_for_role 7 slave
-        # R0 updates the migration target in the same pass in which it would
-        # take slot 6000 from R1, so the import must still be open
+        # R0 updates the migration target, and does not take slot 6000 from R1
         wait_for_slot_state 0 "\[609->-$R6_id\] \[6000-<-$R6_id\]"
     }
 
@@ -670,6 +656,50 @@ start_cluster 3 5 {tags {external:skip cluster} overrides {cluster-allow-replica
         }
         resume_process [srv -6 pid]
         wait_for_slot_state 3 "\[609->-$R7_id\]"
+    }
+
+    test "Empty-shard migration target is kept when a primary of the target shard moves to another shard" {
+        test_defer_fail { normalize_cluster $shard_pairs }
+        # The previous test leaves R7 as the primary. Wait until R6 follows
+        # it, and give the shard back to R6.
+        wait_for_condition 100 100 {
+            [get_cluster_role 6] eq "slave" || [get_cluster_role 7] eq "slave"
+        } else {
+            fail "The shard of R6 and R7 has no replica"
+        }
+        normalize_cluster $shard_pairs
+        if {[get_open_slots 0] ne "\[609->-$R6_id\]"} {
+            assert_equal {OK} [R 0 CLUSTER SETSLOT 609 MIGRATING $R6_id]
+        }
+        wait_for_slot_state 0 "\[609->-$R6_id\]"
+        wait_for_slot_state 3 "\[609->-$R6_id\]"
+        # R7 takes the shard over from R6, but does not see R6 take it back,
+        # so it stays a primary of the shard with an older config epoch
+        failover_and_back_unseen_by 6 7 7
+        wait_for_slot_state 3 "\[609->-$R6_id\]"
+        assert {[cluster_has_flag [cluster_get_node_by_id 3 $R7_id] master]}
+        # R3 misses that R7 leaves for a shard of its own and gets the highest
+        # config epoch, so one packet tells it both
+        R 3 DEBUG DROP-CLUSTER-PACKET-FILTER -2
+        assert_equal {OK} [R 7 CLUSTER RESET]
+        assert_equal {OK} [R 7 CLUSTER MEET [srv 0 host] [srv 0 port]]
+        wait_for_condition 200 100 {
+            [catch {cluster_get_node_by_id 7 $R6_id} n] == 0 && $n ne {}
+        } else {
+            R 3 DEBUG DROP-CLUSTER-PACKET-FILTER -1
+            fail "R7 never learned R6"
+        }
+        set reply [R 7 CLUSTER BUMPEPOCH]
+        R 3 DEBUG DROP-CLUSTER-PACKET-FILTER -1
+        assert_match {BUMPED *} $reply
+        set e7 [lindex $reply 1]
+        wait_for_condition 300 100 {
+            [dict get [cluster_get_node_by_id 3 $R7_id] config_epoch] == $e7
+        } else {
+            fail "R3 did not see R7 at config epoch $e7"
+        }
+        # R7 is not in the shard of R6 anymore
+        assert_equal "\[609->-$R6_id\]" [get_open_slots 3]
     }
 }
 
