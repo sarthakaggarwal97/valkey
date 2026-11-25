@@ -668,9 +668,6 @@ start_cluster 3 5 {tags {external:skip cluster} overrides {cluster-allow-replica
             fail "The shard of R6 and R7 has no replica"
         }
         normalize_cluster $shard_pairs
-        if {[get_open_slots 0] ne "\[609->-$R6_id\]"} {
-            assert_equal {OK} [R 0 CLUSTER SETSLOT 609 MIGRATING $R6_id]
-        }
         wait_for_slot_state 0 "\[609->-$R6_id\]"
         wait_for_slot_state 3 "\[609->-$R6_id\]"
         # R7 takes the shard over from R6, but does not see R6 take it back,
@@ -681,12 +678,12 @@ start_cluster 3 5 {tags {external:skip cluster} overrides {cluster-allow-replica
         # R3 misses that R7 leaves for a shard of its own and gets the highest
         # config epoch, so one packet tells it both
         R 3 DEBUG DROP-CLUSTER-PACKET-FILTER -2
+        test_defer { R 3 DEBUG DROP-CLUSTER-PACKET-FILTER -1 }
         assert_equal {OK} [R 7 CLUSTER RESET]
         assert_equal {OK} [R 7 CLUSTER MEET [srv 0 host] [srv 0 port]]
         wait_for_condition 200 100 {
             [catch {cluster_get_node_by_id 7 $R6_id} n] == 0 && $n ne {}
         } else {
-            R 3 DEBUG DROP-CLUSTER-PACKET-FILTER -1
             fail "R7 never learned R6"
         }
         set reply [R 7 CLUSTER BUMPEPOCH]
