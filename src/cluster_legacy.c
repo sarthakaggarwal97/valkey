@@ -3271,6 +3271,38 @@ static void clusterLogSlotRangeMigration(int first_slot,
               target_node->name, humanNodename(target_node), target_node->shard_id);
 }
 
+/* Returns 1 if a slot that is migrating to 'mn' should migrate to 'sender'
+ * instead, because 'sender' is the new primary of the shard of 'mn'. */
+static inline int isMigrationTargetRepairNeeded(clusterNode *mn, clusterNode *sender, uint64_t senderConfigEpoch) {
+    return mn != NULL && mn != sender &&
+           (mn->configEpoch < senderConfigEpoch || nodeIsReplica(mn)) &&
+           areInSameShard(mn, sender);
+}
+
+/* Returns 1 if we did not notice a failover in the shard of 'sender', a primary
+ * that owns no slots, and clusterUpdateSlotsConfigWith() has something to fix:
+ * a slot is still migrating to the node that 'sender' replaced, or we are an
+ * empty node of the shard that should follow 'sender'. Only nodes with an open
+ * slot migration are checked. */
+static int clusterMissedFailoverInEmptyShard(clusterNode *sender, uint64_t senderConfigEpoch) {
+    if (!isAnySlotInManualMigratingState() && !isAnySlotInManualImportingState()) return 0;
+
+    clusterNode *cur_primary = clusterNodeIsPrimary(myself) ? myself : myself->replicaof;
+    if (myself->replicaof != sender && (!cur_primary || cur_primary->numslots == 0) &&
+        nodeEpoch(myself) < senderConfigEpoch && areInSameShard(sender, myself)) {
+        return 1;
+    }
+
+    int missed = 0;
+    dictIterator *di = dictGetIterator(server.cluster->migrating_slots_to);
+    dictEntry *de;
+    while (!missed && (de = dictNext(di)) != NULL) {
+        missed = isMigrationTargetRepairNeeded(dictGetVal(de), sender, senderConfigEpoch);
+    }
+    dictReleaseIterator(di);
+    return missed;
+}
+
 /* This function is called when we receive a primary configuration via a
  * PING, PONG or UPDATE packet. What we receive is a node, a configEpoch of the
  * node, and the set of slots claimed under this configEpoch.
@@ -3443,10 +3475,7 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
              * the shard. Update the migrating_slots_to state to point to the
              * sender if it has just taken over the primary role. */
             clusterNode *mn = getMigratingSlotDest(j);
-            if (mn != NULL && mn != sender &&
-                (mn->configEpoch < senderConfigEpoch ||
-                 nodeIsReplica(mn)) &&
-                areInSameShard(mn, sender)) {
+            if (isMigrationTargetRepairNeeded(mn, sender, senderConfigEpoch)) {
                 serverLog(LL_VERBOSE,
                           "Failover occurred in migration target."
                           " Slot %d is now being migrated to node %.40s (%s) in shard %.40s.",
@@ -4803,15 +4832,16 @@ int clusterProcessPacket(clusterLink *link) {
                 }
             }
         } else if (sender && sender_claims_to_be_primary && sender->numslots == 0 &&
-                   (isAnySlotInManualMigratingState() || isAnySlotInManualImportingState())) {
+                   clusterMissedFailoverInEmptyShard(sender, sender_claimed_config_epoch)) {
             /* A failover in a shard that owns no slots changes no slot claim, and
              * we may already see the sender as a primary: its replica role was
              * never reported to us, or a stale packet it sent before it turned
              * into a replica reverted that role. No later packet of the sender
-             * looks like a change then, so while a slot migration is open we run
-             * the checks for a primary without slots on every heartbeat. They
-             * update a migration target that the sender replaced, and make us
-             * follow the sender if it is the new primary of our own shard. */
+             * looks like a change then, so while a slot migration is open we
+             * check on every heartbeat of a primary without slots whether we
+             * missed such a failover. The update points a migration target that
+             * the sender replaced to the sender, and makes us follow the sender
+             * if it is the new primary of our own shard. */
             clusterUpdateSlotsConfigWith(sender, sender_claimed_config_epoch, msg->myslots, 1);
         }
 
