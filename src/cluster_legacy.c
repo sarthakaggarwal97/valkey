@@ -3271,19 +3271,10 @@ static void clusterLogSlotRangeMigration(int first_slot,
               target_node->name, humanNodename(target_node), target_node->shard_id);
 }
 
-/* Returns 1 if a slot that is migrating to 'mn' should migrate to 'sender'
- * instead, because 'sender' is the new primary of the shard of 'mn'. */
-static inline int isMigrationTargetRepairNeeded(clusterNode *mn, clusterNode *sender, uint64_t senderConfigEpoch) {
-    return mn != NULL && mn != sender &&
-           (mn->configEpoch < senderConfigEpoch || nodeIsReplica(mn)) &&
-           areInSameShard(mn, sender);
-}
-
 /* Returns 1 if we did not notice a failover in the shard of 'sender', a primary
- * that owns no slots, and clusterUpdateSlotsConfigWith() has something to fix:
- * a slot is still migrating to the node that 'sender' replaced, or we are an
- * empty node of the shard that should follow 'sender'. Only nodes with an open
- * slot migration are checked. */
+ * that owns no slots: we are an empty node of the shard that should follow
+ * 'sender', or a slot is still migrating to the node that 'sender' replaced.
+ * Only nodes with an open slot migration are checked. */
 static int clusterMissedFailoverInEmptyShard(clusterNode *sender, uint64_t senderConfigEpoch) {
     if (!isAnySlotInManualMigratingState() && !isAnySlotInManualImportingState()) return 0;
 
@@ -3297,7 +3288,9 @@ static int clusterMissedFailoverInEmptyShard(clusterNode *sender, uint64_t sende
     dictIterator *di = dictGetIterator(server.cluster->migrating_slots_to);
     dictEntry *de;
     while (!missed && (de = dictNext(di)) != NULL) {
-        missed = isMigrationTargetRepairNeeded(dictGetVal(de), sender, senderConfigEpoch);
+        clusterNode *mn = dictGetVal(de);
+        missed = mn != sender && (mn->configEpoch < senderConfigEpoch || nodeIsReplica(mn)) &&
+                 areInSameShard(mn, sender);
     }
     dictReleaseIterator(di);
     return missed;
@@ -3313,11 +3306,8 @@ static int clusterMissedFailoverInEmptyShard(clusterNode *sender, uint64_t sende
  *
  * The 'sender' is the node for which we received a configuration update.
  * Sometimes it is not actually the "Sender" of the information, like in the
- * case we receive the info via an UPDATE packet.
- *
- * 'sender_unchanged' is set when the sender was already a primary and claims
- * the same slots as before. */
-void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoch, unsigned char *slots, int sender_unchanged) {
+ * case we receive the info via an UPDATE packet. */
+void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoch, unsigned char *slots) {
     int j;
     clusterNode *cur_primary = NULL, *new_primary = NULL;
     /* The dirty slots list is a list of slots for which we lose the ownership
@@ -3475,7 +3465,10 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
              * the shard. Update the migrating_slots_to state to point to the
              * sender if it has just taken over the primary role. */
             clusterNode *mn = getMigratingSlotDest(j);
-            if (isMigrationTargetRepairNeeded(mn, sender, senderConfigEpoch)) {
+            if (mn != NULL && mn != sender &&
+                (mn->configEpoch < senderConfigEpoch ||
+                 nodeIsReplica(mn)) &&
+                areInSameShard(mn, sender)) {
                 serverLog(LL_VERBOSE,
                           "Failover occurred in migration target."
                           " Slot %d is now being migrated to node %.40s (%s) in shard %.40s.",
@@ -3499,11 +3492,8 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
              *
              * 1. Remove the importing state for the specific slot.
              * 2. Finalize the slot's ownership, if I am not already the owner of
-             *    the slot.
-             *
-             * This is skipped when the sender is unchanged. It claims the same
-             * slots as before, so it did not just give up this slot. */
-            if (!sender_unchanged && nodeIsPrimary(myself) && getImportingSlotSource(j) == sender) {
+             *    the slot. */
+            if (nodeIsPrimary(myself) && getImportingSlotSource(j) == sender) {
                 serverLog(LL_NOTICE,
                           "Slot %d is no longer being imported from node %.40s (%s) in shard %.40s;"
                           " Clear my importing source for the slot.",
@@ -4785,7 +4775,7 @@ int clusterProcessPacket(clusterLink *link) {
             /* 1) If the sender of the message is a primary, and we detected that
              *    the set of slots it claims changed, scan the slots to see if we
              *    need to update our configuration. */
-            clusterUpdateSlotsConfigWith(sender, sender_claimed_config_epoch, msg->myslots, 0);
+            clusterUpdateSlotsConfigWith(sender, sender_claimed_config_epoch, msg->myslots);
 
             /* 2) We also check for the reverse condition, that is, the sender
              *    claims to serve slots we know are served by a primary with a
@@ -4836,13 +4826,10 @@ int clusterProcessPacket(clusterLink *link) {
             /* A failover in a shard that owns no slots changes no slot claim, and
              * we may already see the sender as a primary: its replica role was
              * never reported to us, or a stale packet it sent before it turned
-             * into a replica reverted that role. No later packet of the sender
-             * looks like a change then, so while a slot migration is open we
-             * check on every heartbeat of a primary without slots whether we
-             * missed such a failover. The update points a migration target that
-             * the sender replaced to the sender, and makes us follow the sender
-             * if it is the new primary of our own shard. */
-            clusterUpdateSlotsConfigWith(sender, sender_claimed_config_epoch, msg->myslots, 1);
+             * into a replica reverted that role. No packet of the sender looks
+             * like a change then, so handle the failover here, as if we had just
+             * seen the sender turn from a replica into a primary. */
+            clusterUpdateSlotsConfigWith(sender, sender_claimed_config_epoch, msg->myslots);
         }
 
         /* If our config epoch collides with the sender's try to fix
@@ -4954,7 +4941,7 @@ int clusterProcessPacket(clusterLink *link) {
 
         /* Check the bitmap of served slots and update our
          * config accordingly. */
-        clusterUpdateSlotsConfigWith(n, reportedConfigEpoch, msg->data.update.nodecfg.slots, 0);
+        clusterUpdateSlotsConfigWith(n, reportedConfigEpoch, msg->data.update.nodecfg.slots);
     } else if (type == CLUSTERMSG_TYPE_MODULE) {
         clusterProcessModulePacket(&msg->data.module.msg, sender);
     } else {
