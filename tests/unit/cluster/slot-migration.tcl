@@ -588,6 +588,21 @@ start_cluster 3 5 {tags {external:skip cluster} overrides {cluster-allow-replica
         wait_for_slot_state 3 "\[609->-$R6_id\]"
         wait_for_slot_state 7 "\[609-<-$R0_id\]"
     }
+
+    test "Empty-shard migration source does not finalize an import after a failover seen only as a newer config epoch" {
+        test_defer_fail { normalize_cluster $shard_pairs }
+        # R0 imports slot 6000 of R1 from R6, which owns no slots
+        assert_equal {OK} [R 0 CLUSTER SETSLOT 6000 IMPORTING $R6_id]
+        test_defer { R 0 CLUSTER SETSLOT 6000 STABLE }
+        # R0 sees the failover from R6 to R7, but not the one back to R6
+        failover_and_back_unseen_by 6 7 0
+        wait_for_role 6 master
+        wait_for_role 7 slave
+        # R0 updates the migration target in the same pass in which it would
+        # take slot 6000 from R1, so the import must still be open
+        wait_for_slot_state 0 "\[609->-$R6_id\] \[6000-<-$R6_id\]"
+    }
+
     test "Empty-shard migration target is auto-updated after a newer config epoch first seen in a PUBLISH" {
         test_defer_fail { normalize_cluster $shard_pairs }
         # R3 misses both failovers and records R6's newer epoch from a PUBLISH
