@@ -140,6 +140,16 @@ proc failback {primary} {
     } else {
         fail "node $primary_id is still seen as a primary by some node"
     }
+    # A manual failover is refused while $primary has no link to the node it
+    # replicates or sees it as failing, for example right after $primary was
+    # resumed.
+    wait_for_condition 100 100 {
+        [set n [cluster_get_node_by_id $primary [dict get [cluster_get_myself $primary] slaveof]]] ne {} &&
+        [dict get $n linkstate] eq "connected" &&
+        ![cluster_has_flag $n fail?] && ![cluster_has_flag $n fail]
+    } else {
+        fail "node $primary_id has no healthy link to the node it replicates"
+    }
     assert_equal {OK} [R $primary cluster failover]
     wait_for_role $primary master
 }
